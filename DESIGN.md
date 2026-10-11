@@ -1,6 +1,7 @@
 # writ — design
 
-Status: draft, ready for implementation. A standalone project; zuko (a p2p
+Status: implemented (v0.1); SPEC.md is the normative byte-level spec. Open
+findings are in §17. A standalone project; zuko (a p2p
 networking system) is its first consumer, but writ knows nothing about zuko.
 
 writ is a small, opinionated tool and library for signed statements about keys:
@@ -176,7 +177,7 @@ rotation. Unset (the default) means statements may be indefinite. When set,
 every statement signed by this identity must carry `expires` with
 `expires − issued ≤ max-validity`, and verifiers enforce `issued ≤ now + skew`.
 That bounds what a stolen warm key can issue, even toward verifiers that never
-learn of the rotation.
+learn of the rotation. (It does not: see §17.1.)
 
 ---
 
@@ -368,16 +369,16 @@ that need clock-attack resistance (anything using expiries or leaf keys):
 
 ## 10. Threats, blast radius, upgrades
 
-| Scenario                                                       | Bound                                                                                                                                                                                                                 |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Secret break of the leaf suite                                 | Forgery limited to the tags of live leaf grants, until they expire (≤ ceiling). Clock rollback or freezing is countered by the floor.                                                                                 |
-| Public break of the leaf suite                                 | Zero once verifiers drop the suite (software default). Leaves reissue under the new suite; no identity changes.                                                                                                       |
-| Warm key stolen                                                | The thief signs as you until verifiers see your rotation. After that, only statements in `keep` survive. Cut-off verifiers are bounded by `max-validity` if set, unbounded otherwise (the price of indefinite certs). |
-| Cold key lost                                                  | Recover via k-of-n next authority, if configured.                                                                                                                                                                     |
-| Cold key (or ≥ k of it) stolen                                 | Identity lost; conflicting rotations are detectable evidence.                                                                                                                                                         |
-| Fresh verifier, no persisted floor, hostile clock, partitioned | Expired leaf grants back to the floor (build-time, or newest own-root statement) are usable again. Accepted residual risk; enrollment grants keep it small in practice.                                               |
-| SLH-DSA structure broken, SHAKE intact                         | Root forgery; rotation races would be detectable as equivocation. Accepted as very unlikely.                                                                                                                          |
-| SHAKE broken                                                   | Total. Re-key the world. Accepted.                                                                                                                                                                                    |
+| Scenario                                                       | Bound                                                                                                                                                                                                                                  |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Secret break of the leaf suite                                 | Forgery limited to the tags of live leaf grants, until they expire (≤ ceiling). Clock rollback or freezing is countered by the floor. _See §17.3._                                                                                     |
+| Public break of the leaf suite                                 | Zero once verifiers drop the suite (software default). Leaves reissue under the new suite; no identity changes.                                                                                                                        |
+| Warm key stolen                                                | The thief signs as you until verifiers see your rotation. After that, only statements in `keep` survive. Cut-off verifiers are bounded by `max-validity` if set, unbounded otherwise (the price of indefinite certs). _But see §17.1._ |
+| Cold key lost                                                  | Recover via k-of-n next authority, if configured.                                                                                                                                                                                      |
+| Cold key (or ≥ k of it) stolen                                 | Identity lost; conflicting rotations are detectable evidence.                                                                                                                                                                          |
+| Fresh verifier, no persisted floor, hostile clock, partitioned | Expired leaf grants back to the floor (build-time, or newest own-root statement) are usable again. Accepted residual risk; enrollment grants keep it small in practice.                                                                |
+| SLH-DSA structure broken, SHAKE intact                         | Root forgery; rotation races would be detectable as equivocation. Accepted as very unlikely.                                                                                                                                           |
+| SHAKE broken                                                   | Total. Re-key the world. Accepted.                                                                                                                                                                                                     |
 
 **Upgrade paths**
 
@@ -542,7 +543,99 @@ reference implementation; published test vectors for every format.
 - Rejected: X.509; JSON claims; tag wildcards/sets/ranges; WOTS+ rotation keys;
   KERI witnesses; warm-key policy tightening; `keep: all`; not-before.
 
+### Recorded during implementation (2026-10-11)
+
+Gaps in the draft, resolved the obvious way; SPEC.md is normative.
+
+- **Labels are terminated**: every hash or signature input is
+  `writ/v1/<purpose> ‖ 0x00 ‖ data`. Signed messages are the full canonical
+  body, not its hash, so SLH-DSA's randomized message hashing protects against
+  collisions in SHA3-256 as well.
+- **SLH-DSA uses the FIPS 205 context string too**
+  (`writ/v1/root/slh-dsa-shake-128s`), symmetric with ML-DSA.
+- **Authorities list distinct keys, sorted**; a threshold counts distinct keys,
+  so `(2, [K, K])` can't make one key count twice.
+- **Data signatures follow the statement rule across rotation**: valid if made
+  under the head event, or if their hash is in the head's `keep`; otherwise a
+  thief with an old warm key could sign data under the old event forever. The
+  signer can revoke a data signature by hash. The CLI records identity
+  signatures in the issuance log so `rotate` keeps them.
+- **Revocations never expire** and are exempt from `max-validity` (an expiring
+  revocation would quietly un-revoke). They are also subject to the keep rule,
+  as §5.3 says, which is harmless: a revoked statement is never kept.
+- **Rotations are fail-closed only when signed by the committed authority**:
+  rotations with another authority or bad signatures are ignored (anyone can
+  make them); two different ones signed by the committed authority are
+  equivocation; one signed but with the wrong `prev` breaks the log.
+- **Equivocation semantics for queries**: a query about an equivocating id
+  fails; chains through it are invalid, and if no other chain exists the
+  denial carries the evidence.
+- **Name depth is defined as derivation depth** of a Jacobi fixpoint (SPEC §8),
+  so the bound is a property of the answer, not of search order.
+- **The ratchet persists logs, not just head numbers**: a verifier adds every
+  log it has accepted to future material, which subsumes "never accept an
+  older head" and keeps equivocation visible once seen.
+- **CLI**: `--state DIR` (floor plus remembered logs) replaces `--floor FILE`;
+  added `export`, `keygen`, `pubkey`, `--in`, `--at`, `sign --leaf`; `leaf`
+  defaults to 24 h; the next authority's public keys live in `DIR/next.writ`
+  so `rotate` can rebuild it for k-of-n; `rotate` replaces a plaintext
+  `DIR/current.key` with the revealed key and deletes the retired one.
+- **Default skew** is 300 s; resource limits as in SPEC §11.
+
 ## 17. Open questions
 
-None blocking. Revisit after a first implementation: exact resource limits
-(§9.1) and the default clock-skew tolerance.
+No implementation blockers. Three findings from implementation where the
+design's security claims don't hold as written and there is no obvious fix;
+they need a decision.
+
+### 17.1 `max-validity` does not bound a warm-key thief (§4.5, §10)
+
+§4.5 says `max-validity` "bounds what a stolen warm key can issue, even toward
+verifiers that never learn of the rotation", and §10 says cut-off verifiers
+are "bounded by `max-validity` if set". Neither holds. `issued` is chosen by the
+signer, so a thief who holds the key simply keeps issuing fresh statements,
+each within `max-validity`, for as long as they like. Even a thief with only
+_temporary_ access to a signing oracle is not bounded: `issued ≤ now + skew`
+makes `issued` a not-before, so they can pre-sign a ladder of post-dated
+statements (`issued = t, t + mv, t + 2mv, …`) that become valid one after
+another. `max-validity` only forces the honest issuer to re-issue.
+
+An actual bound needs the verifier to learn something fresh from the identity
+(a witness, a heartbeat, a rotation), which §1 puts out of scope. Options:
+reword §4.5/§10 to what it does guarantee (each statement's lifetime, and
+nothing against key theft); or bound `issued` from above by the verifier's
+floor plus a margin, which stops post-dating but not a thief who keeps the
+key; or add a freshness primitive.
+
+### 17.2 Equivocation is not evidence of compromise when 2k ≤ n (§4.4)
+
+§4.4 treats two validly signed events at the same position as proof that the
+next authority was compromised. With a threshold `k` of `n` keys where
+`2k ≤ n` (1 of 2 backup keys, 2 of 4 friends), two disjoint honest groups can
+each sign a rotation, e.g. both recovering after a loss. The identity is then
+permanently refused, with "evidence" of a compromise that didn't happen.
+Options: require `2k > n` for authorities (quorums intersect, so honest
+holders can coordinate; forbids "either of my two backups"); or keep it and
+document the race. The CLI currently warns when `2k ≤ n`.
+
+### 17.3 The leaf-suite blast radius is bounded in scope, not time (§10)
+
+§10: a secret break of the leaf suite allows forgery "limited to the tags of
+live leaf grants, until they expire (≤ ceiling)". But leaf grants are renewed
+daily (§7), and a break of the algorithm lets the attacker forge for whichever
+leaf keys currently hold grants, fresh keys included. While leaves are in use
+the exposure never ends; what is bounded is its _scope_ (leaf grants are
+non-delegable, carry only their tags, and die with the identity's rotation).
+The time bound holds only once you stop issuing leaf grants. Suggest
+rewording the row; there is nothing to fix in the mechanism.
+
+### 17.4 Rotation turns the recovery quorum into the signing authority (§4.3)
+
+Not a soundness issue. The revealed next authority becomes the authority
+for statements at the new event (as in KERI). With a social-recovery next
+authority (2 of {cold key, friend, safe}), every rotation needs that quorum,
+and afterwards every statement does too until the next rotation. If routine
+rotations should be possible with the cold key alone while recovery needs
+the quorum, the log needs separate signing and rotation authorities.
+
+Revisit after use: exact resource limits (§9.1) and the default skew.
