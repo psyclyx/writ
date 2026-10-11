@@ -23,16 +23,19 @@ pub(crate) enum AdrsType {
     ForsPrf = 6,
 }
 
+/// Encoded ADRS size in bytes.
+pub(crate) const ADRS_BYTES: usize = 32;
+
 #[derive(Clone, Copy)]
-pub(crate) struct Adrs([u8; 32]);
+pub(crate) struct Adrs([u8; ADRS_BYTES]);
 
 impl Adrs {
     /// `toByte(0, 32)`.
     pub(crate) const fn zero() -> Self {
-        Self([0; 32])
+        Self([0; ADRS_BYTES])
     }
 
-    pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; ADRS_BYTES] {
         &self.0
     }
 

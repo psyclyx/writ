@@ -15,6 +15,7 @@ use writ_slhdsa::{
     Error, N, SECRET_KEY_SIZE, SIGNATURE_SIZE, SigningKey, VerifyingKey, keygen_internal, sign,
     verify, verify_internal,
 };
+use zeroize::Zeroizing;
 
 /// Signature layout in n-byte nodes (FIPS 205 Fig. 17).
 const R_NODES: usize = 1;
@@ -126,7 +127,7 @@ fn every_node_bit_flip_rejected() {
 fn key_encodings() {
     let mut rng = Rng::new(9);
     let sk = keygen_internal(&rng.array(), &rng.array(), &rng.array());
-    let bytes: [u8; SECRET_KEY_SIZE] = sk.to_bytes();
+    let bytes: Zeroizing<[u8; SECRET_KEY_SIZE]> = sk.to_bytes();
     let sk2 = SigningKey::from_bytes(&bytes);
     assert_eq!(sk2.to_bytes(), bytes);
     assert_eq!(sk2.verifying_key(), sk.verifying_key());
@@ -134,4 +135,20 @@ fn key_encodings() {
     let vk = VerifyingKey::from_bytes(sk.verifying_key().as_bytes());
     assert_eq!(vk.to_bytes(), *sk.verifying_key().as_bytes());
     assert_eq!(format!("{sk:?}"), "SigningKey(..)");
+}
+
+/// A signing key whose PK.root does not match its seeds produces signatures
+/// that fail self-verification, and `sign` withholds them.
+#[test]
+fn self_verification_failure_is_reported() {
+    let mut rng = Rng::new(11);
+    let sk = keygen_internal(&rng.array(), &rng.array(), &rng.array());
+    let mut bytes = sk.to_bytes();
+    bytes[3 * N] ^= 1; // first byte of PK.root
+    let bad = SigningKey::from_bytes(&bytes);
+    let msg = rng.bytes(32);
+    assert_eq!(
+        sign(&bad, &msg, b"ctx", &rng.array()),
+        Err(Error::SelfVerificationFailed)
+    );
 }

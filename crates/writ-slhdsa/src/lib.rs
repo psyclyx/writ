@@ -2,7 +2,7 @@
 //!
 //! See DESIGN.md §3. Built on `libcrux-sha3`.
 //!
-//! - [`keygen_internal`], [`sign_internal`], [`verify_internal`] are
+//! - [`keygen_internal`], `sign_internal`, [`verify_internal`] are
 //!   FIPS 205 Algs. 18–20, exposed for test vectors and composition.
 //! - [`sign`] and [`verify`] are the pure (non-prehash) external interface,
 //!   Algs. 22 and 24, with a context string. [`sign`] is hedged (the caller
@@ -27,7 +27,7 @@ mod xmss;
 
 use core::fmt;
 
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::address::{Adrs, AdrsType};
 use crate::hash::{Hasher, Pieces};
@@ -78,25 +78,33 @@ impl SigningKey {
     /// (in particular, PK.root is not recomputed).
     #[must_use]
     pub fn from_bytes(bytes: &[u8; SECRET_KEY_SIZE]) -> Self {
-        let mut parts = [[0u8; N]; 4];
-        copy_nodes(&mut parts, bytes);
-        let [sk_seed, sk_prf, pk_seed, pk_root] = parts;
-        parts.zeroize();
-        Self {
-            sk_seed,
-            sk_prf,
-            pk_seed,
-            pk_root,
+        // Copy straight into the fields, leaving no intermediate copies.
+        let mut sk = Self {
+            sk_seed: [0; N],
+            sk_prf: [0; N],
+            pk_seed: [0; N],
+            pk_root: [0; N],
+        };
+        let fields = [
+            &mut sk.sk_seed,
+            &mut sk.sk_prf,
+            &mut sk.pk_seed,
+            &mut sk.pk_root,
+        ];
+        for (dst, src) in fields.into_iter().zip(bytes.as_chunks::<N>().0) {
+            dst.copy_from_slice(src);
         }
+        sk
     }
 
-    /// Encode the signing key. The result is secret.
+    /// Encode the signing key. The result is secret and is wiped when
+    /// dropped.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; SECRET_KEY_SIZE] {
-        let mut out = [0u8; SECRET_KEY_SIZE];
-        let parts = [&self.sk_seed, &self.sk_prf, &self.pk_seed, &self.pk_root];
-        for (dst, src) in out.as_chunks_mut::<N>().0.iter_mut().zip(parts) {
-            *dst = *src;
+    pub fn to_bytes(&self) -> Zeroizing<[u8; SECRET_KEY_SIZE]> {
+        let mut out = Zeroizing::new([0u8; SECRET_KEY_SIZE]);
+        let fields = [&self.sk_seed, &self.sk_prf, &self.pk_seed, &self.pk_root];
+        for (dst, src) in out.as_chunks_mut::<N>().0.iter_mut().zip(fields) {
+            dst.copy_from_slice(src);
         }
         out
     }
@@ -190,11 +198,37 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+/// Bytes of stack overwritten by [`scrub_stack`]. Measured with temporary
+/// instrumentation (x86_64, debug and release profiles): the deepest
+/// hash-function frame under [`sign`] lies about 18 KiB below the top of the
+/// scrub frame, and libcrux's Keccak frames lie below that. 32 KiB covers
+/// them with margin; the cost is negligible next to signing.
+const SCRUB_BYTES: usize = 32 * 1024;
+
+/// Best-effort wipe of the dead stack below the caller's frame.
+///
+/// libcrux's `Shake256Xof` buffers and the portable Keccak `load_last` block
+/// copies leave SK.seed- and SK.prf-derived state in callee frames that we
+/// cannot wipe directly (`unsafe` is forbidden). Instead this function claims
+/// a frame at least as deep as those callees used and overwrites it.
+/// `zeroize` uses volatile writes, so the wipe is not elided; `inline(never)`
+/// puts the array in its own frame below the caller's; `black_box` keeps it
+/// materialised. This is not a guarantee — copies spilled into the caller's
+/// own frame or left in registers are not reached — but it clears the bulk of
+/// the residue.
+#[inline(never)]
+fn scrub_stack() {
+    let mut s = [0u8; SCRUB_BYTES];
+    s.zeroize();
+    core::hint::black_box(&s);
+}
+
 /// FIPS 205 Alg. 18 `slh_keygen_internal`.
 #[must_use]
 pub fn keygen_internal(sk_seed: &[u8; N], sk_prf: &[u8; N], pk_seed: &[u8; N]) -> SigningKey {
     let h = Hasher::new(pk_seed);
     let pk_root = xmss::top_root(&h, sk_seed);
+    scrub_stack();
     SigningKey {
         sk_seed: *sk_seed,
         sk_prf: *sk_prf,
@@ -249,10 +283,14 @@ fn verify_pieces(pk: &VerifyingKey, msg: &Pieces<'_>, sig: &[u8]) -> bool {
 /// FIPS 205 Alg. 19 `slh_sign_internal`. `addrnd` is `opt_rand`; pass
 /// PK.seed for the deterministic variant.
 ///
-/// This does not verify its output; prefer [`sign`].
+/// **This skips self-verification.** It exists for test vectors and for
+/// composition by callers that do their own checks; otherwise use [`sign`].
+#[doc(hidden)]
 #[must_use]
 pub fn sign_internal(sk: &SigningKey, msg: &[u8], addrnd: &[u8; N]) -> [u8; SIGNATURE_SIZE] {
-    sign_pieces(sk, &[msg], addrnd).to_bytes()
+    let sig = sign_pieces(sk, &[msg], addrnd).to_bytes();
+    scrub_stack();
+    sig
 }
 
 /// FIPS 205 Alg. 20 `slh_verify_internal`. Total: a signature of the wrong
@@ -287,7 +325,9 @@ pub fn sign(
     let prefix = pure_prefix(ctx).ok_or(Error::ContextTooLong)?;
     let pieces: [&[u8]; 3] = [&prefix, ctx, msg];
     let sig = sign_pieces(sk, &pieces, addrnd).to_bytes();
-    if verify_pieces(&sk.verifying_key(), &pieces, &sig) {
+    let ok = verify_pieces(&sk.verifying_key(), &pieces, &sig);
+    scrub_stack();
+    if ok {
         Ok(sig)
     } else {
         Err(Error::SelfVerificationFailed)

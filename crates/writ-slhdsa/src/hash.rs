@@ -6,11 +6,15 @@
 use libcrux_sha3::portable::incremental::{Shake256Xof, Xof};
 use zeroize::Zeroize;
 
-use crate::address::Adrs;
+use crate::address::{ADRS_BYTES, Adrs};
 use crate::{M, N, Node};
 
 /// The message pieces whose concatenation is the message M (or M').
 pub(crate) type Pieces<'a> = [&'a [u8]];
+
+/// End of the PK.seed ‖ ADRS prefix shared by F, PRF and H; the n-byte
+/// inputs follow it.
+const PREFIX: usize = N + ADRS_BYTES;
 
 /// Tweakable hashes keyed by PK.seed.
 pub(crate) struct Hasher {
@@ -25,23 +29,28 @@ impl Hasher {
     /// `F(PK.seed, ADRS, M1) = SHAKE256(PK.seed ‖ ADRS ‖ M1, 8n)`.
     #[inline]
     pub(crate) fn f(&self, adrs: &Adrs, m: &Node) -> Node {
-        let mut buf = [0u8; 2 * N + 32];
-        buf[0..16].copy_from_slice(&self.pk_seed);
-        buf[16..48].copy_from_slice(adrs.as_bytes());
-        buf[48..64].copy_from_slice(m);
+        let mut buf = [0u8; PREFIX + N];
+        buf[..N].copy_from_slice(&self.pk_seed);
+        buf[N..PREFIX].copy_from_slice(adrs.as_bytes());
+        buf[PREFIX..].copy_from_slice(m);
         let mut out = [0u8; N];
         libcrux_sha3::shake256_ema(&mut out, &buf);
         out
     }
 
     /// `PRF(PK.seed, SK.seed, ADRS) = SHAKE256(PK.seed ‖ ADRS ‖ SK.seed, 8n)`.
-    /// Same shape as F, but the input buffer holds a secret and is wiped.
+    ///
+    /// Same shape as F. `buf` holds SK.seed, so we wipe it; that covers only
+    /// our own copy. libcrux copies the input into its Keccak state and block
+    /// buffers in frames we cannot reach, and the output is itself secret
+    /// (a WOTS+ or FORS secret value). Those are left to the stack scrub at
+    /// the end of the public signing and key-generation functions.
     #[inline]
     pub(crate) fn prf(&self, adrs: &Adrs, sk_seed: &Node) -> Node {
-        let mut buf = [0u8; 2 * N + 32];
-        buf[0..16].copy_from_slice(&self.pk_seed);
-        buf[16..48].copy_from_slice(adrs.as_bytes());
-        buf[48..64].copy_from_slice(sk_seed);
+        let mut buf = [0u8; PREFIX + N];
+        buf[..N].copy_from_slice(&self.pk_seed);
+        buf[N..PREFIX].copy_from_slice(adrs.as_bytes());
+        buf[PREFIX..].copy_from_slice(sk_seed);
         let mut out = [0u8; N];
         libcrux_sha3::shake256_ema(&mut out, &buf);
         buf.zeroize();
@@ -51,11 +60,11 @@ impl Hasher {
     /// `H(PK.seed, ADRS, M2) = SHAKE256(PK.seed ‖ ADRS ‖ left ‖ right, 8n)`.
     #[inline]
     pub(crate) fn h(&self, adrs: &Adrs, left: &Node, right: &Node) -> Node {
-        let mut buf = [0u8; 3 * N + 32];
-        buf[0..16].copy_from_slice(&self.pk_seed);
-        buf[16..48].copy_from_slice(adrs.as_bytes());
-        buf[48..64].copy_from_slice(left);
-        buf[64..80].copy_from_slice(right);
+        let mut buf = [0u8; PREFIX + 2 * N];
+        buf[..N].copy_from_slice(&self.pk_seed);
+        buf[N..PREFIX].copy_from_slice(adrs.as_bytes());
+        buf[PREFIX..PREFIX + N].copy_from_slice(left);
+        buf[PREFIX + N..].copy_from_slice(right);
         let mut out = [0u8; N];
         libcrux_sha3::shake256_ema(&mut out, &buf);
         out
@@ -104,4 +113,53 @@ pub(crate) fn h_msg(r: &Node, pk_seed: &Node, pk_root: &Node, msg: &Pieces<'_>) 
     let mut out = [0u8; M];
     xof.squeeze(&mut out);
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    /// SHAKE256 rate in bytes: the Xof's internal block size.
+    const RATE: usize = 136;
+
+    fn shake(input: &[u8]) -> [u8; M] {
+        let mut out = [0u8; M];
+        libcrux_sha3::shake256_ema(&mut out, input);
+        out
+    }
+
+    /// Splitting the message into pieces at any boundary — in particular
+    /// around the 136-byte block — does not change `prf_msg` or `h_msg`,
+    /// which also agree with one-shot SHAKE256 of the concatenation.
+    #[test]
+    fn piecewise_absorb_matches_one_shot() {
+        let msg: Vec<u8> = (0..3 * RATE).map(|i| (i * 7 + 3) as u8).collect();
+        let (a, b, c) = ([1u8; N], [2u8; N], [3u8; N]);
+        let prf_ref = shake(&[&a[..], &b, &msg].concat());
+        let hmsg_ref = shake(&[&a[..], &b, &c, &msg].concat());
+        let check = |pieces: &Pieces<'_>, label: &str| {
+            assert_eq!(prf_msg(&a, &b, pieces), prf_ref[..N], "prf_msg {label}");
+            assert_eq!(h_msg(&a, &b, &c, pieces), hmsg_ref, "h_msg {label}");
+        };
+
+        check(&[&msg], "single");
+        check(&[&msg, &[], &[]], "trailing empties");
+        // Every two-way split.
+        for i in 0..=msg.len() {
+            let (x, y) = msg.split_at(i);
+            check(&[x, y], &format!("split {i}"));
+        }
+        // Three-way splits at points straddling block boundaries.
+        let points = [0, 1, RATE - 1, RATE, RATE + 1, 2 * RATE - 1, 2 * RATE];
+        for &i in &points {
+            for &j in points.iter().filter(|&&j| j >= i) {
+                let pieces: [&[u8]; 3] = [&msg[..i], &msg[i..j], &msg[j..]];
+                check(&pieces, &format!("split {i}, {j}"));
+            }
+        }
+        // One byte per piece.
+        let bytes: Vec<&[u8]> = msg.chunks(1).collect();
+        check(&bytes, "bytewise");
+    }
 }
