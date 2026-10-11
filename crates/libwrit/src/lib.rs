@@ -40,6 +40,8 @@ pub use model::{
 pub use tag::Tag;
 pub use time::{Floor, Time};
 pub use verify::{Denial, Holder, Policy, Proof, Reason, Rejection, Step, Verifier};
+/// Re-exported so callers can hold secrets without depending on `zeroize`.
+pub use zeroize::Zeroizing;
 
 /// `∩(a, b)` (DESIGN.md §6).
 pub fn tag_intersect(a: &Tag, b: &Tag) -> Option<Tag> {

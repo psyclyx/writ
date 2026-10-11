@@ -1,0 +1,76 @@
+//! Verifier state (`--state DIR`): the clock floor and the identity logs
+//! this verifier has accepted (DESIGN.md §4.4, §9.4).
+//!
+//! ```text
+//! DIR/floor             the clock floor, decimal seconds since the epoch
+//! DIR/logs/<id>.writ    every log event seen for an identity
+//! ```
+//!
+//! Persisted logs are added to every query's material, so a verifier never
+//! goes back to an older log head (a stale bundle can't undo a rotation),
+//! and two conflicting events, once seen, stay seen: the identity remains
+//! refused until you delete its file.
+
+use crate::error::{Context, Result, err};
+use crate::fs;
+use libwrit::{Id, Item, LogError, Material, Time};
+use std::path::PathBuf;
+
+pub struct State {
+    dir: PathBuf,
+    pub floor: Option<Time>,
+    pub logs: Vec<Item>,
+}
+
+impl State {
+    pub fn open(dir: &str) -> Result<State> {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(dir.join("logs"))
+            .context(|| format!("creating {}", dir.display()))?;
+        let floor = match std::fs::read_to_string(dir.join("floor")) {
+            Ok(text) => Some(text.trim().parse().map_err(|_| {
+                crate::error::Error::Msg(format!("{}/floor: not a number", dir.display()))
+            })?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return err(format!("{}/floor: {e}", dir.display())),
+        };
+        let mut logs = Vec::new();
+        let entries = std::fs::read_dir(dir.join("logs"))
+            .context(|| format!("reading {}/logs", dir.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "writ") {
+                logs.extend(fs::read_bundle_file(&path)?);
+            }
+        }
+        Ok(State { dir, floor, logs })
+    }
+
+    /// Persists the floor and the logs of `ids` as found in `material`.
+    pub fn save(
+        &self,
+        floor: Option<Time>,
+        material: &Material,
+        ids: impl IntoIterator<Item = Id>,
+    ) -> Result<()> {
+        if let Some(floor) = floor
+            && Some(floor) != self.floor
+        {
+            fs::replace(&self.dir.join("floor"), format!("{floor}\n").as_bytes())?;
+        }
+        for id in ids {
+            let items: Vec<Item> = match &*material.log(&id) {
+                Ok(log) => log.items().collect(),
+                Err(LogError::Equivocation(e)) => e.items(),
+                Err(_) => continue,
+            };
+            let text: String = items.iter().map(Item::armor).collect();
+            let path = self.dir.join("logs").join(format!("{id}.writ"));
+            let unchanged = std::fs::read(&path).is_ok_and(|old| old == text.as_bytes());
+            if !unchanged {
+                fs::replace(&path, text.as_bytes())?;
+            }
+        }
+        Ok(())
+    }
+}

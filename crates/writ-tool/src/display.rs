@@ -1,0 +1,388 @@
+//! Readable output: `writ show`, proofs, and denials.
+
+use libwrit::time::{Duration, Rfc3339};
+use libwrit::{
+    Authority, Body, Claim, DataSig, Denial, Event, Hash, Holder, Id, Issuer, Item, Material,
+    NamePath, OpaqueKey, Proof, PublicKey, Signed, Statement, Subject, Time,
+};
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use writ_sexp::readable::print_atom;
+
+thread_local! {
+    static LABELS: RefCell<BTreeMap<Id, String>> = const { RefCell::new(BTreeMap::new()) };
+    static FULL_IDS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Calls `id` by a local name in explanations: an identity directory's name,
+/// or what a root named it. The first label for an id wins, and a label is
+/// never given to two ids.
+pub fn label(id: Id, name: &str) {
+    let trimmed = name.trim_end_matches('/');
+    let name = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(trimmed);
+    if name.is_empty()
+        || name.starts_with('.')
+        || name.starts_with("writ1")
+        || !name.bytes().all(writ_sexp::readable::is_token_byte)
+    {
+        return;
+    }
+    LABELS.with_borrow_mut(|l| {
+        if !l.values().any(|v| v == name) {
+            l.entry(id).or_insert_with(|| name.to_owned());
+        }
+    });
+}
+
+/// Print ids in full everywhere (for `writ show`).
+pub fn full_ids() {
+    FULL_IDS.set(true);
+}
+
+/// An id for explanations: its label, or an abbreviation.
+pub fn id(id: &Id) -> String {
+    let text = id.to_string();
+    if FULL_IDS.get() {
+        return text;
+    }
+    if let Some(l) = LABELS.with_borrow(|l| l.get(id).cloned()) {
+        return l;
+    }
+    match (text.get(..13), text.get(text.len().saturating_sub(6)..)) {
+        (Some(head), Some(tail)) => format!("{head}…{tail}"),
+        _ => text,
+    }
+}
+
+/// An id with both its label and its full form.
+pub fn id_full(id: &Id) -> String {
+    match LABELS.with_borrow(|l| l.get(id).cloned()) {
+        Some(l) => format!("{l} ({id})"),
+        None => id.to_string(),
+    }
+}
+
+/// A rough duration for humans: 45s, 20m, 5h, 12d, 3y.
+pub fn approx(secs: u64) -> String {
+    match secs {
+        0..120 => format!("{secs}s"),
+        120..7200 => format!("{}m", secs / 60),
+        7200..172_800 => format!("{}h", secs / 3600),
+        172_800..34_560_000 => format!("{}d", secs / 86_400),
+        _ => format!("{}y", secs / 31_536_000),
+    }
+}
+
+/// Abbreviated hash: enough to be unique in practice, and accepted by `writ revoke`.
+pub fn short(h: &Hash) -> String {
+    h.to_hex().get(..16).unwrap_or_default().to_owned()
+}
+
+pub fn time(t: Time) -> String {
+    Rfc3339(t).to_string()
+}
+
+pub fn names(names: &[Vec<u8>]) -> String {
+    names
+        .iter()
+        .map(|n| print_atom(n))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn name_path(p: &NamePath) -> String {
+    format!("({} {})", id(&p.base), names(&p.names))
+}
+
+pub fn opaque(k: &OpaqueKey) -> String {
+    let kind = String::from_utf8_lossy(&k.kind);
+    let b64 = writ_sexp::base64::encode(&k.bytes);
+    if b64.len() > 40 {
+        let tail = b64.get(b64.len() - 12..).unwrap_or_default();
+        format!("{kind} {}…{tail}", b64.get(..20).unwrap_or_default())
+    } else {
+        format!("{kind} {b64}")
+    }
+}
+
+pub fn subject(s: &Subject) -> String {
+    match s {
+        Subject::Id(i) => id(i),
+        Subject::Leaf(k) => format!("leaf:{}", k.fingerprint()),
+        Subject::Opaque(k) => opaque(k),
+        Subject::Name(p) => name_path(p),
+    }
+}
+
+pub fn holder(h: &Holder) -> String {
+    subject(&h.to_subject())
+}
+
+pub fn issuer(i: &Issuer) -> String {
+    match i {
+        Issuer::Identity { id: i, event } => format!("{} (event {event})", id(i)),
+        Issuer::Leaf(k) => format!("leaf:{}", k.fingerprint()),
+    }
+}
+
+fn authority(a: &Authority) -> String {
+    let keys: Vec<String> = a
+        .keys()
+        .iter()
+        .map(|k| format!("slh-dsa-shake-128s {}", libwrit::Hash(k.0).to_hex()))
+        .collect();
+    format!(
+        "{} of {}:\n{}",
+        a.k(),
+        keys.len(),
+        keys.iter()
+            .map(|k| format!("               {k}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+fn row(out: &mut String, label: &str, value: impl std::fmt::Display) {
+    let _ = writeln!(out, "  {label:<12} {value}");
+}
+
+fn sig_count(n: usize) -> String {
+    if n == 1 {
+        "1 signature".into()
+    } else {
+        format!("{n} signatures")
+    }
+}
+
+/// One item, readably.
+pub fn item(item: &Item) -> String {
+    let mut out = String::new();
+    match item {
+        Item::Event(e) => event(&mut out, e),
+        Item::Statement(s) => statement(&mut out, s),
+        Item::Signature(s) => data_sig(&mut out, s),
+        Item::PublicKey(PublicKey::Root(k)) => {
+            let _ = writeln!(out, "key slh-dsa-shake-128s");
+            row(&mut out, "public", libwrit::Hash(k.0).to_hex());
+        }
+        Item::PublicKey(PublicKey::Leaf(k)) => {
+            let _ = writeln!(out, "key mldsa65-ed25519");
+            row(&mut out, "fingerprint", format!("leaf:{}", k.fingerprint()));
+        }
+        Item::Authority(a) => {
+            let _ = writeln!(out, "authority");
+            row(&mut out, "keys", authority(a));
+            row(&mut out, "hash", a.hash());
+        }
+    }
+    out
+}
+
+fn event(out: &mut String, e: &Signed<Event>) {
+    let body = &e.body;
+    match body {
+        Event::Inception(_) => {
+            let _ = writeln!(out, "inception {}", id_full(&body.id()));
+        }
+        Event::Rotation(r) => {
+            let _ = writeln!(out, "rotation {} of {}", r.n, id_full(&r.id));
+            row(out, "prev", r.prev);
+        }
+    }
+    row(out, "authority", authority(body.authority()));
+    row(out, "next", body.next());
+    if let Some(mv) = body.max_validity() {
+        row(out, "max-validity", Duration(mv));
+    }
+    if let Event::Rotation(r) = body {
+        row(
+            out,
+            "keep",
+            match r.keep.len() {
+                0 => "nothing".to_owned(),
+                1 => "1 statement".to_owned(),
+                n => format!("{n} statements"),
+            },
+        );
+        for h in &r.keep {
+            let _ = writeln!(out, "               {h}");
+        }
+    }
+    row(out, "hash", body.hash());
+    row(out, "signed", sig_count(e.sigs.len()));
+}
+
+fn statement(out: &mut String, s: &Signed<Statement>) {
+    let b = &s.body;
+    let _ = writeln!(out, "{} {}", b.kind(), b.hash());
+    row(out, "issuer", issuer(&b.issuer));
+    row(out, "issued", time(b.issued));
+    if let Some(e) = b.expires {
+        row(
+            out,
+            "expires",
+            format!("{} ({} after issue)", time(e), Duration(e - b.issued)),
+        );
+    }
+    match &b.claim {
+        Claim::Name { name, subject: s } => {
+            row(out, "name", print_atom(name));
+            row(out, "refers to", subject(s));
+        }
+        Claim::Grant {
+            subject: s,
+            tag,
+            delegate,
+        } => {
+            row(out, "subject", subject(s));
+            row(out, "tag", tag);
+            row(out, "delegate", if *delegate { "yes" } else { "no" });
+        }
+        Claim::Revoke { target } => row(out, "revokes", target),
+    }
+    if let Some(n) = &b.note {
+        row(out, "note", format!("{n:?}"));
+    }
+    row(out, "signed", sig_count(s.sigs.len()));
+}
+
+fn data_sig(out: &mut String, s: &Signed<DataSig>) {
+    let b = &s.body;
+    let _ = writeln!(out, "signature {}", b.hash());
+    row(out, "signer", issuer(&b.signer));
+    row(out, "issued", time(b.issued));
+    row(out, "context", print_atom(&b.context));
+    row(out, "data", b.data);
+    row(out, "signed", sig_count(s.sigs.len()));
+}
+
+/// The chain behind a positive answer.
+pub fn proof(p: &Proof, material: &Material, now: Time) -> String {
+    let mut out = String::new();
+    let start = if p.steps.is_empty() && !p.names.is_empty() {
+        "from"
+    } else {
+        "root"
+    };
+    let _ = writeln!(out, "  {start:<8} {}", id_full(&p.root));
+    let mut from = id(&p.root);
+    for step in &p.steps {
+        for h in &step.names {
+            if let Some(st) = material.statement(h)
+                && let Claim::Name { name, subject: s } = &st.body.claim
+            {
+                let who = issuer_short(&st.body.issuer);
+                let _ = writeln!(
+                    out,
+                    "  name     {}  {who}'s {} is {}",
+                    short(h),
+                    print_atom(name),
+                    subject(s)
+                );
+            }
+        }
+        if let Some(st) = material.statement(&step.grant)
+            && let Claim::Grant { tag, delegate, .. } = &st.body.claim
+        {
+            let _ = writeln!(
+                out,
+                "  grant    {}  {from} → {} {tag}{}",
+                short(&step.grant),
+                holder(&step.holder),
+                if *delegate { " (delegable)" } else { "" }
+            );
+        }
+        from = holder(&step.holder);
+    }
+    for h in &p.names {
+        if let Some(st) = material.statement(h)
+            && let Claim::Name { name, subject: s } = &st.body.claim
+        {
+            let who = issuer_short(&st.body.issuer);
+            let _ = writeln!(
+                out,
+                "  name     {}  {who}'s {} is {}",
+                short(h),
+                print_atom(name),
+                subject(s)
+            );
+        }
+    }
+    if p.signature.is_none() && p.steps.is_empty() && p.names.is_empty() {
+        let _ = writeln!(out, "  (the subject is a root)");
+    }
+    match p.expires {
+        Some(e) => {
+            let _ = writeln!(
+                out,
+                "  until    {} (in {})",
+                time(e),
+                approx(e.saturating_sub(now))
+            );
+        }
+        None => {
+            let _ = writeln!(out, "  until    no expiry");
+        }
+    }
+    out
+}
+
+fn issuer_short(i: &Issuer) -> String {
+    match i {
+        Issuer::Identity { id: i, .. } => id(i),
+        Issuer::Leaf(k) => format!("leaf:{}", k.fingerprint()),
+    }
+}
+
+/// Why the answer is no.
+pub fn denial(d: &Denial, material: &Material) -> String {
+    let mut out = format!("{d}\n");
+    match d {
+        Denial::NotFound { rejected } => {
+            if rejected.is_empty() {
+                out.push_str("  no statement in the material applies\n");
+            } else {
+                out.push_str("  candidates that failed:\n");
+            }
+            for r in rejected {
+                let what = material
+                    .statement(&r.statement)
+                    .map(|s| describe(&s.body))
+                    .unwrap_or_default();
+                let _ = writeln!(out, "    {} {what}: {}", short(&r.statement), r.reason);
+            }
+        }
+        Denial::Compromised(e) => {
+            let _ = writeln!(
+                out,
+                "  two different events numbered {} were signed by its next authority; \
+                 every query involving it fails until you intervene",
+                e.n()
+            );
+        }
+        Denial::Root { .. } => {
+            out.push_str("  (is the root's log in the input? `--as DIR` adds it)\n");
+        }
+        _ => {}
+    }
+    out
+}
+
+/// One-line summary of a statement.
+pub fn describe(s: &Statement) -> String {
+    match &s.claim {
+        Claim::Grant {
+            subject: sj, tag, ..
+        } => {
+            format!("grant {tag} to {}", subject(sj))
+        }
+        Claim::Name { name, subject: sj } => {
+            format!("name {} → {}", print_atom(name), subject(sj))
+        }
+        Claim::Revoke { target } => format!("revoke {}", short(target)),
+    }
+}

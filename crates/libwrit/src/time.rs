@@ -193,7 +193,6 @@ impl fmt::Display for Duration {
         let mut rest = self.0;
         for (unit, secs) in [
             ("y", 365 * 86_400),
-            ("w", 7 * 86_400),
             ("d", 86_400),
             ("h", 3600),
             ("m", 60),

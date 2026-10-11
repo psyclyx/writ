@@ -1,0 +1,188 @@
+//! An identity directory: public state plus (usually) the warm key.
+//!
+//! ```text
+//! DIR/log.writ       the identity log (inception, rotations)
+//! DIR/issued.writ    everything this identity issued: statements, revocations, signatures
+//! DIR/next.writ      the authority the log commits to for the next rotation (public)
+//! DIR/current.key    the warm secret key (mode 0600), unless kept elsewhere
+//! ```
+
+use crate::error::{Context, Error, Result, err};
+use crate::fs;
+use libwrit::keys::RootSigner;
+use libwrit::{Authority, Event, Id, Item, Log, Material};
+use std::path::{Path, PathBuf};
+
+pub const LOG: &str = "log.writ";
+pub const ISSUED: &str = "issued.writ";
+pub const NEXT: &str = "next.writ";
+pub const CURRENT_KEY: &str = "current.key";
+
+pub struct IdentityDir {
+    pub dir: PathBuf,
+    pub log: Log,
+    pub issued: Vec<Item>,
+}
+
+/// Whether `path` is an identity directory.
+pub fn is_identity_dir(path: &Path) -> bool {
+    path.join(LOG).is_file()
+}
+
+impl IdentityDir {
+    pub fn open(dir: &str) -> Result<IdentityDir> {
+        let path = PathBuf::from(dir);
+        if !is_identity_dir(&path) {
+            return err(format!(
+                "{dir} is not a writ identity (no {LOG}; create one with `writ init {dir}`)"
+            ));
+        }
+        let events = fs::read_bundle_file(&path.join(LOG))?;
+        let mut material = Material::new();
+        let mut inception = None;
+        for item in events {
+            match &item {
+                Item::Event(e) if matches!(e.body, Event::Inception(_)) => {
+                    inception = Some(e.body.id());
+                }
+                Item::Event(_) => {}
+                _ => return err(format!("{dir}/{LOG}: contains a {}", item.kind())),
+            }
+            material.add(item);
+        }
+        let id = inception.ok_or_else(|| Error::Msg(format!("{dir}/{LOG}: no inception")))?;
+        let log = match &*material.log(&id) {
+            Ok(log) => log.clone(),
+            Err(e) => return err(format!("{dir}/{LOG}: {e}")),
+        };
+        let issued = fs::read_bundle_file(&path.join(ISSUED))?;
+        crate::display::label(id, dir);
+        Ok(IdentityDir {
+            dir: path,
+            log,
+            issued,
+        })
+    }
+
+    pub fn id(&self) -> Id {
+        self.log.id()
+    }
+
+    pub fn name(&self) -> String {
+        self.dir.display().to_string()
+    }
+
+    /// The log and everything issued, as material.
+    pub fn material(&self) -> Material {
+        Material::from_items(self.log.items().chain(self.issued.iter().cloned()))
+    }
+
+    /// Signers for the current authority, from `--key` paths or
+    /// `DIR/current.key`.
+    pub fn signers(&self, key_paths: &[String]) -> Result<Vec<RootSigner>> {
+        let default = self.dir.join(CURRENT_KEY);
+        let paths: Vec<String> = if key_paths.is_empty() {
+            if !default.exists() {
+                return err(format!(
+                    "no key: {} doesn't exist; pass --key PATH",
+                    default.display()
+                ));
+            }
+            vec![default.display().to_string()]
+        } else {
+            key_paths.to_vec()
+        };
+        let authority = self.log.head().authority();
+        let mut signers = Vec::new();
+        let mut strangers = Vec::new();
+        for path in &paths {
+            for seed in fs::read_seeds(path)? {
+                let signer = seed.root();
+                if authority.index_of(&signer.root_key()).is_some() {
+                    if !signers
+                        .iter()
+                        .any(|s: &RootSigner| s.root_key() == signer.root_key())
+                    {
+                        signers.push(signer);
+                    }
+                } else {
+                    strangers.push((path.clone(), signer.root_key()));
+                }
+            }
+        }
+        if signers.is_empty() {
+            let (path, key) = strangers
+                .first()
+                .cloned()
+                .unwrap_or_else(|| (paths.join(", "), libwrit::RootKey([0; 32])));
+            let retired = (0..self.log.head_n()).find(|n| {
+                self.log
+                    .event(*n)
+                    .is_some_and(|e| e.authority().index_of(&key).is_some())
+            });
+            return match retired {
+                Some(n) => err(format!(
+                    "the key in {path} was retired: it signed for event {n}, and the log is at event {} \
+                     (after a rotation, the key you revealed with --next-key is the current key)",
+                    self.log.head_n()
+                )),
+                None => err(format!(
+                    "the key in {path} is not in the current authority of {}",
+                    self.name()
+                )),
+            };
+        }
+        let k = authority.k();
+        if signers.len() < k {
+            return err(format!(
+                "{} needs {k} of its {} keys to sign; got {}",
+                self.name(),
+                authority.keys().len(),
+                signers.len()
+            ));
+        }
+        Ok(signers)
+    }
+
+    /// The pending next authority, checked against the log's commitment.
+    pub fn next_authority(&self) -> Result<Authority> {
+        let path = self.dir.join(NEXT);
+        let items = fs::read_bundle_file(&path)?;
+        match items.as_slice() {
+            [Item::Authority(a)] if a.hash() == *self.log.head().next() => Ok(a.clone()),
+            [Item::Authority(_)] => err(format!(
+                "{}: does not match the log's commitment (was it replaced?)",
+                path.display()
+            )),
+            [] => err(format!(
+                "{} is missing: it records the next authority's public keys",
+                path.display()
+            )),
+            _ => err(format!("{}: expected one authority", path.display())),
+        }
+    }
+
+    /// Appends items to the issuance log.
+    pub fn record(&mut self, items: &[Item]) -> Result<()> {
+        fs::append_items(&self.dir.join(ISSUED), items)?;
+        self.issued.extend(items.iter().cloned());
+        Ok(())
+    }
+}
+
+/// Creates the directory for a new identity: must not exist or be empty.
+pub fn create_dir(dir: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(dir);
+    match std::fs::read_dir(&path) {
+        Ok(mut entries) => {
+            if entries.next().is_some() {
+                return err(format!("{dir} already exists and is not empty"));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&path).context(|| format!("creating {dir}"))?;
+        }
+        Err(e) => return err(format!("{dir}: {e}")),
+    }
+    Ok(path)
+}

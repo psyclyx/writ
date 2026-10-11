@@ -120,6 +120,16 @@ pub enum Reason {
     MaxValidity(u64),
     /// A leaf grant longer than the policy's leaf ceiling.
     LeafCeiling(u64),
+    /// Valid and reaches the subject, but conveys only this tag (narrower
+    /// than asked).
+    Covers(Tag),
+    /// Valid and reaches the subject, but grants a tag outside what its issuer holds.
+    OutsideIssuer {
+        /// What the statement grants.
+        granted: Tag,
+        /// What its issuer holds on this chain.
+        held: Tag,
+    },
 }
 
 impl fmt::Display for Reason {
@@ -153,6 +163,11 @@ impl fmt::Display for Reason {
             Reason::LeafCeiling(c) => {
                 write!(f, "leaf grant longer than the ceiling of {}", Duration(*c))
             }
+            Reason::Covers(t) => write!(f, "only conveys {t} here"),
+            Reason::OutsideIssuer { granted, held } => write!(
+                f,
+                "grants {granted}, outside the {held} its issuer holds on this chain"
+            ),
         }
     }
 }
@@ -710,6 +725,45 @@ impl<'v, 'a> Query<'v, 'a> {
 
     // -- grants -------------------------------------------------------------
 
+    /// After a failed search, explains near misses: valid grants, from
+    /// principals the search reached, that reach `want` but convey less than
+    /// `tag`. Runs only on denial, so the success path stays structural-first.
+    fn near_misses(&mut self, reached: &[(Principal, Tag)], want: &Holder, tag: &Tag) {
+        let max_depth = self.v.policy.max_name_depth;
+        for (principal, held) in reached {
+            let mut grants = self.v.material.grants_by(principal).to_vec();
+            grants.sort();
+            for h in grants {
+                if self.budget().is_err() || self.rejected.len() >= MAX_REJECTIONS {
+                    return;
+                }
+                let Some(Claim::Grant {
+                    subject, tag: gtag, ..
+                }) = self.v.material.statement(&h).map(|s| s.body.claim.clone())
+                else {
+                    continue;
+                };
+                let eff = held.intersect(&gtag);
+                if eff.as_ref().is_some_and(|e| tag.is_within(e)) {
+                    continue;
+                }
+                let reaches = self
+                    .denote(&subject, max_depth)
+                    .is_ok_and(|m| m.contains_key(want));
+                if reaches && self.status(&h).is_ok() {
+                    let reason = match eff {
+                        Some(e) => Reason::Covers(e),
+                        None => Reason::OutsideIssuer {
+                            granted: gtag,
+                            held: held.clone(),
+                        },
+                    };
+                    self.reject(h, reason);
+                }
+            }
+        }
+    }
+
     fn check(&mut self, subject: &Holder, tag: &Tag) -> Result<Proof, Denial> {
         if let Holder::Id(id) = subject
             && let Err(LogError::Equivocation(e)) = &*self.v.material.log(id)
@@ -847,6 +901,11 @@ impl<'v, 'a> Query<'v, 'a> {
             {
                 return Err(Denial::Root { id, error });
             }
+            let reached: Vec<(Principal, Tag)> = nodes
+                .iter()
+                .map(|n| (n.principal.clone(), n.tag.clone()))
+                .collect();
+            self.near_misses(&reached, &want, tag);
             return Err(Denial::NotFound {
                 rejected: std::mem::take(&mut self.rejected),
             });
