@@ -1,0 +1,102 @@
+# Every item in chains/world.writ, in order: kind, body hash (or id for
+# inceptions), and the canonical encoding's length. SPEC.md §6.
+
+kind = inception
+hash = 657ee9cc86ef93348526f642956997a4866760b8c15a8fa3723bb3c51f036e3b
+id = writ1vgnuqqchjwxkacx72fcpgdjqa3dx2ravcctcvj57ve6vawz83rtq4qek2d
+encoded-length = 8012
+
+kind = rotation
+hash = 55d4bea45c045c3f55ad2c1b853b3f6c67efa3898b3211c1b7c7a7dc6a3e9a11
+id = writ1vgnuqqchjwxkacx72fcpgdjqa3dx2ravcctcvj57ve6vawz83rtq4qek2d
+encoded-length = 8146
+
+kind = inception
+hash = e077180b06cbcb820f10fc69898c0c91a83a54603a7467d9cf784479f4bc0181
+id = writ14582h7degkx92zscc72rxyf099slx4kckcgmzxxyj48cknyqxaps9l8xd4
+encoded-length = 8012
+
+kind = inception
+hash = b22921f00864c86dbf87fabc4eebb2869eed57a39999e62bb178d3d99555a043
+id = writ1ekhjd9u8mz2ppthf648duwpthqazf4aj6gc80upgvadztmha7zmqwy8uc7
+encoded-length = 8012
+
+kind = rotation
+hash = 4c50e0f011fa7e9a6d72ae85d08e2b8af3a7b0959a80ead854041af8dacd56e8
+id = writ1ekhjd9u8mz2ppthf648duwpthqazf4aj6gc80upgvadztmha7zmqwy8uc7
+encoded-length = 8111
+
+kind = rotation
+hash = 6ae5558f8be77a5383fb2bcf57e80926af052927cedf1ca1714a2ed06f89ed23
+id = writ1ekhjd9u8mz2ppthf648duwpthqazf4aj6gc80upgvadztmha7zmqwy8uc7
+encoded-length = 8146
+
+kind = inception
+hash = deb44d1cd3cbb1ef0a5be3176a8a891842be7655c04939f5e7808839a2b59235
+id = writ1a26fztryycef78vys5l2w3qm04l0gsrj7jwzpu6dt2wwptt023vsla3xne
+encoded-length = 8012
+
+kind = name
+hash = c34564b644dd299db774cf83d34fb7eed66596480b5a0852786eb30cfebf66ae
+label = me-names-alice
+encoded-length = 8009
+
+kind = grant
+hash = 44253c722978cae893f975358ecb9773923d3719d7dbd02c1d92546201d674ad
+label = me-grants-alice-ssh
+encoded-length = 8036
+
+kind = grant
+hash = 47ace2034829d117da67b9bc998a3cf4173be74e88aa833d2bd55ab436071cd7
+label = alice-grants-bob-ssh-nas
+encoded-length = 8020
+
+kind = grant
+hash = 0fec2a43ed9496fa8689d12d81e8d96c99145c443e5cc5480d4eae147260a7fb
+label = alice-grants-bob-old
+encoded-length = 8020
+
+kind = grant
+hash = 3e6d94cde408af8bd7443f2a8e1679bb2a47e4498a467aad1efa70ce4096afa0
+label = me-grants-bob-web
+encoded-length = 8039
+
+kind = grant
+hash = cabb99ad5b4f3b6fd86dbdade3c26ff3d4a2506ed728a98b2d6e56d06e58c8cf
+label = me-grants-bob-mail
+encoded-length = 8016
+
+kind = revoke
+hash = e73527d27971452e1557b0ed3a29e3f32bc2290d2ed391dcb7e3bd0291ab8bb8
+label = me-revokes-mail
+encoded-length = 8008
+
+kind = grant
+hash = 282697f50087716327a2b11abc43f79062ed710efd85105a333e86c3292dcdde
+label = me-grants-bob-future
+encoded-length = 8018
+
+kind = grant
+hash = b74db122b2327e722824bd6b22fc5c43d18c4f3c56ba8521a851223b385d34a6
+label = me-grants-leaf
+encoded-length = 10022
+
+kind = grant
+hash = 9e1154454d8e902b85745ba519c295879291001b4627310e97035a6a91d1d7a6
+label = leaf-grants-app
+encoded-length = 5562
+
+kind = grant
+hash = 8864f3034006b63d7949441b9550268c78a366011e54dcbcadc622f3da31dfa0
+label = me-grants-quinn
+encoded-length = 8022
+
+kind = grant
+hash = a92fe3af7967c118a626c98c1f785865f73db7fb202d483cc865aa01fe472228
+label = quinn-grants-bob
+encoded-length = 8013
+
+kind = grant
+hash = 6271cabfcce014d14fc07e2f2b06d27e55e9b44d58a8ebfbef00471d1d5e6786
+label = alice-grants-bob-ftp
+encoded-length = 8020

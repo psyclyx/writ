@@ -132,7 +132,7 @@ fn overview() -> String {
          writ init me --next-out - | age -p > me-next.key.age\n  \
          writ name  -i me alice writ1…\n  \
          writ grant -i me 'me alice' '(ssh nas)' >> bundle.writ\n  \
-         writ check --as me alice.pub '(ssh nas)' < bundle.writ\n",
+         writ check --as me alice '(ssh nas)' < bundle.writ\n",
     );
     s
 }

@@ -33,3 +33,26 @@ WOTS+ chains in the 7 hypertree layers. writ-slhdsa computes each XMSS
 tree's root and authentication path in one pass and streams `T_l` inputs
 into the XOF; it does not use SIMD (4-way AVX2 Keccak would be the next
 step if signing speed ever matters).
+
+## libwrit: leaf suite and verification
+
+Measured 2026-10-11 on the same machine and toolchain as above, with
+`cargo run --release -p libwrit --example bench`
+(`crates/libwrit/examples/bench.rs`): one warm-up, then the median of 11–1001
+runs depending on cost. Stable to within a few percent across runs.
+
+| operation                                                            |   median |
+| -------------------------------------------------------------------- | -------: |
+| root key derivation (seed → SLH-DSA keys)                            |  79.4 ms |
+| leaf key derivation (seed → ML-DSA-65 + Ed25519)                     |  65.7 µs |
+| leaf sign (composite, with self-check)                               | 280.7 µs |
+| leaf verify (both components, strict Ed25519)                        |  99.5 µs |
+| check, 3-grant chain, cold (decode bundle, verify 3 logs + 3 grants) |  3.52 ms |
+| check, same chain, signatures cached                                 |  48.6 µs |
+
+**Notes.** A cold check is dominated by six SLH-DSA verifications (~0.56 ms
+each). After that, `Material` caches signature results by (body, signer,
+signature bytes), and a check costs a lookup and a short search, as DESIGN §7
+intends. Leaf signing derives the ML-DSA key from the seed on every call (so
+only the seed is held in memory) and verifies its own output; together these
+make up more than half of its cost.

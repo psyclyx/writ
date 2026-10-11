@@ -1,0 +1,139 @@
+# Chain verification cases against chains/world.writ (SPEC.md §9–§11).
+# Root: the identity labelled me. Policy: defaults (skew 300 s).
+# Statements are named by their label in chains/items.txt.
+# allowed: the chain, in order (names before the grant they serve).
+# denied: why, and each rejected candidate with its reason.
+
+root = writ14582h7degkx92zscc72rxyf099slx4kckcgmzxxyj48cknyqxaps9l8xd4
+subject alice = (id #6227c00317938d6ee0de5270143640ec5a650facc617864a9e6674ceb84788d6#)
+subject app = (key ssh-ed25519 ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ)
+subject bob = (id #eab4912c6426329f1d84853ea7441b7d7ef44072f49c20f34d5a9ce0ad6f5459#)
+subject leaf = (mldsa65-ed25519 |+m2FpQv8YZalCalpQrwoEIduuASKrQKv+nvGeJyouCmr7/nAr3yqwywPFd+en0fu520RbvIsLYJOxetrbM…
+subject me = (id #ad0eabf9b9458c550a18c79433112f2961f356d8b611b118c4954f8b4c803743#)
+subject quinn = (id #cdaf269787d89410aee9d54ede382bb83a24d7b2d23077f028675a25eefdf0b6#)
+
+case = root holds everything
+subject = me
+tag = ()
+now = 1800000100
+result = allowed
+chain = -
+effective-tag = ()
+expires = never
+
+case = through a name, then delegation
+subject = bob
+tag = (ssh nas disk)
+now = 1800000100
+result = allowed
+chain = me-names-alice me-grants-alice-ssh alice-grants-bob-ssh-nas
+effective-tag = (ssh nas)
+expires = never
+
+case = narrower than asked
+subject = bob
+tag = (ssh)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers
+
+case = before expiry
+subject = bob
+tag = (web)
+now = 1800000099
+result = allowed
+chain = me-grants-bob-web
+effective-tag = (web)
+expires = 1800000100
+
+case = at expiry
+subject = bob
+tag = (web)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-web:expired
+
+case = revoked
+subject = bob
+tag = (mail)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-mail:revoked
+
+case = issued in the future
+subject = bob
+tag = (future)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-future:not-yet-valid
+
+case = issued in the future, within skew
+subject = bob
+tag = (future)
+now = 1800009700
+result = allowed
+chain = me-grants-bob-future
+effective-tag = (future)
+expires = never
+
+case = leaf, then opaque key
+subject = app
+tag = (svc read x)
+now = 1800000100
+result = allowed
+chain = me-grants-leaf leaf-grants-app
+effective-tag = (svc read)
+expires = 1800003600
+
+case = leaf grant expired
+subject = app
+tag = (svc read)
+now = 1800003600
+result = denied
+reason = not-found
+rejected = me-grants-leaf:expired
+
+case = issued after rotation
+subject = bob
+tag = (ssh ftp)
+now = 1800000100
+result = allowed
+chain = me-names-alice me-grants-alice-ssh alice-grants-bob-ftp
+effective-tag = (ssh ftp)
+expires = never
+
+case = not kept by rotation
+subject = bob
+tag = (ssh old)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-old:not-kept alice-grants-bob-ssh-nas:covers
+
+case = through an equivocating identity
+subject = bob
+tag = (q)
+now = 1800000100
+result = denied
+reason = compromised
+event = 1
+
+case = about an equivocating identity
+subject = quinn
+tag = ()
+now = 1800000100
+result = denied
+reason = compromised
+event = 1
+
+case = nothing at all
+subject = alice
+tag = (nope)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = me-grants-alice-ssh:covers

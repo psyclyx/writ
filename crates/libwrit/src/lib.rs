@@ -20,6 +20,8 @@ pub mod time;
 mod verify;
 
 #[cfg(test)]
+mod fuzz;
+#[cfg(test)]
 mod reference;
 #[cfg(test)]
 mod scenarios;

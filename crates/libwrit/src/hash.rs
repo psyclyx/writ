@@ -20,6 +20,8 @@ pub mod label {
     pub const SIGNATURE: &str = "writ/v1/sig";
     /// Hash of signed data.
     pub const DATA: &str = "writ/v1/data";
+    /// Short display fingerprints of leaf keys.
+    pub const FINGERPRINT: &str = "writ/v1/fingerprint";
     /// Root-suite signing: SLH-DSA context string.
     pub const ROOT_SUITE: &str = "writ/v1/root/slh-dsa-shake-128s";
     /// Leaf-suite signing: prefix of the composite message and ML-DSA context.
@@ -160,6 +162,7 @@ mod tests {
             label::STATEMENT,
             label::SIGNATURE,
             label::DATA,
+            label::FINGERPRINT,
             label::ROOT_SUITE,
             label::LEAF_SUITE,
             label::KEYGEN_ROOT,

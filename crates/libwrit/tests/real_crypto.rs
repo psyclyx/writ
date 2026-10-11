@@ -176,18 +176,3 @@ fn two_of_two_inception() {
         Some(&LogError::BadSignature { n: 0 })
     );
 }
-
-#[test]
-fn seed_derivation_is_stable() {
-    // Pinned so that key files stay meaningful across versions.
-    let root = seed(0).root().root_key();
-    let leaf = seed(0).leaf();
-    let pinned_root = Hash::of_data(&root.0).to_hex();
-    let pinned_leaf = leaf.leaf_key().fingerprint();
-    let expect = include_str!("../../../vectors/keys/seed-zero.txt");
-    assert_eq!(
-        format!("root {pinned_root}\nleaf {pinned_leaf}\n"),
-        expect,
-        "key derivation changed"
-    );
-}

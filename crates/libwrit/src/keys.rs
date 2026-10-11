@@ -107,11 +107,9 @@ impl LeafKey {
     }
 
     /// A short fingerprint for display: the first 8 bytes of
-    /// `SHA3-256("writ/v1/data" ‖ 0x00 ‖ ML-DSA key ‖ Ed25519 key)` in hex.
+    /// `SHA3-256("writ/v1/fingerprint" ‖ 0x00 ‖ canonical(key))` in hex.
     pub fn fingerprint(&self) -> String {
-        let mut bytes = self.mldsa.to_vec();
-        bytes.extend_from_slice(&self.ed25519);
-        let h = crate::Hash::of_data(&bytes);
+        let h = crate::Hash::labelled(label::FINGERPRINT, &self.to_sexp().encode());
         crate::hash::hex(h.0.get(..8).unwrap_or_default())
     }
 }
