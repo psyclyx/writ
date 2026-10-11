@@ -1,0 +1,9 @@
+# direnv
+.direnv/
+
+# Nix build symlinks
+result
+result-*
+
+# cargo
+/target/

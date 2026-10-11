@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+treefmt --fail-on-change
+cargo clippy --workspace --all-targets --quiet -- -D warnings

@@ -1,0 +1,17 @@
+[package]
+name = "writ-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "writ"
+path = "src/main.rs"
+
+[dependencies]
+libwrit.workspace = true
+writ-sexp.workspace = true
+
+[lints]
+workspace = true

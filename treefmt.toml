@@ -1,0 +1,19 @@
+[formatter.rust]
+command = "rustfmt"
+options = ["--edition", "2024"]
+includes = ["*.rs"]
+
+[formatter.nix]
+command = "nixfmt"
+includes = ["*.nix"]
+excludes = ["npins/*"]
+
+[formatter.markdown]
+command = "prettier"
+options = ["--write", "--prose-wrap", "preserve"]
+includes = ["*.md"]
+
+[formatter.toml]
+command = "taplo"
+options = ["format"]
+includes = ["*.toml"]

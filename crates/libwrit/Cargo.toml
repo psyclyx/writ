@@ -1,0 +1,13 @@
+[package]
+name = "libwrit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+writ-sexp.workspace = true
+writ-slhdsa.workspace = true
