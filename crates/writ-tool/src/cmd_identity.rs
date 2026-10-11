@@ -475,14 +475,14 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     .map_err(|e| Error::Msg(e.to_string()))?;
     let n = event.body.n();
 
-    // The new next keys must be safe before the log commits to them.
+    // Order matters for crash safety: the new next keys and the new next
+    // authority must be on disk before the log commits to them. next.writ is
+    // append-only, so a crash before the log write leaves the old commitment
+    // satisfiable.
     if !next_seeds.is_empty() {
         fs::write_secret(next_out, &fs::seeds_text(&next_seeds))?;
     }
-    fs::replace(
-        &ident.dir.join(NEXT),
-        Item::Authority(next.clone()).armor().as_bytes(),
-    )?;
+    fs::append_items(&ident.dir.join(NEXT), &[Item::Authority(next.clone())])?;
     fs::append_items(&ident.dir.join(LOG), &[Item::Event(event)])?;
     drop(lock);
 

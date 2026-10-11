@@ -3,7 +3,7 @@
 //! ```text
 //! DIR/log.writ       the identity log (inception, rotations)
 //! DIR/issued.writ    everything this identity issued: statements, revocations, signatures
-//! DIR/next.writ      the authority the log commits to for the next rotation (public)
+//! DIR/next.writ      every next authority the log has committed to (public, append-only)
 //! DIR/current.key    the warm secret key (mode 0600), unless kept elsewhere
 //! ```
 
@@ -148,18 +148,27 @@ impl IdentityDir {
     pub fn next_authority(&self) -> Result<Authority> {
         let path = self.dir.join(NEXT);
         let items = fs::read_bundle_file(&path)?;
-        match items.as_slice() {
-            [Item::Authority(a)] if a.hash() == *self.log.head().next() => Ok(a.clone()),
-            [Item::Authority(_)] => err(format!(
-                "{}: does not match the log's commitment (was it replaced?)",
-                path.display()
-            )),
-            [] => err(format!(
+        if items.is_empty() {
+            return err(format!(
                 "{} is missing: it records the next authority's public keys",
                 path.display()
-            )),
-            _ => err(format!("{}: expected one authority", path.display())),
+            ));
         }
+        // Append-only: every authority this identity ever committed to. The
+        // pending one is whichever the log's head commits to.
+        let committed = *self.log.head().next();
+        items
+            .into_iter()
+            .find_map(|i| match i {
+                Item::Authority(a) if a.hash() == committed => Some(a),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                Error::Msg(format!(
+                    "{}: no authority matches the log's commitment",
+                    path.display()
+                ))
+            })
     }
 
     /// Appends items to the issuance log.

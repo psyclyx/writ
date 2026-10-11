@@ -380,7 +380,7 @@ The `writ` tool keeps an identity in a directory:
 ```
 DIR/log.writ       the identity log, armored events
 DIR/issued.writ    everything the identity issued: statements and data signatures
-DIR/next.writ      the pending next authority (an authority item; public)
+DIR/next.writ      every next authority committed to (authority items; public, append-only)
 DIR/current.key    the current secret key(s), mode 0600, unless kept elsewhere
 ```
 

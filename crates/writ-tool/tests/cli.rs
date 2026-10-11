@@ -805,3 +805,35 @@ fn usage_and_help() {
     let err = s.fails(&["show", "junk"], 2);
     assert!(err.contains("junk"), "{err}");
 }
+
+#[test]
+fn rotation_survives_a_crash_before_the_log_write() {
+    let s = Sandbox::new("crash");
+    s.init("me");
+    let log_before = std::fs::read(s.path("me/log.writ")).unwrap();
+    s.ok(&[
+        "rotate",
+        "-i",
+        "me",
+        "--next-key",
+        "me-next.key",
+        "--next-out",
+        "n1.key",
+        "-q",
+    ]);
+    // As if writ died after recording the new next authority and key, but
+    // before appending the rotation to the log.
+    std::fs::write(s.path("me/log.writ"), log_before).unwrap();
+    let (code, _, err) = s.run(&[
+        "rotate",
+        "-i",
+        "me",
+        "--next-key",
+        "me-next.key",
+        "--next-out",
+        "n2.key",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let shown = s.ok(&["show", "me/next.writ"]);
+    assert_eq!(shown.matches("authority").count(), 3, "{shown}");
+}
