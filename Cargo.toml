@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -12,6 +12,20 @@ license = "MIT OR Apache-2.0"
 writ-sexp = { path = "crates/writ-sexp" }
 writ-slhdsa = { path = "crates/writ-slhdsa" }
 libwrit = { path = "crates/libwrit" }
+
+# Imported cryptography: pinned exactly (DESIGN.md §3.3).
+libcrux-sha3 = { version = "=0.0.11", default-features = false }
+libcrux-ml-dsa = { version = "=0.0.11", default-features = false, features = [
+  "mldsa65",
+] }
+libcrux-ed25519 = { version = "=0.0.10", default-features = false }
+
+getrandom = "0.4"
+zeroize = "1.8"
+
+# dev-only
+slh-dsa = "=0.2.0-rc.5"
+proptest = "1.12"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -22,3 +36,19 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 indexing_slicing = "warn"
+
+# SLH-DSA and ML-DSA are unusably slow unoptimised; keep tests fast.
+[profile.dev.package.writ-slhdsa]
+opt-level = 3
+[profile.dev.package.libcrux-sha3]
+opt-level = 3
+[profile.dev.package.libcrux-ml-dsa]
+opt-level = 3
+[profile.dev.package.libcrux-ed25519]
+opt-level = 3
+[profile.dev.package.slh-dsa]
+opt-level = 3
+[profile.dev.package.sha3]
+opt-level = 3
+[profile.dev.package.keccak]
+opt-level = 3
