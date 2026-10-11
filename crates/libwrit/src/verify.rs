@@ -284,11 +284,11 @@ impl Proof {
         }
         for h in self.statements() {
             if let Some(st) = material.statement(&h) {
-                items.push(Item::Statement(canonical_sigs(st)));
+                items.push(Item::Statement(shippable(st, &st.body.issuer, material)));
             }
         }
         if let Some(st) = self.signature.and_then(|h| material.signature(&h)) {
-            items.push(Item::Signature(canonical_sigs(st)));
+            items.push(Item::Signature(shippable(st, &st.body.signer, material)));
         }
         items
     }
@@ -301,14 +301,32 @@ impl Proof {
     }
 }
 
-/// One signature per index, so the item encodes canonically.
-fn canonical_sigs<T: Body + Clone>(s: &Signed<T>) -> Signed<T> {
-    let mut sigs: Vec<Sig> = Vec::new();
-    for sig in &s.sigs {
-        if sigs.last().is_none_or(|l| l.index < sig.index) {
-            sigs.push(sig.clone());
+/// A copy fit to ship: only signatures that verify, one per index, so the
+/// item encodes canonically and junk merged alongside never travels. Falls
+/// back to the first signature per index if none verify (a kept statement
+/// whose issuing event this material can't reach).
+fn shippable<T: Body + Clone>(s: &Signed<T>, issuer: &Issuer, material: &Material) -> Signed<T> {
+    let verified = match issuer {
+        Issuer::Identity { id, event } => match &*material.log(id) {
+            Ok(log) => log
+                .event(*event)
+                .map(|ev| s.valid_sigs(ev.authority()))
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
+        Issuer::Leaf(k) => s.valid_leaf_sigs(k),
+    };
+    let sigs = if verified.is_empty() {
+        let mut first: Vec<Sig> = Vec::new();
+        for sig in &s.sigs {
+            if first.last().is_none_or(|l| l.index < sig.index) {
+                first.push(sig.clone());
+            }
         }
-    }
+        first
+    } else {
+        verified
+    };
     Signed {
         body: s.body.clone(),
         sigs,
@@ -323,6 +341,8 @@ pub struct Verifier<'a> {
 }
 
 const MAX_REJECTIONS: usize = 32;
+/// Name-resolution work allowed per statement of budget.
+const NAME_STEPS_PER_STATEMENT: usize = 100;
 
 impl<'a> Verifier<'a> {
     /// A verifier for `roots`.
@@ -465,6 +485,7 @@ struct Query<'v, 'a> {
     now: Time,
     status: HashMap<Hash, Result<(), Reason>>,
     names: HashMap<(Id, Vec<u8>, usize), Rc<Members>>,
+    steps: usize,
     rejected: Vec<Rejection>,
     evidence: Option<Box<Evidence>>,
 }
@@ -479,6 +500,7 @@ impl<'v, 'a> Query<'v, 'a> {
             now,
             status: HashMap::new(),
             names: HashMap::new(),
+            steps: 0,
             rejected: Vec::new(),
             evidence: None,
         }
@@ -650,29 +672,30 @@ impl<'v, 'a> Query<'v, 'a> {
         names: &[Vec<u8>],
         depth: usize,
     ) -> Result<Members, Denial> {
-        let Some((first, rest)) = names.split_first() else {
-            return Ok(BTreeMap::from([(Holder::Id(*base), Vec::new())]));
-        };
-        let heads = self.pair(base, first, depth)?;
-        let mut out = Members::new();
-        for (holder, derivation) in heads.iter() {
-            if rest.is_empty() {
-                out.entry(holder.clone())
-                    .or_insert_with(|| derivation.clone());
-                continue;
+        // Level by level over a de-duplicated set of holders, so a path's
+        // cost is (levels × holders), never (holders ^ levels).
+        let mut current = Members::from([(Holder::Id(*base), Vec::new())]);
+        for name in names {
+            let mut next = Members::new();
+            for (holder, derivation) in &current {
+                let Holder::Id(id) = holder else {
+                    continue;
+                };
+                for (m, d) in self.pair(id, name, depth)?.iter() {
+                    self.steps += 1;
+                    if self.steps > NAME_STEPS_PER_STATEMENT * self.v.policy.max_statements {
+                        return Err(Denial::Limit("name resolution steps"));
+                    }
+                    next.entry(m.clone()).or_insert_with(|| {
+                        let mut all = derivation.clone();
+                        all.extend(d.iter().copied());
+                        all
+                    });
+                }
             }
-            let Holder::Id(next) = holder else {
-                continue;
-            };
-            for (m, d) in self.resolve_path(next, rest, depth)? {
-                out.entry(m).or_insert_with(|| {
-                    let mut all = derivation.clone();
-                    all.extend(d);
-                    all
-                });
-            }
+            current = next;
         }
-        Ok(out)
+        Ok(current)
     }
 
     /// Members of the single name `(issuer name)` with derivations of depth

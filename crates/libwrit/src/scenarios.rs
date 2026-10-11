@@ -981,3 +981,74 @@ fn encoding_rejects_non_canonical() {
     bytes.push(b'x');
     assert!(Item::decode(&bytes).is_err());
 }
+
+/// k identities each naming all k as `a`; a 16-step path through them used
+/// to cost k^16 resolutions.
+#[test]
+fn name_resolution_is_polynomial() {
+    let root = Ident::new(1);
+    let crowd: Vec<Ident> = (10..18).map(Ident::new).collect();
+    let mut items: Vec<Item> = Vec::new();
+    for x in &crowd {
+        items.extend(x.items());
+        for y in &crowd {
+            items.push(st(x.say(name("a", Subject::Id(y.id)), 10, None)));
+        }
+    }
+    let long = vec!["a"; 16];
+    items.push(st(root.say(
+        grant(path(crowd[0].id, &long), "()", false),
+        10,
+        None,
+    )));
+    let w = World::new(&root, items);
+    let start = std::time::Instant::now();
+    let r = w.check(Holder::Id(crowd[3].id), "()", 50);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(r.is_ok(), "{r:?}");
+}
+
+/// A copy of an item with a junk signature merged in must not make anything
+/// derived from the material non-canonical (or carry the junk).
+#[test]
+fn junk_signatures_never_travel() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    let g = a.say(grant(Subject::Id(b.id), "(x)", false), 10, None);
+    let junk = |s: &Sig| Sig {
+        index: s.index,
+        bytes: vec![0xa5; s.bytes.len()],
+    };
+    let mut bad_inception = a.events[0].clone();
+    bad_inception.sigs = vec![junk(&a.events[0].sigs[0])];
+    let mut bad_grant = g.clone();
+    bad_grant.sigs = vec![junk(&g.sigs[0])];
+    // Junk first, then the real thing.
+    let m = Material::from_items([
+        Item::Event(bad_inception),
+        Item::Statement(bad_grant),
+        Item::Event(a.events[0].clone()),
+        Item::Statement(g.clone()),
+    ]);
+    let roots = [a.id];
+    let policy = Policy::default();
+    let proof = Verifier::new(&roots, &m, &policy)
+        .check(&Holder::Id(b.id), &tag("(x)"), 50)
+        .unwrap();
+    for item in proof.items(&m) {
+        let bytes = item.encode();
+        assert_eq!(Item::decode(&bytes).as_ref(), Ok(&item));
+        match &item {
+            Item::Event(e) => assert_eq!(e.sigs, a.events[0].sigs),
+            Item::Statement(s) => assert_eq!(s.sigs, g.sigs),
+            _ => {}
+        }
+    }
+    let log = m.log(&a.id);
+    let log = log.as_ref().as_ref().unwrap();
+    assert!(log.items().all(|i| Item::decode(&i.encode()).is_ok()));
+}

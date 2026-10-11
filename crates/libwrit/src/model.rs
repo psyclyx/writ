@@ -14,6 +14,9 @@ use writ_sexp::Sexp;
 
 /// The head atom of every encoded item.
 pub const VERSION: &str = "writ/v1";
+/// Largest bundle accepted, in bytes (each item is limited separately, to
+/// 4 MiB of canonical encoding).
+pub const MAX_BUNDLE: usize = 256 << 20;
 /// Most keys in one authority.
 pub const MAX_AUTHORITY_KEYS: usize = 16;
 /// Most names in a name path.
@@ -996,6 +999,36 @@ impl<T: Body> Signed<T> {
             .iter()
             .any(|s| s.index == 0 && key.verify(&msg, &s.bytes))
     }
+
+    /// The first valid signature for each index of `authority`, in index
+    /// order: what to ship, so junk merged alongside never travels.
+    pub fn valid_sigs(&self, authority: &Authority) -> Vec<Sig> {
+        let msg = self.body.message();
+        let mut out: Vec<Sig> = Vec::new();
+        for sig in &self.sigs {
+            if out.iter().any(|s| s.index == sig.index) {
+                continue;
+            }
+            if let Some(key) = authority.keys().get(usize::from(sig.index))
+                && key.verify(&msg, &sig.bytes)
+            {
+                out.push(sig.clone());
+            }
+        }
+        out.sort_by_key(|s| s.index);
+        out
+    }
+
+    /// The first valid leaf signature, if any.
+    pub fn valid_leaf_sigs(&self, key: &LeafKey) -> Vec<Sig> {
+        let msg = self.body.message();
+        self.sigs
+            .iter()
+            .find(|s| s.index == 0 && key.verify(&msg, &s.bytes))
+            .cloned()
+            .into_iter()
+            .collect()
+    }
 }
 
 /// Anything that can appear in a bundle.
@@ -1058,6 +1091,9 @@ impl Item {
 
     /// Decodes a bundle: armored blocks, or concatenated canonical items.
     pub fn decode_bundle(bytes: &[u8]) -> Result<Vec<Item>> {
+        if bytes.len() > MAX_BUNDLE {
+            return Err(DecodeError::Sexp(writ_sexp::DecodeError::TooLarge));
+        }
         if writ_sexp::armor::is_armored(bytes) {
             writ_sexp::armor::decode(bytes)
                 .map_err(DecodeError::Armor)?
@@ -1067,11 +1103,18 @@ impl Item {
         } else if bytes.iter().all(|b| b.is_ascii_whitespace()) {
             Ok(Vec::new())
         } else {
-            let sexps = writ_sexp::decode_many(bytes, &writ_sexp::Limits::default())
-                .map_err(DecodeError::Sexp)?;
+            let limits = writ_sexp::Limits {
+                max_len: MAX_BUNDLE,
+                max_nodes: 1 << 24,
+                ..writ_sexp::Limits::default()
+            };
+            let sexps = writ_sexp::decode_many(bytes, &limits).map_err(DecodeError::Sexp)?;
             sexps
                 .iter()
                 .map(|s| {
+                    if s.encoded_len() > writ_sexp::Limits::default().max_len {
+                        return Err(DecodeError::Sexp(writ_sexp::DecodeError::TooLarge));
+                    }
                     let item = Item::from_sexp(s)?;
                     if item.to_sexp() != *s {
                         return Err(DecodeError::NonCanonical);
@@ -1119,6 +1162,12 @@ impl Item {
             }
             Ok(out)
         }
+        fn leaf_index_zero(issuer: &Issuer, sigs: &[Sig]) -> Result<()> {
+            if matches!(issuer, Issuer::Leaf(_)) && sigs.iter().any(|s| s.index != 0) {
+                return bad("leaf signatures use index 0");
+            }
+            Ok(())
+        }
         fn sig_size(issuer: &Issuer) -> usize {
             match issuer {
                 Issuer::Identity { .. } => ROOT_SIGNATURE_SIZE,
@@ -1140,11 +1189,13 @@ impl Item {
             b"name" | b"grant" | b"revoke" => {
                 let body = Statement::from_sexp(body)?;
                 let sigs = sigs(&mut f, Some(sig_size(&body.issuer)))?;
+                leaf_index_zero(&body.issuer, &sigs)?;
                 Item::Statement(Signed { body, sigs })
             }
             b"signature" => {
                 let body = DataSig::from_sexp(body)?;
                 let sigs = sigs(&mut f, Some(sig_size(&body.signer)))?;
+                leaf_index_zero(&body.signer, &sigs)?;
                 Item::Signature(Signed { body, sigs })
             }
             b"authority" => {

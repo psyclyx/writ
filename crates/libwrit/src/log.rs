@@ -30,20 +30,22 @@ impl Log {
         let Event::Inception(_) = inception.body else {
             return Err(LogError::NoInception);
         };
-        if !inception.verify_threshold(inception.body.authority()) {
+        // Keep only verified signatures (one per index): a log, and anything
+        // derived from it, never carries junk merged in from other copies.
+        let Some(inception) = verified(inception, inception.body.authority()) else {
             return Err(LogError::BadSignature { n: 0 });
-        }
+        };
         let id = inception.body.id();
         let mut log = Log {
             id,
-            inception: inception.clone(),
-            rotations: Vec::new(),
             hashes: vec![inception.body.hash()],
+            inception,
+            rotations: Vec::new(),
         };
         loop {
             let n = log.head_n() + 1;
             let committed = *log.head().next();
-            let mut candidates: Vec<(&Signed<Event>, Hash)> = Vec::new();
+            let mut candidates: Vec<(Signed<Event>, Hash)> = Vec::new();
             for ev in rotations_at(n) {
                 let Event::Rotation(r) = &ev.body else {
                     continue;
@@ -55,7 +57,7 @@ impl Log {
                 if candidates.iter().any(|(_, c)| *c == h) {
                     continue;
                 }
-                if ev.verify_threshold(&r.authority) {
+                if let Some(ev) = verified(ev, &r.authority) {
                     candidates.push((ev, h));
                 }
             }
@@ -64,8 +66,8 @@ impl Log {
                 [(a, _), (b, _), ..] => {
                     return Err(LogError::Equivocation(Box::new(Evidence {
                         prefix: log.events().cloned().collect(),
-                        a: (*a).clone(),
-                        b: (*b).clone(),
+                        a: a.clone(),
+                        b: b.clone(),
                     })));
                 }
                 [(ev, h)] => {
@@ -75,7 +77,7 @@ impl Log {
                     if Some(&r.prev) != log.hashes.last() {
                         return Err(LogError::Broken { n });
                     }
-                    log.rotations.push((*ev).clone());
+                    log.rotations.push(ev.clone());
                     log.hashes.push(*h);
                 }
             }
@@ -237,4 +239,13 @@ impl Evidence {
 /// Signatures are not checked here; see [`Log::build`] for the full rule.
 pub fn equivocation(a: &Signed<Event>, b: &Signed<Event>) -> bool {
     a.body.id() == b.body.id() && a.body.n() == b.body.n() && a.body.hash() != b.body.hash()
+}
+
+/// `event` with only its valid signatures, if they reach the threshold.
+fn verified(event: &Signed<Event>, authority: &crate::model::Authority) -> Option<Signed<Event>> {
+    let sigs = event.valid_sigs(authority);
+    (sigs.len() >= authority.k()).then(|| Signed {
+        body: event.body.clone(),
+        sigs,
+    })
 }

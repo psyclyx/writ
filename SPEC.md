@@ -72,8 +72,8 @@ list  = "(" *sexp ")"
 
 There are no display hints, no whitespace, no other bytes. Decoders MUST reject
 any other input, including leading zeros in lengths and trailing bytes.
-Decoders MUST bound their input; libwrit accepts at most 4 MiB per bundle,
-nesting depth 32, and 2^18 nodes.
+Decoders MUST bound their input; libwrit accepts at most 4 MiB, nesting depth
+32 and 2^18 nodes per item, and at most 256 MiB per bundle.
 
 Within items, numbers are atoms holding canonical unsigned decimal: `0` or
 `[1-9][0-9]*`, at most 2^64 − 1. A field written `(name X)` is a list whose
