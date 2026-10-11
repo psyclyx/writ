@@ -1,5 +1,6 @@
 [package]
 name = "libwrit"
+description = "Signed statements about keys: names, grants, delegation, revocation, identity logs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,3 +12,10 @@ workspace = true
 [dependencies]
 writ-sexp.workspace = true
 writ-slhdsa.workspace = true
+libcrux-sha3.workspace = true
+libcrux-ml-dsa.workspace = true
+libcrux-ed25519.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

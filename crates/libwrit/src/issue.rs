@@ -1,0 +1,286 @@
+//! Issuing: inception, rotation, statements, data signatures (DESIGN.md §13).
+//!
+//! Issuing applies the same rules the verifier does, so writ never produces
+//! an item it would itself reject.
+
+use crate::hash::{Hash, Id};
+use crate::keys::{PublicKey, Rng, SignError, Signer};
+use crate::log::Log;
+use crate::model::{
+    Authority, Body, Claim, DataSig, Event, Inception, Issuer, Rotation, Sig, Signed, Statement,
+};
+use core::fmt;
+
+/// Why something can't be issued.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IssueError {
+    /// The statement breaks a rule (see [`Statement::check_wellformed`]).
+    Rule(&'static str),
+    /// A signer's key is not in the authority.
+    NotInAuthority,
+    /// Fewer than `k` distinct signers.
+    BelowThreshold {
+        /// Needed.
+        k: usize,
+        /// Given.
+        have: usize,
+    },
+    /// The revealed authority is not the one the log committed to.
+    WrongNext,
+    /// The statement's issuer is not the log's identity at its head event.
+    WrongIssuer,
+    /// `max-validity` requires an expiry no further than this many seconds.
+    MaxValidity(u64),
+    /// A leaf statement needs exactly one leaf signer.
+    LeafSigner,
+    /// The signer failed.
+    Sign(SignError),
+}
+
+impl fmt::Display for IssueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IssueError::Rule(r) => f.write_str(r),
+            IssueError::NotInAuthority => write!(f, "key is not in the current authority"),
+            IssueError::BelowThreshold { k, have } => {
+                write!(f, "need {k} signing keys, have {have}")
+            }
+            IssueError::WrongNext => {
+                write!(
+                    f,
+                    "these keys are not the next authority the log committed to"
+                )
+            }
+            IssueError::WrongIssuer => {
+                write!(f, "issuer must be this identity at its latest event")
+            }
+            IssueError::MaxValidity(mv) => write!(
+                f,
+                "this identity requires every statement to expire within {}",
+                crate::time::Duration(*mv)
+            ),
+            IssueError::LeafSigner => write!(f, "a leaf statement needs exactly one leaf key"),
+            IssueError::Sign(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for IssueError {}
+
+impl From<SignError> for IssueError {
+    fn from(e: SignError) -> Self {
+        IssueError::Sign(e)
+    }
+}
+
+/// Signs `body` with `signers`, all of whose keys must be in `authority`,
+/// at least `k` of them distinct.
+pub fn sign_with_authority<T: Body>(
+    body: T,
+    authority: &Authority,
+    signers: &[&dyn Signer],
+    rng: &mut dyn Rng,
+) -> Result<Signed<T>, IssueError> {
+    let msg = body.message();
+    let mut sigs: Vec<Sig> = Vec::new();
+    for signer in signers {
+        let PublicKey::Root(key) = signer.public_key() else {
+            return Err(IssueError::NotInAuthority);
+        };
+        let index = authority.index_of(&key).ok_or(IssueError::NotInAuthority)?;
+        if sigs.iter().any(|s| s.index == index) {
+            continue;
+        }
+        sigs.push(Sig {
+            index,
+            bytes: signer.sign(&msg, rng)?,
+        });
+    }
+    if sigs.len() < authority.k() {
+        return Err(IssueError::BelowThreshold {
+            k: authority.k(),
+            have: sigs.len(),
+        });
+    }
+    sigs.sort_by_key(|s| s.index);
+    Ok(Signed { body, sigs })
+}
+
+/// Creates an identity: event 0, signed by `k` of `authority`, committing
+/// to `next` (DESIGN.md §4.2).
+pub fn incept(
+    authority: Authority,
+    next: &Authority,
+    max_validity: Option<u64>,
+    signers: &[&dyn Signer],
+    rng: &mut dyn Rng,
+) -> Result<(Id, Signed<Event>), IssueError> {
+    if max_validity == Some(0) {
+        return Err(IssueError::Rule("max-validity must be positive"));
+    }
+    let event = Event::Inception(Inception {
+        authority: authority.clone(),
+        next: next.hash(),
+        max_validity,
+    });
+    let id = event.id();
+    Ok((id, sign_with_authority(event, &authority, signers, rng)?))
+}
+
+/// Extends `log` with a rotation revealing `revealed` (which must hash to
+/// the head's `next`), committing to `next`, keeping `keep`
+/// (DESIGN.md §4.3). Signed by `k` of `revealed`.
+pub fn rotate(
+    log: &Log,
+    revealed: Authority,
+    next: &Authority,
+    max_validity: Option<u64>,
+    mut keep: Vec<Hash>,
+    signers: &[&dyn Signer],
+    rng: &mut dyn Rng,
+) -> Result<Signed<Event>, IssueError> {
+    if revealed.hash() != *log.head().next() {
+        return Err(IssueError::WrongNext);
+    }
+    if max_validity == Some(0) {
+        return Err(IssueError::Rule("max-validity must be positive"));
+    }
+    keep.sort();
+    keep.dedup();
+    let prev = log
+        .event_hash(log.head_n())
+        .ok_or(IssueError::Rule("empty log"))?;
+    let event = Event::Rotation(Rotation {
+        id: log.id(),
+        n: log.head_n() + 1,
+        prev,
+        authority: revealed.clone(),
+        next: next.hash(),
+        max_validity,
+        keep,
+    });
+    sign_with_authority(event, &revealed, signers, rng)
+}
+
+/// Issues a statement as the identity of `log`, under its latest event.
+pub fn issue(
+    statement: Statement,
+    log: &Log,
+    signers: &[&dyn Signer],
+    rng: &mut dyn Rng,
+) -> Result<Signed<Statement>, IssueError> {
+    statement.check_wellformed().map_err(IssueError::Rule)?;
+    match statement.issuer {
+        Issuer::Identity { id, event } if id == log.id() && event == log.head_n() => {}
+        _ => return Err(IssueError::WrongIssuer),
+    }
+    if let Some(mv) = log.head().max_validity()
+        && !matches!(statement.claim, Claim::Revoke { .. })
+    {
+        match statement.expires {
+            Some(e) if e - statement.issued <= mv => {}
+            _ => return Err(IssueError::MaxValidity(mv)),
+        }
+    }
+    sign_with_authority(statement, log.head().authority(), signers, rng)
+}
+
+/// Issues a statement as a leaf key.
+pub fn issue_leaf(
+    statement: Statement,
+    signer: &dyn Signer,
+    rng: &mut dyn Rng,
+) -> Result<Signed<Statement>, IssueError> {
+    statement.check_wellformed().map_err(IssueError::Rule)?;
+    sign_leaf(statement, signer, rng)
+}
+
+/// Signs data as the identity of `log` (DESIGN.md §8).
+pub fn sign_data(
+    data: Hash,
+    context: &[u8],
+    issued: crate::Time,
+    log: &Log,
+    signers: &[&dyn Signer],
+    rng: &mut dyn Rng,
+) -> Result<Signed<DataSig>, IssueError> {
+    check_context(context)?;
+    let body = DataSig {
+        signer: Issuer::Identity {
+            id: log.id(),
+            event: log.head_n(),
+        },
+        issued,
+        context: context.to_vec(),
+        data,
+    };
+    sign_with_authority(body, log.head().authority(), signers, rng)
+}
+
+/// Signs data with a leaf key.
+pub fn sign_data_leaf(
+    data: Hash,
+    context: &[u8],
+    issued: crate::Time,
+    signer: &dyn Signer,
+    rng: &mut dyn Rng,
+) -> Result<Signed<DataSig>, IssueError> {
+    check_context(context)?;
+    let PublicKey::Leaf(key) = signer.public_key() else {
+        return Err(IssueError::LeafSigner);
+    };
+    let body = DataSig {
+        signer: Issuer::Leaf(key),
+        issued,
+        context: context.to_vec(),
+        data,
+    };
+    sign_leaf(body, signer, rng)
+}
+
+fn check_context(context: &[u8]) -> Result<(), IssueError> {
+    if context.is_empty() || context.len() > crate::model::MAX_ATOM {
+        return Err(IssueError::Rule("context must be 1 to 255 bytes"));
+    }
+    Ok(())
+}
+
+fn sign_leaf<T: Body + LeafIssued>(
+    body: T,
+    signer: &dyn Signer,
+    rng: &mut dyn Rng,
+) -> Result<Signed<T>, IssueError> {
+    let PublicKey::Leaf(key) = signer.public_key() else {
+        return Err(IssueError::LeafSigner);
+    };
+    if body.leaf_issuer() != Some(&key) {
+        return Err(IssueError::WrongIssuer);
+    }
+    let bytes = signer.sign(&body.message(), rng)?;
+    Ok(Signed {
+        body,
+        sigs: vec![Sig { index: 0, bytes }],
+    })
+}
+
+trait LeafIssued {
+    fn leaf_issuer(&self) -> Option<&crate::keys::LeafKey>;
+}
+
+impl LeafIssued for Statement {
+    fn leaf_issuer(&self) -> Option<&crate::keys::LeafKey> {
+        match &self.issuer {
+            Issuer::Leaf(k) => Some(k),
+            Issuer::Identity { .. } => None,
+        }
+    }
+}
+
+impl LeafIssued for DataSig {
+    fn leaf_issuer(&self) -> Option<&crate::keys::LeafKey> {
+        match &self.signer {
+            Issuer::Leaf(k) => Some(k),
+            Issuer::Identity { .. } => None,
+        }
+    }
+}

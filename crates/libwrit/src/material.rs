@@ -1,0 +1,267 @@
+//! Material: an indexed pile of log events, statements, and signatures, in
+//! any order (DESIGN.md §9.1). Adding is idempotent; duplicates merge.
+
+use crate::hash::{Hash, Id};
+use crate::keys::LeafKey;
+use crate::log::{Evidence, Log, LogError};
+use crate::model::{Body, Claim, DataSig, Event, Issuer, Item, Sig, Signed, Statement};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
+
+/// Something that can issue statements.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Principal {
+    /// An identity.
+    Id(Id),
+    /// A leaf key.
+    Leaf(LeafKey),
+}
+
+/// An indexed pile of items.
+#[derive(Default)]
+pub struct Material {
+    inceptions: BTreeMap<Id, Signed<Event>>,
+    rotations: BTreeMap<(Id, u64), Vec<Signed<Event>>>,
+    statements: BTreeMap<Hash, Signed<Statement>>,
+    signatures: BTreeMap<Hash, Signed<DataSig>>,
+    names: BTreeMap<(Id, Vec<u8>), Vec<Hash>>,
+    grants: BTreeMap<Principal, Vec<Hash>>,
+    revocations: BTreeMap<(Id, Hash), Vec<Hash>>,
+    by_issuer: BTreeMap<Id, Vec<Hash>>,
+    logs: RefCell<HashMap<Id, Rc<Result<Log, LogError>>>>,
+    sig_cache: RefCell<HashMap<(Hash, Hash, Hash), bool>>,
+}
+
+impl Material {
+    /// Empty material.
+    pub fn new() -> Material {
+        Material::default()
+    }
+
+    /// Material from items.
+    pub fn from_items(items: impl IntoIterator<Item = Item>) -> Material {
+        let mut m = Material::new();
+        for item in items {
+            m.add(item);
+        }
+        m
+    }
+
+    /// Adds an item. Keys and authorities are ignored; everything else is
+    /// indexed. Adding a body already present merges its signatures.
+    pub fn add(&mut self, item: Item) {
+        match item {
+            Item::Event(ev) => {
+                self.logs.get_mut().clear();
+                match &ev.body {
+                    Event::Inception(_) => {
+                        let id = ev.body.id();
+                        match self.inceptions.get_mut(&id) {
+                            Some(existing) => {
+                                merge_sigs(&mut existing.sigs, ev.sigs);
+                            }
+                            None => {
+                                self.inceptions.insert(id, ev);
+                            }
+                        }
+                    }
+                    Event::Rotation(r) => {
+                        let slot = self.rotations.entry((r.id, r.n)).or_default();
+                        let h = ev.body.hash();
+                        match slot.iter_mut().find(|e| e.body.hash() == h) {
+                            Some(existing) => {
+                                merge_sigs(&mut existing.sigs, ev.sigs);
+                            }
+                            None => slot.push(ev),
+                        }
+                    }
+                }
+            }
+            Item::Statement(st) => {
+                let h = st.body.hash();
+                if let Some(existing) = self.statements.get_mut(&h) {
+                    if merge_sigs(&mut existing.sigs, st.sigs) {
+                        self.sig_cache.get_mut().retain(|(b, _, _), _| *b != h);
+                    }
+                    return;
+                }
+                let issuer_id = st.body.issuer.id();
+                match (&st.body.claim, &st.body.issuer) {
+                    (Claim::Name { name, .. }, Issuer::Identity { id, .. }) => {
+                        self.names.entry((*id, name.clone())).or_default().push(h);
+                    }
+                    (Claim::Grant { .. }, issuer) => {
+                        let p = match issuer {
+                            Issuer::Identity { id, .. } => Principal::Id(*id),
+                            Issuer::Leaf(k) => Principal::Leaf(k.clone()),
+                        };
+                        self.grants.entry(p).or_default().push(h);
+                    }
+                    (Claim::Revoke { target }, Issuer::Identity { id, .. }) => {
+                        self.revocations.entry((*id, *target)).or_default().push(h);
+                    }
+                    // Leaf-issued names and revocations are never valid.
+                    _ => {}
+                }
+                if let Some(id) = issuer_id {
+                    self.by_issuer.entry(id).or_default().push(h);
+                }
+                self.statements.insert(h, st);
+            }
+            Item::Signature(sig) => {
+                let h = sig.body.hash();
+                match self.signatures.get_mut(&h) {
+                    Some(existing) => {
+                        if merge_sigs(&mut existing.sigs, sig.sigs) {
+                            self.sig_cache.get_mut().retain(|(b, _, _), _| *b != h);
+                        }
+                    }
+                    None => {
+                        self.signatures.insert(h, sig);
+                    }
+                }
+            }
+            Item::PublicKey(_) | Item::Authority(_) => {}
+        }
+    }
+
+    /// Adds every item of a bundle.
+    pub fn add_bundle(&mut self, bytes: &[u8]) -> Result<usize, crate::DecodeError> {
+        let items = Item::decode_bundle(bytes)?;
+        let n = items.len();
+        for item in items {
+            self.add(item);
+        }
+        Ok(n)
+    }
+
+    /// The identity's validated log. Cached until the next event is added.
+    pub fn log(&self, id: &Id) -> Rc<Result<Log, LogError>> {
+        if let Some(log) = self.logs.borrow().get(id) {
+            return log.clone();
+        }
+        let result = match self.inceptions.get(id) {
+            None => Err(LogError::NoInception),
+            Some(inception) => Log::build(inception, |n| {
+                self.rotations
+                    .get(&(*id, n))
+                    .map(|v| v.iter().collect())
+                    .unwrap_or_default()
+            }),
+        };
+        let result = Rc::new(result);
+        self.logs.borrow_mut().insert(*id, result.clone());
+        result
+    }
+
+    /// Every identity with an inception in the material.
+    pub fn ids(&self) -> impl Iterator<Item = &Id> {
+        self.inceptions.keys()
+    }
+
+    /// Equivocation evidence for every identity that has any.
+    pub fn evidence(&self) -> Vec<Evidence> {
+        self.inceptions
+            .keys()
+            .filter_map(|id| match &*self.log(id) {
+                Err(LogError::Equivocation(e)) => Some((**e).clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A statement by hash.
+    pub fn statement(&self, hash: &Hash) -> Option<&Signed<Statement>> {
+        self.statements.get(hash)
+    }
+
+    /// A data signature by hash.
+    pub fn signature(&self, hash: &Hash) -> Option<&Signed<DataSig>> {
+        self.signatures.get(hash)
+    }
+
+    /// Every statement, by hash.
+    pub fn statements(&self) -> impl Iterator<Item = (&Hash, &Signed<Statement>)> {
+        self.statements.iter()
+    }
+
+    /// Hashes of name statements by `issuer` for `name`.
+    pub fn names(&self, issuer: &Id, name: &[u8]) -> &[Hash] {
+        self.names
+            .get(&(*issuer, name.to_vec()))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Hashes of grants issued by `principal`.
+    pub fn grants_by(&self, principal: &Principal) -> &[Hash] {
+        self.grants
+            .get(principal)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Hashes of revocations by `issuer` of `target`.
+    pub fn revocations(&self, issuer: &Id, target: &Hash) -> &[Hash] {
+        self.revocations
+            .get(&(*issuer, *target))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Hashes of statements issued by `id`.
+    pub fn issued_by(&self, id: &Id) -> &[Hash] {
+        self.by_issuer
+            .get(id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Cached signature check: `check` runs at most once per
+    /// `(body hash, signer hash, signatures)`. The signatures are part of the
+    /// key: the same body may arrive with different signatures.
+    pub(crate) fn sig_cached(
+        &self,
+        body: Hash,
+        signer: Hash,
+        sigs: &[Sig],
+        check: impl FnOnce() -> bool,
+    ) -> bool {
+        let mut bytes = Vec::with_capacity(sigs.iter().map(|s| s.bytes.len() + 1).sum());
+        for s in sigs {
+            bytes.push(s.index);
+            bytes.extend_from_slice(&s.bytes);
+        }
+        let key = (body, signer, Hash::of_data(&bytes));
+        if let Some(ok) = self.sig_cache.borrow().get(&key) {
+            return *ok;
+        }
+        let ok = check();
+        self.sig_cache.borrow_mut().insert(key, ok);
+        ok
+    }
+}
+
+/// Adds signatures not already present (same index and bytes). Returns
+/// whether any were added.
+fn merge_sigs(into: &mut Vec<Sig>, from: Vec<Sig>) -> bool {
+    let before = into.len();
+    for sig in from {
+        if !into.contains(&sig) {
+            into.push(sig);
+        }
+    }
+    into.sort_by_key(|s| s.index);
+    into.len() != before
+}
+
+impl core::fmt::Debug for Material {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Material")
+            .field("identities", &self.inceptions.len())
+            .field("statements", &self.statements.len())
+            .field("signatures", &self.signatures.len())
+            .finish()
+    }
+}
