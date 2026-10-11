@@ -837,3 +837,76 @@ fn rotation_survives_a_crash_before_the_log_write() {
     let shown = s.ok(&["show", "me/next.writ"]);
     assert_eq!(shown.matches("authority").count(), 3, "{shown}");
 }
+
+#[cfg(unix)]
+#[test]
+fn secrets_are_never_steered() {
+    let s = Sandbox::new("steer");
+    // A FIFO or symlink planted where a key will go is refused.
+    assert!(
+        Command::new("mkfifo")
+            .arg(s.path("trap"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::os::unix::fs::symlink(s.path("elsewhere"), s.path("link")).unwrap();
+    for target in ["trap", "link"] {
+        let err = s.fails(&["keygen", "--out", target], 2);
+        assert!(err.contains("never overwrites"), "{err}");
+    }
+    assert!(!s.path("elsewhere").exists());
+    s.fails(&["init", "me", "--next-out", "trap"], 2);
+    assert!(!s.path("me").exists());
+}
+
+#[test]
+fn a_key_with_a_future_role_is_not_retired() {
+    let s = Sandbox::new("retire");
+    s.init("me");
+    std::fs::write(s.path("warm.pub"), s.ok(&["pubkey", "me/current.key"])).unwrap();
+    let before = s.read("me/current.key");
+    // The warm key joins the new next authority: it must survive.
+    let (code, _, err) = s.run(&[
+        "rotate",
+        "-i",
+        "me",
+        "--next-key",
+        "me-next.key",
+        "--next-out",
+        "n.key",
+        "--next-pub",
+        "warm.pub",
+        "--next-k",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("left as is"), "{err}");
+    assert_eq!(s.read("me/current.key"), before);
+}
+
+#[test]
+fn state_remembers_only_what_was_involved() {
+    let s = Sandbox::new("scope");
+    s.init("me");
+    let alice = s.init("alice");
+    let stranger = s.init("stranger");
+    std::fs::write(
+        s.path("b.writ"),
+        s.ok(&["grant", "-i", "me", &alice, "(x)"]),
+    )
+    .unwrap();
+    s.append("b.writ", &s.ok(&["export", "-i", "stranger"]));
+    s.ok(&[
+        "check", "--as", "me", &alice, "(x)", "--in", "b.writ", "--state", "st",
+    ]);
+    let logs: Vec<String> = std::fs::read_dir(s.path("st/logs"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(!logs.iter().any(|l| l.starts_with(&stranger)), "{logs:?}");
+    assert!(
+        logs.iter().any(|l| l.starts_with(&alice)) || logs.len() == 1,
+        "{logs:?}"
+    );
+}

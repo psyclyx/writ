@@ -572,9 +572,12 @@ Gaps in the draft, resolved the obvious way; SPEC.md is normative.
   denial carries the evidence.
 - **Name depth is defined as derivation depth** of a Jacobi fixpoint (SPEC §8),
   so the bound is a property of the answer, not of search order.
-- **The ratchet persists logs, not just head numbers**: a verifier adds every
-  log it has accepted to future material, which subsumes "never accept an
-  older head" and keeps equivocation visible once seen.
+- **The ratchet persists logs, not just head numbers**: a verifier adds the
+  logs it has accepted to future material, which subsumes "never accept an
+  older head" and keeps equivocation visible once seen. The CLI persists the
+  logs of identities a question involved (roots, chain issuers, subjects,
+  failed candidates' issuers, equivocators), not every identity in its input,
+  so a bundle can't grow the state without bound.
 - **CLI**: `--state DIR` (floor plus remembered logs) replaces `--floor FILE`;
   added `export`, `keygen`, `pubkey`, `--in`, `--at`, `sign --leaf`; `leaf`
   defaults to 24 h; the next authority's public keys live in `DIR/next.writ`

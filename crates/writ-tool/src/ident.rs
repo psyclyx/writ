@@ -22,6 +22,9 @@ pub struct IdentityDir {
     pub dir: PathBuf,
     pub log: Log,
     pub issued: Vec<Item>,
+    /// Held while issuing (shared) or rotating (exclusive), so a statement
+    /// is never signed under an event that a concurrent rotation is retiring.
+    _lock: Option<std::fs::File>,
 }
 
 /// Whether `path` is an identity directory.
@@ -30,13 +33,26 @@ pub fn is_identity_dir(path: &Path) -> bool {
 }
 
 impl IdentityDir {
+    /// Opens an identity for reading.
     pub fn open(dir: &str) -> Result<IdentityDir> {
+        IdentityDir::open_with(dir, None)
+    }
+
+    /// Opens an identity for issuing (`exclusive = false`) or rotating.
+    pub fn open_locked(dir: &str, exclusive: bool) -> Result<IdentityDir> {
+        IdentityDir::open_with(dir, Some(exclusive))
+    }
+
+    fn open_with(dir: &str, lock: Option<bool>) -> Result<IdentityDir> {
         let path = PathBuf::from(dir);
         if !is_identity_dir(&path) {
             return err(format!(
                 "{dir} is not a writ identity (no {LOG}; create one with `writ init {dir}`)"
             ));
         }
+        let lock = lock
+            .map(|exclusive| fs::lock_dir(&path, exclusive))
+            .transpose()?;
         let events = fs::read_bundle_file(&path.join(LOG))?;
         let mut material = Material::new();
         let mut inception = None;
@@ -61,6 +77,7 @@ impl IdentityDir {
             dir: path,
             log,
             issued,
+            _lock: lock,
         })
     }
 

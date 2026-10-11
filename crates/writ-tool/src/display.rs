@@ -225,7 +225,11 @@ fn statement(out: &mut String, s: &Signed<Statement>) {
         row(
             out,
             "expires",
-            format!("{} ({} after issue)", time(e), Duration(e - b.issued)),
+            format!(
+                "{} ({} after issue)",
+                time(e),
+                Duration(e.saturating_sub(b.issued))
+            ),
         );
     }
     match &b.claim {

@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! DIR/floor             the clock floor, decimal seconds since the epoch
-//! DIR/logs/<id>.writ    every log event seen for an identity
+//! DIR/logs/<id>.writ    the log of each identity a question involved
 //! ```
 //!
 //! Persisted logs are added to every query's material, so a verifier never
@@ -20,6 +20,9 @@ pub struct State {
     dir: PathBuf,
     pub floor: Option<Time>,
     pub logs: Vec<Item>,
+    /// Held from open to save, so concurrent verifiers can't roll each
+    /// other's floor or logs back.
+    _lock: std::fs::File,
 }
 
 impl State {
@@ -27,6 +30,7 @@ impl State {
         let dir = PathBuf::from(dir);
         std::fs::create_dir_all(dir.join("logs"))
             .context(|| format!("creating {}", dir.display()))?;
+        let lock = fs::lock_dir(&dir, true)?;
         let floor = match std::fs::read_to_string(dir.join("floor")) {
             Ok(text) => Some(text.trim().parse().map_err(|_| {
                 crate::error::Error::Msg(format!("{}/floor: not a number", dir.display()))
@@ -43,7 +47,12 @@ impl State {
                 logs.extend(fs::read_bundle_file(&path)?);
             }
         }
-        Ok(State { dir, floor, logs })
+        Ok(State {
+            dir,
+            floor,
+            logs,
+            _lock: lock,
+        })
     }
 
     /// Persists the floor and the logs of `ids` as found in `material`.

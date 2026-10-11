@@ -237,9 +237,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
     }
     let max_validity = duration_arg(parsed, "max-validity")?;
     for p in [next_out, key_out] {
-        if p != "-" && std::path::Path::new(p).is_file() {
-            return err(format!("{p} already exists; writ never overwrites a key"));
-        }
+        fs::check_secret_target(p)?;
     }
     let (next_seeds, next) = new_next(parsed)?;
     let current_seed = Seed::generate(&mut OsRng);
@@ -401,19 +399,10 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
             "--next-key PATH is required: the key(s) committed to at the last event".into(),
         ));
     }
-    if next_out != "-" && std::path::Path::new(next_out).is_file() {
-        return err(format!(
-            "{next_out} already exists; writ never overwrites a key"
-        ));
-    }
+    fs::check_secret_target(next_out)?;
     // Serialise rotations of this identity: two concurrent rotations would
     // sign two different events with the same number.
-    let lock = std::fs::OpenOptions::new()
-        .append(true)
-        .open(std::path::Path::new(dir).join(LOG))
-        .context(|| format!("opening {dir}/{LOG}"))?;
-    lock.lock().context(|| format!("locking {dir}/{LOG}"))?;
-    let ident = IdentityDir::open(dir)?;
+    let ident = IdentityDir::open_locked(dir, true)?;
     let revealed = ident.next_authority()?;
 
     let mut revealed_seeds = Vec::new();
@@ -474,6 +463,13 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     )
     .map_err(|e| Error::Msg(e.to_string()))?;
     let n = event.body.n();
+    if Item::decode(&Item::Event(event.clone()).encode()).is_err() {
+        return err(format!(
+            "a rotation keeping {} statements would be too large to read back; \
+             revoke some, or let them expire, first",
+            keep.len()
+        ));
+    }
 
     // Order matters for crash safety: the new next keys and the new next
     // authority must be on disk before the log commits to them. next.writ is
@@ -484,7 +480,6 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     }
     fs::append_items(&ident.dir.join(NEXT), &[Item::Authority(next.clone())])?;
     fs::append_items(&ident.dir.join(LOG), &[Item::Event(event)])?;
-    drop(lock);
 
     let mut lines = vec![format!("rotated {} to event {n}", ident.id())];
     lines.push(format!(
@@ -519,14 +514,23 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     if current_path.is_file() {
         let path_str = current_path.display().to_string();
         let old = fs::read_seeds(&path_str)?;
-        let retired = old
-            .iter()
-            .all(|s| revealed.index_of(&s.root().root_key()).is_none());
+        // Only a key that signed for the old event and has no role from now on
+        // is retired; anything else stays where it is.
+        let old_authority = ident.log.head().authority();
+        let retired = old.iter().all(|s| {
+            let k = s.root().root_key();
+            old_authority.index_of(&k).is_some()
+                && revealed.index_of(&k).is_none()
+                && next.index_of(&k).is_none()
+        });
         if retired {
-            std::fs::remove_file(&current_path).context(|| format!("removing {path_str}"))?;
-            fs::write_secret(&path_str, &fs::seeds_text(&revealed_seeds))?;
+            fs::replace_secret(&current_path, &fs::seeds_text(&revealed_seeds))?;
             lines.push(format!(
-                "  {path_str} now holds the revealed key; the retired key was deleted"
+                "  {path_str} now holds the revealed key, replacing the retired one"
+            ));
+        } else {
+            lines.push(format!(
+                "  {path_str} left as is: its key still has a role; the revealed key is now current"
             ));
         }
     } else {
@@ -622,7 +626,7 @@ pub fn expiry(
     {
         return err("--expires must be in the future");
     }
-    let chosen = explicit.or(default.map(|d| issued + d));
+    let chosen = explicit.or(default.map(|d| issued.saturating_add(d)));
     match (chosen, max_validity) {
         (Some(e), Some(mv)) if e - issued > mv => err(format!(
             "this identity requires statements to expire within {}; --expires is later",
@@ -633,7 +637,7 @@ pub fn expiry(
                 "writ: this identity requires an expiry; expiring in {}",
                 Duration(mv)
             );
-            Ok(Some(issued + mv))
+            Ok(Some(issued.saturating_add(mv)))
         }
         (e, _) => Ok(e),
     }

@@ -184,7 +184,7 @@ fn ssh_key(line: &str) -> Result<OpaqueKey> {
         .get(..4)
         .and_then(|l| l.try_into().ok())
         .map(u32::from_be_bytes)
-        .and_then(|n| blob.get(4..4 + n as usize));
+        .and_then(|n| blob.get(4..4usize.checked_add(usize::try_from(n).ok()?)?));
     if declared != Some(kind.as_bytes()) {
         return err(format!(
             "{kind} key: the key data says it is a different type"

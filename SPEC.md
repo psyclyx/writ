@@ -388,7 +388,8 @@ and verifier state (`--state DIR`) as:
 
 ```
 DIR/floor           the clock floor, decimal seconds
-DIR/logs/ID.writ    every log event seen for identity ID
+DIR/logs/ID.writ    the log of each identity a question involved (roots, chain issuers,
+                    subjects, failed candidates' issuers, equivocators)
 ```
 
 On rotation, the tool's `keep` is every statement and data signature in

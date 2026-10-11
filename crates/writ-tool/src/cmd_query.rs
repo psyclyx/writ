@@ -204,11 +204,11 @@ impl Query {
             }
             Some(floor.value())
         };
-        // Remember every log seen, not just those this answer used: the
-        // ratchet protects future questions too (DESIGN.md §4.4).
+        // Remember the logs of every identity this question involved (not every
+        // identity in the input: that would let anyone grow the state without
+        // bound). DESIGN.md §4.4.
         let mut all: BTreeSet<Id> = ids.into_iter().collect();
         all.extend(self.roots.iter().copied());
-        all.extend(self.material.ids().copied());
         state.save(floor, &self.material, all)
     }
 
@@ -220,10 +220,23 @@ impl Query {
     }
 }
 
-fn denial_ids(d: &Denial) -> Vec<Id> {
+/// Identities a denial involved: the compromised one, or the issuers of the
+/// candidates that failed.
+fn denial_ids(d: &Denial, material: &Material) -> Vec<Id> {
     match d {
         Denial::Compromised(e) => vec![e.id()],
+        Denial::NotFound { rejected } => rejected
+            .iter()
+            .filter_map(|r| material.statement(&r.statement)?.body.issuer.id())
+            .collect(),
         _ => Vec::new(),
+    }
+}
+
+fn subject_id(h: &libwrit::Holder) -> Option<Id> {
+    match h {
+        libwrit::Holder::Id(id) => Some(*id),
+        _ => None,
     }
 }
 
@@ -236,7 +249,7 @@ pub fn check(parsed: &Parsed) -> Result<()> {
     let result = q.verifier().check(&holder, &tag, q.now);
     match result {
         Ok(proof) => {
-            q.persist(proof.ids.iter().copied())?;
+            q.persist(proof.ids.iter().copied().chain(subject_id(&holder)))?;
             if !parsed.flag("quiet") {
                 fs::print(&format!(
                     "allowed: {} holds {tag}\n{}",
@@ -247,7 +260,11 @@ pub fn check(parsed: &Parsed) -> Result<()> {
             Ok(())
         }
         Err(d) => {
-            q.persist(denial_ids(&d))?;
+            q.persist(
+                denial_ids(&d, &q.material)
+                    .into_iter()
+                    .chain(subject_id(&holder)),
+            )?;
             Err(q.deny(
                 parsed,
                 format!("{} does not hold {tag}", display::holder(&holder)),
@@ -265,7 +282,7 @@ pub fn prove(parsed: &Parsed) -> Result<()> {
     let q = Query::setup(parsed, &PROVE, true)?;
     match q.verifier().check(&holder, &tag, q.now) {
         Ok(proof) => {
-            q.persist(proof.ids.iter().copied())?;
+            q.persist(proof.ids.iter().copied().chain(subject_id(&holder)))?;
             let items = proof.items(&q.material);
             fs::print(&items.iter().map(Item::armor).collect::<String>())?;
             if !parsed.flag("quiet") {
@@ -280,7 +297,11 @@ pub fn prove(parsed: &Parsed) -> Result<()> {
             Ok(())
         }
         Err(d) => {
-            q.persist(denial_ids(&d))?;
+            q.persist(
+                denial_ids(&d, &q.material)
+                    .into_iter()
+                    .chain(subject_id(&holder)),
+            )?;
             Err(q.deny(
                 parsed,
                 format!("{} does not hold {tag}", display::holder(&holder)),
@@ -313,11 +334,11 @@ pub fn resolve(parsed: &Parsed) -> Result<()> {
                     out.push_str(&display::proof(proof, &q.material, q.now));
                 }
             }
-            q.persist(ids)?;
+            q.persist(ids.into_iter().chain([path.base]))?;
             fs::print(&out)
         }
         Err(d) => {
-            q.persist(denial_ids(&d))?;
+            q.persist(denial_ids(&d, &q.material).into_iter().chain([path.base]))?;
             Err(q.deny(
                 parsed,
                 format!("{} refers to no one", display::name_path(&path)),
@@ -370,7 +391,11 @@ pub fn verify(parsed: &Parsed) -> Result<()> {
             Ok(())
         }
         Err(d) => {
-            q.persist(denial_ids(&d))?;
+            q.persist(
+                denial_ids(&d, &q.material)
+                    .into_iter()
+                    .chain(sig.body.signer.id()),
+            )?;
             let headline = match &d {
                 Denial::NotFound { .. }
                 | Denial::Compromised(_)

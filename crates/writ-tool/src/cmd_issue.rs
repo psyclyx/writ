@@ -175,7 +175,7 @@ fn identity(parsed: &Parsed, spec: &'static Spec) -> Result<IdentityDir> {
     let dir = parsed.value("identity").ok_or_else(|| {
         spec.usage_error("-i DIR is required: which identity is speaking?".into())
     })?;
-    IdentityDir::open(dir)
+    IdentityDir::open_locked(dir, false)
 }
 
 fn note(parsed: &Parsed) -> Result<Option<String>> {
@@ -432,9 +432,7 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
     })?;
     let mut ident = identity(parsed, &LEAF)?;
     let tag = subject::tag(tag_text)?;
-    if out != "-" && std::path::Path::new(out).is_file() {
-        return err(format!("{out} already exists; writ never overwrites a key"));
-    }
+    fs::check_secret_target(out)?;
     let (issuer, issued) = base(&ident, wall_clock());
     let expires = expiry(parsed, issued, None, Some(LEAF_CEILING))?;
     let Some(expires) = expires else {
