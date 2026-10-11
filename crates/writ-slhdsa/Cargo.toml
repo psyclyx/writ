@@ -1,5 +1,6 @@
 [package]
 name = "writ-slhdsa"
+description = "SLH-DSA-SHAKE-128s (FIPS 205), one parameter set, on libcrux-sha3"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,3 +8,10 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+libcrux-sha3.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+slh-dsa.workspace = true
