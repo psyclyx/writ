@@ -2,20 +2,20 @@ let
   npins = import ./npins;
 
   mkPackages =
-    pkgs:
+    lib: callPackage:
     if builtins.pathExists ./nix/packages then
-      pkgs.lib.packagesFromDirectoryRecursive {
-        inherit (pkgs) callPackage;
+      lib.packagesFromDirectoryRecursive {
+        inherit callPackage;
         directory = ./nix/packages;
       }
     else
       { };
 
-  # Packages are scoped against `final` (not `prev`) so that packages in
-  # nix/packages/ can reference each other. This cannot infinitely recurse:
-  # the fixpoint is lazy, and an attribute is only demanded when something
-  # actually depends on it.
-  overlay = final: _prev: mkPackages final;
+  # Packages are called with `final.callPackage` (not `prev`) so that packages
+  # in nix/packages/ can reference each other; the fixpoint is lazy, so that
+  # cannot recurse. `lib` must come from `prev`: the overlay's attribute names
+  # are computed with it, so taking it from `final` would.
+  overlay = final: prev: mkPackages prev.lib final.callPackage;
 in
 {
   nixpkgs ? npins.nixpkgs,
@@ -25,8 +25,8 @@ let
   finalPkgs = pkgs.extend overlay;
 in
 rec {
-  packages = mkPackages finalPkgs;
+  packages = mkPackages finalPkgs.lib finalPkgs.callPackage;
   inherit overlay;
   shell = finalPkgs.callPackage ./nix/shell.nix { };
-  # default = packages.writ; # uncomment once nix/packages/ has a main package
+  default = packages.writ;
 }
