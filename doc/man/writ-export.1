@@ -1,0 +1,44 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-EXPORT 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-export \- print the log and valid statements of an identity
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit export\fR \fB\-i\fR\ \fIDIR\fR [\fB\-\-all\fR]
+.ad
+.hy
+.SH DESCRIPTION
+Print a bundle with the log of the identity in DIR and every statement it issued that is valid now, including revocations. Give this bundle to the people who check your statements.
+.PP
+Data signatures are left out, because they travel with the data they sign.
+.SH OPTIONS
+.TP
+\fB\-i\fR, \fB\-\-identity\fR \fIDIR\fR
+the identity to export
+.TP
+\fB\-\-all\fR
+also print expired and revoked statements, and data signatures
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Publish your statements:
+.PP
+.RS 4
+.nf
+writ export \-i me > me.writ
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-show\fR(1), \fBwrit\-prove\fR(1)

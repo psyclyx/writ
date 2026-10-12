@@ -1,0 +1,43 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-COMPLETIONS 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-completions \- print a shell completion script
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit completions\fR \fISHELL\fR
+.ad
+.hy
+.SH DESCRIPTION
+Print a script that lets SHELL complete writ commands, options, and file names. To install it:
+.PP
+.RS 4
+.nf
+bash:  writ completions bash > ~/.local/share/bash\-completion/completions/writ
+zsh:   writ completions zsh > ~/.zfunc/_writ
+       (with fpath=(~/.zfunc $fpath) before compinit in ~/.zshrc)
+fish:  writ completions fish > ~/.config/fish/completions/writ.fish
+.fi
+.RE
+.PP
+Packages install these scripts for you.
+.SH ARGUMENTS
+.TP
+\fISHELL\fR
+bash, zsh, or fish
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH SEE ALSO
+\fBwrit\fR(1)

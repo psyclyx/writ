@@ -156,18 +156,14 @@ pub enum LogError {
 impl fmt::Display for LogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LogError::NoInception => write!(f, "no identity log"),
-            LogError::BadSignature { n } => write!(f, "event {n} is not validly signed"),
+            LogError::NoInception => write!(f, "no log for this identity in the input"),
+            LogError::BadSignature { n } => write!(f, "event {n} of its log is not validly signed"),
             LogError::Broken { n } => {
-                write!(
-                    f,
-                    "rotation {n} is signed but does not chain to event {}",
-                    n - 1
-                )
+                write!(f, "rotation {n} does not follow event {}", n - 1)
             }
             LogError::Equivocation(e) => write!(
                 f,
-                "equivocation: two different events numbered {} — the identity is compromised",
+                "two different versions of event {} are signed, so the identity can't be trusted",
                 e.n()
             ),
         }

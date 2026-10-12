@@ -1,0 +1,43 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-PUBKEY 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-pubkey \- print the public key of a secret key
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit pubkey\fR [\fB\-\-leaf\fR] [\fIKEYFILE\fR]
+.ad
+.hy
+.SH DESCRIPTION
+Print the public key of each secret key in KEYFILE, as a bundle item. Identity public keys are for \-\-next\-pub. A leaf public key can be the subject of a grant, for example to renew the leaf key.
+.SH ARGUMENTS
+.TP
+\fIKEYFILE\fR
+a secret key file (default: standard input)
+.SH OPTIONS
+.TP
+\fB\-\-leaf\fR
+the key is a leaf key
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Renew a leaf key for another day:
+.PP
+.RS 4
+.nf
+writ pubkey \-\-leaf build.key > build.pub && writ grant \-i me build.pub '(release)' \-\-expires 24h
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-keygen\fR(1), \fBwrit\-leaf\fR(1)

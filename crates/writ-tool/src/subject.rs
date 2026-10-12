@@ -39,7 +39,7 @@ pub fn id(text: &str) -> Result<Id> {
 pub fn tag(text: &str) -> Result<Tag> {
     Tag::parse(text).ok_or_else(|| {
         Error::Msg(format!(
-            "{text:?}: not a tag; write atoms general to specific, e.g. '(ssh nas)', or '()' for everything"
+            "{text:?} is not a tag. A tag is a list of words, such as '(ssh nas)', or '()' for everything"
         ))
     })
 }
@@ -103,7 +103,7 @@ pub fn holder(text: &str) -> Result<Holder> {
         Subject::Leaf(k) => Ok(Holder::Leaf(k)),
         Subject::Opaque(k) => Ok(Holder::Opaque(k)),
         Subject::Name(_) => err(format!(
-            "{text:?} is a name path; ask who it refers to with `writ resolve`, then check them"
+            "{text:?} is a name path. Use 'writ resolve' to list who it refers to, then check each of them"
         )),
     }
 }
@@ -158,14 +158,14 @@ fn key_file(path: &str) -> Result<Subject> {
     }
     if text.contains("WRIT-SECRET-KEY-1") || text.contains("writ-secret-key-1") {
         return err(format!(
-            "{path} is a secret key; subjects are public keys (get one with `writ pubkey`)"
+            "{path} is a secret key file. Use its public key instead: 'writ pubkey --leaf {path}' prints it"
         ));
     }
     let items = Item::decode_bundle(&bytes).map_err(|e| Error::Msg(format!("{path}: {e}")))?;
     match items.as_slice() {
         [Item::PublicKey(PublicKey::Leaf(k))] => Ok(Subject::Leaf(k.clone())),
         [Item::PublicKey(PublicKey::Root(_))] => err(format!(
-            "{path} is a root key; grant to the identity's id instead"
+            "{path} holds an identity key; use the identity's id instead"
         )),
         _ => err(format!("{path}: expected one public key")),
     }
@@ -187,7 +187,7 @@ fn ssh_key(line: &str) -> Result<OpaqueKey> {
         .and_then(|n| blob.get(4..4usize.checked_add(usize::try_from(n).ok()?)?));
     if declared != Some(kind.as_bytes()) {
         return err(format!(
-            "{kind} key: the key data says it is a different type"
+            "{kind} key: the key data is for a different key type"
         ));
     }
     Ok(OpaqueKey {

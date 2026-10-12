@@ -1,6 +1,8 @@
 {
   lib,
+  stdenv,
   rustPlatform,
+  installShellFiles,
 }:
 let
   root = ../..;
@@ -15,6 +17,7 @@ rustPlatform.buildRustPackage {
       (root + "/Cargo.toml")
       (root + "/Cargo.lock")
       (root + "/crates")
+      (root + "/doc")
       (root + "/vectors")
     ];
   };
@@ -26,6 +29,18 @@ rustPlatform.buildRustPackage {
   ];
   # Run the whole workspace's tests: ACVP and writ's own vectors included.
   cargoTestFlags = [ "--workspace" ];
+
+  nativeBuildInputs = [ installShellFiles ];
+
+  postInstall = ''
+    installManPage doc/man/*.1
+  ''
+  + lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+    installShellCompletion --cmd writ \
+      --bash <($out/bin/writ completions bash) \
+      --fish <($out/bin/writ completions fish) \
+      --zsh <($out/bin/writ completions zsh)
+  '';
 
   meta = {
     description = "Signed statements about keys: names, grants, delegation, revocation, rotation";

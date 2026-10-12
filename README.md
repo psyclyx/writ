@@ -60,7 +60,11 @@ with your old key is dead to every verifier that sees the rotation. Use
 `--state DIR` on verifying commands to remember rotations and the clock floor
 between runs, and `writ prove` to hand a verifier only the statements it needs.
 
-Every command has `--help`; exit status is 0 for yes, 1 for no, 2 for errors.
+Every command has `-h` (short) and `--help` (long) help and a man page
+(`man writ`, `man writ-grant`, ...); exit status is 0 for yes, 1 for no, 2 for
+errors. `writ completions bash|zsh|fish` prints a completion script; the nix
+package installs the man pages and completions for you. Color follows
+`--color`, `NO_COLOR` and `CLICOLOR_FORCE`.
 
 ## Documents
 
@@ -83,4 +87,6 @@ crates/writ-tool     the `writ` binary
 
 `direnv allow` (or `nix-shell -A shell`), then `cargo nextest run --workspace`,
 `treefmt`. Vectors regenerate with
-`WRIT_REGENERATE_VECTORS=1 cargo test -p libwrit --test vectors`.
+`WRIT_REGENERATE_VECTORS=1 cargo test -p libwrit --test vectors`, and the man
+pages (generated from `crates/writ-tool/src/specs.rs`, like `--help` and the
+completions) with `WRIT_REGENERATE_MAN=1 cargo test -p writ-tool man`.

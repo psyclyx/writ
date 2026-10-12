@@ -1,0 +1,81 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-INIT 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-init \- create an identity
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit init\fR \fB\-\-next\-out\fR\ \fIPATH\fR [\fB\-\-next\-n\fR\ \fIN\fR] [\fB\-\-next\-k\fR\ \fIK\fR] [\fB\-\-next\-pub\fR\ \fIPATH\fR]... [\fB\-\-key\-out\fR\ \fIPATH\fR] [\fB\-\-max\-validity\fR\ \fIDUR\fR] [\fB\-q\fR] \fIDIR\fR
+.ad
+.hy
+.SH DESCRIPTION
+Create a new identity in DIR and print its id.
+.PP
+An identity has two kinds of keys. The current key signs statements. writ writes it to DIR/current.key. The next key can only rotate the identity: replace its keys and keep its id. Keep the next key offline. You must say where it goes with \-\-next\-out.
+.PP
+Key files are plain text. writ never overwrites a file, and creates key files that only you can read. To encrypt keys, use age(1):
+.PP
+.RS 4
+.nf
+writ init me \-\-next\-out \- | age \-p > me\-next.key.age
+.fi
+.RE
+.PP
+The next keys can be K of N keys held by different people. For example, 2 of 3: your own offline key, a friend's key, and a key in a safe. Choose K greater than N/2. If two separate groups of key holders could each rotate, verifiers can't tell that from theft, and they refuse the identity.
+.SH ARGUMENTS
+.TP
+\fIDIR\fR
+the directory to create; it must not exist, or must be empty
+.SH OPTIONS
+.TP
+\fB\-\-next\-out\fR \fIPATH\fR
+where to write the next key; '\-' means standard output
+.TP
+\fB\-\-next\-n\fR \fIN\fR
+how many new next keys to make (default: 1)
+.TP
+\fB\-\-next\-k\fR \fIK\fR
+how many next keys must sign the next rotation (default: 1)
+.TP
+\fB\-\-next\-pub\fR \fIPATH\fR
+add another person's public key (from \fBwrit pubkey\fR) to the next keys
+.TP
+\fB\-\-key\-out\fR \fIPATH\fR
+where to write the current key (default: DIR/current.key)
+.TP
+\fB\-\-max\-validity\fR \fIDUR\fR
+require every statement to expire within DUR, such as 90d
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+print only the id
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Create an identity, with the next key encrypted by age:
+.PP
+.RS 4
+.nf
+writ init me \-\-next\-out \- | age \-p > me\-next.key.age
+.fi
+.RE
+.PP
+Next keys held by three people, any two of whom can rotate:
+.PP
+.RS 4
+.nf
+writ init org \-\-next\-out mine.key \-\-next\-pub alice.pub \-\-next\-pub bob.pub \-\-next\-k 2
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-rotate\fR(1), \fBwrit\-keygen\fR(1), \fBwrit\-pubkey\fR(1)

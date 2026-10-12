@@ -1,175 +1,14 @@
 //! `name`, `grant`, `revoke`, `leaf`, `sign`.
 
-use crate::args::{Parsed, Spec, flag, opt, short};
+use crate::args::{Parsed, Spec};
 use crate::cmd_identity::expiry;
 use crate::error::{Error, Result, err};
 use crate::ident::IdentityDir;
+use crate::specs::{GRANT, LEAF, NAME, REVOKE, SIGN};
 use crate::{OsRng, display, fs, say, subject, wall_clock};
 use libwrit::model::LEAF_CEILING;
 use libwrit::time::Duration;
 use libwrit::{Body, Claim, Hash, Issuer, Item, PublicKey, Seed, Signer, Statement, Subject};
-
-pub static NAME: Spec = Spec {
-    name: "name",
-    usage: "name -i DIR NAME SUBJECT [options]",
-    about: "say who NAME refers to, in your namespace",
-    details: "\
-Names are local: `me alice` is whoever you said alice is. One name may refer
-to several subjects (a group). SUBJECT is an id (writ1…), an identity
-directory, a name path ('writ1… bob laptops'), a key file, or an OpenSSH
-public key.
-
-The statement is printed as an armored item (append it to a bundle with >>)
-and recorded in DIR/issued.writ, which `writ export` and `writ rotate` use.",
-    opts: &[
-        short(opt("identity", "DIR", "the issuing identity"), 'i'),
-        opt(
-            "key",
-            "PATH",
-            "secret key (default DIR/current.key; repeat for K of N)",
-        ),
-        opt(
-            "expires",
-            "WHEN",
-            "duration (30d) or date (2027-01-01); default never",
-        ),
-        opt(
-            "note",
-            "TEXT",
-            "display-only text, signed with the statement",
-        ),
-        short(flag("quiet", "print only the statement"), 'q'),
-    ],
-};
-
-pub static GRANT: Spec = Spec {
-    name: "grant",
-    usage: "grant -i DIR SUBJECT TAG [options]",
-    about: "grant TAG to SUBJECT",
-    details: "\
-TAG is a path of atoms, general to specific: '(ssh nas)', '(zuko home)', or
-'()' for everything. Holders of '(zuko)' hold '(zuko home relay)'. With
---delegate the subject may grant onward, but only within TAG.
-
-Granting to a name path ('me alice devices') delegates naming: whoever alice
-names as her devices gets the grant.
-
-Grants to leaf keys must expire within 24 hours.
-
-The statement is printed as an armored item (append it to a bundle with >>)
-and recorded in DIR/issued.writ, which `writ export` and `writ rotate` use.",
-    opts: &[
-        short(opt("identity", "DIR", "the issuing identity"), 'i'),
-        opt(
-            "key",
-            "PATH",
-            "secret key (default DIR/current.key; repeat for K of N)",
-        ),
-        flag("delegate", "let the subject grant onward (within TAG)"),
-        opt(
-            "expires",
-            "WHEN",
-            "duration (30d) or date (2027-01-01); default never",
-        ),
-        opt(
-            "note",
-            "TEXT",
-            "display-only text, signed with the statement",
-        ),
-        short(flag("quiet", "print only the statement"), 'q'),
-    ],
-};
-
-pub static REVOKE: Spec = Spec {
-    name: "revoke",
-    usage: "revoke -i DIR TARGET [options]",
-    about: "revoke one of your statements or signatures",
-    details: "\
-TARGET is a hash (or a unique prefix of one, as `writ show` and the issuing
-commands print) from DIR/issued.writ, or a file holding the item. Revocations
-are final: to undo one, issue the statement again.",
-    opts: &[
-        short(opt("identity", "DIR", "the issuing identity"), 'i'),
-        opt(
-            "key",
-            "PATH",
-            "secret key (default DIR/current.key; repeat for K of N)",
-        ),
-        opt(
-            "note",
-            "TEXT",
-            "display-only text, signed with the revocation",
-        ),
-        short(flag("quiet", "print only the revocation"), 'q'),
-    ],
-};
-
-pub static LEAF: Spec = Spec {
-    name: "leaf",
-    usage: "leaf -i DIR TAG --out PATH [options]",
-    about: "make a short-lived leaf key and grant it TAG",
-    details: "\
-Leaf keys are the fast path: ML-DSA-65 + Ed25519, quick to sign and verify,
-always time-bounded (at most 24 hours). A leaf can sign data and, with
---delegate, issue non-delegable grants within TAG. Renew a leaf by granting
-to its public key again (`writ pubkey --leaf KEY`), or make a new one.
-
-The secret key goes to --out; the grant is printed (or written to
---grant-out) and recorded in DIR/issued.writ.",
-    opts: &[
-        short(opt("identity", "DIR", "the issuing identity"), 'i'),
-        opt(
-            "key",
-            "PATH",
-            "secret key (default DIR/current.key; repeat for K of N)",
-        ),
-        opt(
-            "out",
-            "PATH",
-            "where to write the leaf's secret key ('-' for stdout); required",
-        ),
-        opt(
-            "grant-out",
-            "PATH",
-            "where to write the grant (default stdout)",
-        ),
-        opt("expires", "WHEN", "lifetime, at most 24h (default 24h)"),
-        flag(
-            "delegate",
-            "let the leaf issue (non-delegable) grants within TAG",
-        ),
-        opt("note", "TEXT", "display-only text, signed with the grant"),
-        short(flag("quiet", "print only the grant"), 'q'),
-    ],
-};
-
-pub static SIGN: Spec = Spec {
-    name: "sign",
-    usage: "sign (-i DIR | --leaf KEY) --context CONTEXT [FILE]",
-    about: "sign a file (or stdin)",
-    details: "\
-CONTEXT is an application label that keeps signatures for one purpose from
-being accepted for another, e.g. 'example/release/v1'. Verifiers must ask for
-the same context. Prints the signature as an armored item.
-
-Signatures by an identity are recorded in DIR/issued.writ so that rotation
-keeps them; signatures by a leaf key live as long as its grant.",
-    opts: &[
-        short(opt("identity", "DIR", "sign as this identity"), 'i'),
-        opt(
-            "key",
-            "PATH",
-            "identity secret key (default DIR/current.key)",
-        ),
-        opt("leaf", "KEY", "sign with this leaf secret key instead"),
-        short(
-            opt("context", "CONTEXT", "application label (required)"),
-            'c',
-        ),
-        opt("out", "PATH", "write the signature here instead of stdout"),
-        short(flag("quiet", "print only the signature"), 'q'),
-    ],
-};
 
 fn identity(parsed: &Parsed, spec: &'static Spec) -> Result<IdentityDir> {
     let dir = parsed.value("identity").ok_or_else(|| {
@@ -263,24 +102,26 @@ pub fn grant(parsed: &Parsed) -> Result<()> {
     let delegate = parsed.flag("delegate");
     if delegate && matches!(subj, Subject::Opaque(_)) {
         return err(
-            "an application key can't delegate (it can't sign statements); drop --delegate",
+            "--delegate does not work with an application key, because it can't sign statements",
         );
     }
     let (issuer, issued) = base(&ident, wall_clock());
     let is_leaf = matches!(subj, Subject::Leaf(_));
     if is_leaf && parsed.value("expires").is_none() {
-        return err("grants to leaf keys must expire within 24 hours: add --expires (e.g. 24h)");
+        return err(
+            "a grant to a leaf key must expire within 24 hours; add --expires, such as --expires 24h",
+        );
     }
     let expires = expiry(parsed, issued, ident.log.head().max_validity(), None)?;
     if is_leaf && expires.is_some_and(|e| e - issued > LEAF_CEILING) {
-        return err("grants to leaf keys may last at most 24 hours");
+        return err("a grant to a leaf key can last at most 24 hours");
     }
     if let Subject::Name(p) = &subj {
         say(
             parsed,
             format!(
-                "note: this delegates naming. Whoever {} refers to now or later — as decided by \
-                 the identities along the path — holds {tag}.",
+                "note: {} is a name path, so this grant goes to whoever the path names, \
+                 now and in the future",
                 display::name_path(p)
             ),
         );
@@ -361,11 +202,8 @@ fn revocation_target(ident: &IdentityDir, text: &str) -> Result<(Hash, String)> 
         1 => matches.pop().ok_or_else(|| Error::Msg("no match".into())),
         0 => match Hash::from_hex(&prefix) {
             Some(h) => {
-                eprintln!(
-                    "writ: warning: {text} is not in {}/issued.writ",
-                    ident.name()
-                );
-                Ok((h, "an item not in the issuance log".into()))
+                crate::warn(format!("{text} is not in {}/issued.writ", ident.name()));
+                Ok((h, "not in the issuance log".into()))
             }
             None => err(format!(
                 "no statement or signature in {}/issued.writ starts with {text}",
@@ -396,10 +234,10 @@ pub fn revoke(parsed: &Parsed) -> Result<()> {
         matches!(i, Item::Statement(s) if matches!(s.body.claim, Claim::Revoke { target: t } if t == target))
     });
     if already {
-        eprintln!(
-            "writ: note: {} was already revoked; issuing another revocation",
+        crate::note(format!(
+            "{} is already revoked; this adds a second revocation",
             display::short(&target)
-        );
+        ));
     }
     let (issuer, issued) = base(&ident, wall_clock());
     let signed = issue(
@@ -440,7 +278,7 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
     };
     if expires - issued > LEAF_CEILING {
         return err(format!(
-            "leaf keys live at most 24 hours (asked for {})",
+            "a leaf key can live at most 24 hours, not {}",
             Duration(expires - issued)
         ));
     }
@@ -481,11 +319,11 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
         Some(path) => std::fs::write(path, item.armor())
             .map_err(|e| Error::Msg(format!("writing {path}: {e}")))?,
         None if out == "-" => {
-            eprintln!(
-                "writ: the grant is in {}/issued.writ (stdout carries the key); `writ export -i {}` includes it",
+            crate::note(format!(
+                "the key went to standard output, so the grant was not printed. It is in {}/issued.writ, and 'writ export -i {}' prints it",
                 ident.name(),
                 ident.name()
-            );
+            ));
         }
         None => fs::emit(&item, Some(&ident.dir.join(crate::ident::ISSUED)))?,
     }
@@ -516,7 +354,7 @@ pub fn sign(parsed: &Parsed) -> Result<()> {
     let (item, by, ident) = match (parsed.value("identity"), parsed.value("leaf")) {
         (Some(_), Some(_)) => return err("sign with either -i DIR or --leaf KEY, not both"),
         (None, None) => {
-            return Err(SIGN.usage_error("who signs? pass -i DIR or --leaf KEY".into()));
+            return Err(SIGN.usage_error("give -i DIR or --leaf KEY to choose who signs".into()));
         }
         (None, Some(key)) => {
             let seeds = fs::read_seeds(key)?;

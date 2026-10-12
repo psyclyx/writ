@@ -1,51 +1,142 @@
-//! A small hand-written argument parser: `--long VALUE`, `--long=VALUE`,
-//! `-s VALUE`, boolean flags, repeated options, positionals, and `--`.
+//! The command-line interface as data, and a small parser for it.
+//!
+//! Every command is described once, by a [`Spec`]. The parser, `--help`,
+//! the man pages and the shell completions are all generated from these
+//! descriptions, so they can't disagree.
+//!
+//! Syntax: `--long VALUE`, `--long=VALUE`, `-s VALUE`, `-sVALUE`, flags,
+//! repeated options, positional arguments, and `--` to end options.
 
 use crate::error::Error;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 
-/// One option a command accepts.
+/// What kind of value an argument takes, for completion and documentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Value {
+    /// A directory that may not exist yet.
+    NewDir,
+    /// An existing identity directory.
+    Identity,
+    /// An id or an identity directory.
+    Id,
+    /// A file to read.
+    File,
+    /// A file to write.
+    OutFile,
+    /// A subject: an id, identity directory, name path, key file, or SSH key.
+    Subject,
+    /// Free text: tags, names, durations, times, labels, numbers.
+    Text,
+    /// One of a fixed set of words.
+    Choice(&'static [&'static str]),
+}
+
+/// One option.
 #[derive(Debug)]
 pub struct Opt {
     pub long: &'static str,
     pub short: Option<char>,
-    pub value: Option<&'static str>,
+    /// The placeholder (e.g. `DIR`) and kind of the option's value, if any.
+    pub value: Option<(&'static str, Value)>,
     pub help: &'static str,
+    /// Shown without brackets in the synopsis.
+    pub required: bool,
+    /// May be given more than once.
+    pub many: bool,
 }
 
-/// Shorthand constructors.
+/// A flag: an option without a value.
 pub const fn flag(long: &'static str, help: &'static str) -> Opt {
     Opt {
         long,
         short: None,
         value: None,
         help,
+        required: false,
+        many: false,
     }
 }
 
-pub const fn opt(long: &'static str, value: &'static str, help: &'static str) -> Opt {
+/// An option with a value.
+pub const fn opt(long: &'static str, meta: &'static str, kind: Value, help: &'static str) -> Opt {
     Opt {
         long,
         short: None,
-        value: Some(value),
+        value: Some((meta, kind)),
         help,
+        required: false,
+        many: false,
     }
 }
 
-pub const fn short(mut o: Opt, c: char) -> Opt {
-    o.short = Some(c);
-    o
+impl Opt {
+    pub const fn short(mut self, c: char) -> Opt {
+        self.short = Some(c);
+        self
+    }
+
+    pub const fn required(mut self) -> Opt {
+        self.required = true;
+        self
+    }
+
+    pub const fn many(mut self) -> Opt {
+        self.many = true;
+        self
+    }
 }
 
-/// A command's interface: for parsing and for `--help`.
+/// One positional argument.
+#[derive(Debug)]
+pub struct Arg {
+    pub name: &'static str,
+    pub value: Value,
+    pub help: &'static str,
+    pub optional: bool,
+    pub many: bool,
+}
+
+/// A required positional argument.
+pub const fn arg(name: &'static str, value: Value, help: &'static str) -> Arg {
+    Arg {
+        name,
+        value,
+        help,
+        optional: false,
+        many: false,
+    }
+}
+
+impl Arg {
+    pub const fn optional(mut self) -> Arg {
+        self.optional = true;
+        self
+    }
+
+    pub const fn many(mut self) -> Arg {
+        self.many = true;
+        self
+    }
+}
+
+/// A command.
 #[derive(Debug)]
 pub struct Spec {
     pub name: &'static str,
-    pub usage: &'static str,
+    /// A short phrase, lower case, no period: "grant TAG to SUBJECT".
     pub about: &'static str,
-    pub details: &'static str,
+    /// Overrides the generated synopsis (the words after `writ NAME`).
+    pub synopsis: Option<&'static str>,
+    pub args: &'static [Arg],
     pub opts: &'static [Opt],
+    /// Description blocks. A block whose lines start with four spaces is
+    /// shown verbatim; `` `code` `` is shown in bold.
+    pub description: &'static [&'static str],
+    /// (what it does, the command line).
+    pub examples: &'static [(&'static str, &'static str)],
+    /// Related commands.
+    pub see_also: &'static [&'static str],
 }
 
 /// Parsed arguments.
@@ -73,7 +164,10 @@ impl Spec {
                 continue;
             }
             if arg == "-h" || arg == "--help" {
-                return Err(Error::Help(self));
+                return Err(Error::Help {
+                    spec: self,
+                    long: arg == "--help",
+                });
             }
             let (opt, inline) = if let Some(long) = arg.strip_prefix("--") {
                 let (name, inline) = match long.split_once('=') {
@@ -103,7 +197,7 @@ impl Spec {
                     return Err(self.usage_error(format!("--{} takes no value", opt.long)));
                 }
                 (Some(_), Some(v)) => v,
-                (Some(meta), None) => iter
+                (Some((meta, _)), None) => iter
                     .next()
                     .and_then(|v| v.to_str())
                     .map(str::to_owned)
@@ -123,45 +217,61 @@ impl Spec {
         }
     }
 
-    /// The full `--help` text.
-    pub fn help(&self) -> String {
-        let mut s = format!("{}\n\nUsage: writ {}\n", self.about, self.usage);
-        if !self.opts.is_empty() {
-            s.push_str("\nOptions:\n");
-            let rows: Vec<(String, &str)> = self
-                .opts
-                .iter()
-                .map(|o| {
-                    let mut left = match o.short {
-                        Some(c) => format!("-{c}, --{}", o.long),
-                        None => format!("    --{}", o.long),
-                    };
-                    if let Some(v) = o.value {
-                        left.push(' ');
-                        left.push_str(v);
-                    }
-                    (left, o.help)
-                })
-                .chain([("-h, --help".to_owned(), "show this help")])
-                .collect();
-            let width = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
-            for (left, help) in rows {
-                let mut lines = help.lines();
-                s.push_str(&format!(
-                    "  {left:width$}  {}\n",
-                    lines.next().unwrap_or_default()
-                ));
-                for line in lines {
-                    s.push_str(&format!("  {:width$}  {line}\n", ""));
-                }
+    /// The synopsis as words, after `writ NAME`: required options first, then
+    /// optional ones, then positional arguments.
+    pub fn synopsis_words(&'static self) -> Vec<Word> {
+        if let Some(s) = self.synopsis {
+            return s.split(' ').map(|w| Word::Literal(w.to_owned())).collect();
+        }
+        let ordered = self
+            .opts
+            .iter()
+            .filter(|o| o.required)
+            .chain(self.opts.iter().filter(|o| !o.required));
+        ordered
+            .map(Word::Opt)
+            .chain(self.args.iter().map(Word::Arg))
+            .collect()
+    }
+}
+
+/// One element of a synopsis.
+pub enum Word {
+    Opt(&'static Opt),
+    Arg(&'static Arg),
+    Literal(String),
+}
+
+impl Word {
+    /// Plain text, e.g. `[--key PATH]...`.
+    pub fn plain(&self) -> String {
+        match self {
+            Word::Opt(o) => {
+                let name = match o.short {
+                    Some(c) => format!("-{c}"),
+                    None => format!("--{}", o.long),
+                };
+                let body = match o.value {
+                    Some((meta, _)) => format!("{name} {meta}"),
+                    None => name,
+                };
+                let body = if o.required {
+                    body
+                } else {
+                    format!("[{body}]")
+                };
+                if o.many { format!("{body}...") } else { body }
             }
+            Word::Arg(a) => {
+                let body = if a.optional {
+                    format!("[{}]", a.name)
+                } else {
+                    a.name.to_owned()
+                };
+                if a.many { format!("{body}...") } else { body }
+            }
+            Word::Literal(s) => s.clone(),
         }
-        if !self.details.is_empty() {
-            s.push('\n');
-            s.push_str(self.details.trim_end());
-            s.push('\n');
-        }
-        s
     }
 }
 
@@ -215,14 +325,22 @@ mod tests {
 
     static SPEC: Spec = Spec {
         name: "t",
-        usage: "t",
         about: "test",
-        details: "",
-        opts: &[
-            short(opt("identity", "DIR", "identity"), 'i'),
-            flag("delegate", "delegate"),
-            opt("key", "PATH", "key"),
+        synopsis: None,
+        args: &[
+            arg("A", Value::Text, "a"),
+            arg("B", Value::File, "b").optional().many(),
         ],
+        opts: &[
+            flag("delegate", "delegate"),
+            opt("identity", "DIR", Value::Identity, "identity")
+                .short('i')
+                .required(),
+            opt("key", "PATH", Value::File, "key").many(),
+        ],
+        description: &[],
+        examples: &[],
+        see_also: &[],
     };
 
     fn parse(args: &[&str]) -> Result<Parsed, Error> {
@@ -257,6 +375,22 @@ mod tests {
         for bad in [&["--nope"][..], &["-x"], &["--key"], &["--delegate=yes"]] {
             assert!(matches!(parse(bad), Err(Error::Usage { .. })), "{bad:?}");
         }
-        assert!(matches!(parse(&["--help"]), Err(Error::Help(_))));
+        assert!(matches!(
+            parse(&["--help"]),
+            Err(Error::Help { long: true, .. })
+        ));
+        assert!(matches!(
+            parse(&["-h"]),
+            Err(Error::Help { long: false, .. })
+        ));
+    }
+
+    #[test]
+    fn synopsis() {
+        let words: Vec<String> = SPEC.synopsis_words().iter().map(Word::plain).collect();
+        assert_eq!(
+            words.join(" "),
+            "-i DIR [--delegate] [--key PATH]... A [B]..."
+        );
     }
 }

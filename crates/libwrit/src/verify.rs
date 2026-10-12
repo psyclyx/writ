@@ -136,37 +136,32 @@ impl fmt::Display for Reason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::time::Duration;
         match self {
-            Reason::Malformed(why) => write!(f, "malformed: {why}"),
-            Reason::Log(e) => write!(f, "issuer log: {e}"),
+            Reason::Malformed(why) => write!(f, "invalid: {why}"),
+            Reason::Log(e) => write!(f, "issuer: {e}"),
             Reason::UnknownEvent { event, head } => {
                 write!(
                     f,
-                    "issued under event {event}, but the log only reaches {head}"
+                    "names event {event} of its issuer, but the issuer's log ends at event {head}"
                 )
             }
-            Reason::NotKept { event, head } => write!(
-                f,
-                "issued under event {event} and not kept by rotation {head}"
-            ),
-            Reason::BadSignature => write!(f, "bad or missing signatures"),
-            Reason::Suite(s) => write!(f, "suite {s} not accepted"),
+            Reason::NotKept { head, .. } => {
+                write!(f, "issued before rotation {head}, which did not keep it")
+            }
+            Reason::BadSignature => write!(f, "its signatures are missing or invalid"),
+            Reason::Suite(s) => write!(f, "signed with {s}, which this verifier does not accept"),
             Reason::Revoked(by) => write!(f, "revoked by {}", by.to_hex().get(..16).unwrap_or("")),
             Reason::NotYetValid(t) => write!(f, "not valid until {}", Rfc3339(*t)),
             Reason::Expired(t) => write!(f, "expired {}", Rfc3339(*t)),
             Reason::MaxValidity(mv) => {
-                write!(
-                    f,
-                    "longer than the issuer's max-validity of {}",
-                    Duration(*mv)
-                )
+                write!(f, "lasts longer than its issuer allows ({})", Duration(*mv))
             }
             Reason::LeafCeiling(c) => {
-                write!(f, "leaf grant longer than the ceiling of {}", Duration(*c))
+                write!(f, "a grant to a leaf key may last at most {}", Duration(*c))
             }
-            Reason::Covers(t) => write!(f, "only conveys {t} here"),
+            Reason::Covers(t) => write!(f, "grants only {t} on this chain"),
             Reason::OutsideIssuer { granted, held } => write!(
                 f,
-                "grants {granted}, outside the {held} its issuer holds on this chain"
+                "grants {granted}, but its issuer holds only {held} on this chain"
             ),
         }
     }
@@ -212,16 +207,16 @@ pub enum Denial {
 impl fmt::Display for Denial {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Denial::NotFound { .. } => write!(f, "no valid chain from the roots"),
+            Denial::NotFound { .. } => write!(f, "no chain of valid grants leads to it"),
             Denial::Compromised(e) => write!(
                 f,
-                "identity {} equivocated at event {}: it is compromised",
+                "identity {} signed two different versions of event {}, so it can't be trusted",
                 e.id(),
                 e.n()
             ),
-            Denial::Root { id, error } => write!(f, "root {id}: {error}"),
-            Denial::Limit(what) => write!(f, "resource limit exceeded: {what}"),
-            Denial::Signature(r) => write!(f, "signature invalid: {r}"),
+            Denial::Root { id, error } => write!(f, "{id}: {error}"),
+            Denial::Limit(what) => write!(f, "gave up: too many {what}"),
+            Denial::Signature(r) => write!(f, "the signature is not valid: {r}"),
             Denial::Context => write!(f, "signature is for a different context"),
             Denial::Data => write!(f, "signature does not match the data"),
         }

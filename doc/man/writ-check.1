@@ -1,0 +1,75 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-CHECK 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-check \- check that SUBJECT holds TAG
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit check\fR \fB\-\-as\fR\ \fIID\fR... [\fB\-\-in\fR\ \fIPATH\fR]... [\fB\-\-at\fR\ \fITIME\fR] [\fB\-\-state\fR\ \fIDIR\fR] [\fB\-\-leaf\-ceiling\fR\ \fIDUR\fR] [\fB\-q\fR] \fISUBJECT\fR \fITAG\fR
+.ad
+.hy
+.SH DESCRIPTION
+Check whether SUBJECT holds TAG, from the point of view of the \-\-as identity. If it does, writ prints the chain of statements that shows it and exits with status 0. If not, it prints the reasons to standard error and exits with status 1.
+.PP
+Holding a tag also means holding every narrower tag: whoever holds (ssh) holds (ssh nas).
+.PP
+writ reads statements, identity logs and revocations from the \-\-in files, from standard input when it is a file or a pipe, and from each \-\-as identity directory. The order does not matter.
+.PP
+writ uses the current time, but never a time before its own build date. With \-\-state, it also never uses a time before the newest statement it has seen from the \-\-as identities, so setting the clock back does not make expired grants valid again. Use \-\-at to ask about another time.
+.SH ARGUMENTS
+.TP
+\fISUBJECT\fR
+an id, an identity directory, a key file, or an OpenSSH public key
+.TP
+\fITAG\fR
+what to check for, such as '(ssh nas)'
+.SH OPTIONS
+.TP
+\fB\-\-as\fR \fIID\fR
+the identity whose point of view to use: an id or an identity directory
+.TP
+\fB\-\-in\fR \fIPATH\fR
+read statements from PATH; '\-' means standard input
+.TP
+\fB\-\-at\fR \fITIME\fR
+answer for TIME instead of now: 2027\-01\-01, 2027\-01\-01T12:00Z, or @SECONDS
+.TP
+\fB\-\-state\fR \fIDIR\fR
+keep state in DIR between runs: the identity logs seen, and the clock floor
+.TP
+\fB\-\-leaf\-ceiling\fR \fIDUR\fR
+accept grants to leaf keys only if they last at most DUR (at most 24h)
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+print nothing; only set the exit status
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+May alice log in to nas?
+.PP
+.RS 4
+.nf
+writ check \-\-as me alice '(ssh nas)' < bundle.writ
+.fi
+.RE
+.PP
+Use the answer in a script:
+.PP
+.RS 4
+.nf
+if writ check \-q \-\-as me "$key" '(ssh nas)' < bundle.writ; then ...; fi
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-prove\fR(1), \fBwrit\-resolve\fR(1), \fBwrit\-grant\fR(1)

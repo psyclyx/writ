@@ -1,0 +1,80 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-NAME 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-name \- say who a name refers to
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit name\fR \fB\-i\fR\ \fIDIR\fR [\fB\-\-key\fR\ \fIPATH\fR]... [\fB\-\-expires\fR\ \fIWHEN\fR] [\fB\-\-note\fR\ \fITEXT\fR] [\fB\-q\fR] \fINAME\fR \fISUBJECT\fR
+.ad
+.hy
+.SH DESCRIPTION
+Say that, for the identity in DIR, NAME refers to SUBJECT. Names are local: 'me alice' is whoever you call alice, and someone else's alice is a different name. A name can refer to more than one subject. It then works as a group.
+.PP
+SUBJECT can be:
+.PP
+.RS 4
+.nf
+writ1...                   an id
+DIR                        an identity directory (its id is used)
+\&'writ1... bob laptop'      a name path: whoever bob calls laptop
+FILE                       a public key file, or an OpenSSH .pub file
+\&'ssh\-ed25519 AAAA...'      an OpenSSH public key
+.fi
+.RE
+.PP
+writ prints the signed statement and adds it to DIR/issued.writ.
+.SH ARGUMENTS
+.TP
+\fINAME\fR
+the name: one word, or a quoted string
+.TP
+\fISUBJECT\fR
+who the name refers to
+.SH OPTIONS
+.TP
+\fB\-i\fR, \fB\-\-identity\fR \fIDIR\fR
+the identity that signs the statement
+.TP
+\fB\-\-key\fR \fIPATH\fR
+secret key file (default: DIR/current.key); give one \-\-key per key when several keys must sign; '\-' means standard input
+.TP
+\fB\-\-expires\fR \fIWHEN\fR
+when the statement expires: a duration such as 30d or 12h, or a date such as 2027\-01\-01 (default: never)
+.TP
+\fB\-\-note\fR \fITEXT\fR
+text to show with the statement; writ does not use it
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+print only the statement
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Call an identity alice:
+.PP
+.RS 4
+.nf
+writ name \-i me alice writ1qqq... >> bundle.writ
+.fi
+.RE
+.PP
+Add an SSH key to the group 'laptops':
+.PP
+.RS 4
+.nf
+writ name \-i me laptops ~/.ssh/id_ed25519.pub >> bundle.writ
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-grant\fR(1), \fBwrit\-resolve\fR(1)

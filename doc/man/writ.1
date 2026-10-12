@@ -1,0 +1,190 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ \- signed statements about keys
+.SH SYNOPSIS
+\fBwrit\fR [\fB\-\-color\fR \fIWHEN\fR] \fICOMMAND\fR [\fIARGS\fR]...
+.br
+\fBwrit\fR \fB\-\-help\fR | \fB\-\-version\fR
+.SH DESCRIPTION
+writ makes and checks signed statements about keys: who is who (names) and who may do what (grants).
+.PP
+Each person or machine has an identity: a short log of keys with an id that never changes. An identity signs statements with its current key. A separate next key, kept offline, can replace the keys later without changing the id. This is called rotation.
+.PP
+Statements are small signed items. They are stored and sent as text files called bundles. A bundle is any number of items, in any order, so \fBcat a.writ b.writ > c.writ\fR makes a bundle too.
+.PP
+To check a statement, you name the identities you trust (usually your own) with \-\-as. writ then looks for a chain of grants from them to the subject. Each grant in a chain can only narrow what the one before it allowed.
+.SH COMMANDS
+.SS Identities
+.TP
+\fBwrit\-init\fR(1)
+create an identity
+.TP
+\fBwrit\-id\fR(1)
+print the id of an identity
+.TP
+\fBwrit\-rotate\fR(1)
+replace the keys of an identity, keeping its id
+.TP
+\fBwrit\-export\fR(1)
+print the log and valid statements of an identity
+.SS Statements
+.TP
+\fBwrit\-name\fR(1)
+say who a name refers to
+.TP
+\fBwrit\-grant\fR(1)
+grant TAG to SUBJECT
+.TP
+\fBwrit\-revoke\fR(1)
+revoke a statement or signature
+.TP
+\fBwrit\-leaf\fR(1)
+make a short\-lived leaf key and grant TAG to it
+.SS Signatures
+.TP
+\fBwrit\-sign\fR(1)
+sign a file
+.TP
+\fBwrit\-verify\fR(1)
+check a signature and what its signer may do
+.SS Questions
+.TP
+\fBwrit\-check\fR(1)
+check that SUBJECT holds TAG
+.TP
+\fBwrit\-resolve\fR(1)
+list the subjects a name refers to
+.TP
+\fBwrit\-prove\fR(1)
+print only the statements that show SUBJECT holds TAG
+.TP
+\fBwrit\-show\fR(1)
+print bundles in readable form
+.SS Keys
+.TP
+\fBwrit\-keygen\fR(1)
+make a secret key
+.TP
+\fBwrit\-pubkey\fR(1)
+print the public key of a secret key
+.SS Shell
+.TP
+\fBwrit\-completions\fR(1)
+print a shell completion script
+.SH OPTIONS
+.TP
+\fB\-\-color\fR \fIWHEN\fR
+when to use color: auto, always, or never (default: auto)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+print the version
+.SH IDENTITIES AND KEYS
+An identity is a log of key events. The first event creates the identity, and its hash is the id. Later events, called rotations, replace the keys. The id stays the same.
+.PP
+Identity keys use SLH\-DSA\-SHAKE\-128s, a signature scheme whose security rests only on hash functions. Each event names the current keys, which sign statements, and commits to the next keys, which can sign only the next rotation. A thief who steals the current key can't rotate the identity. A rotation makes everything the thief signed invalid for every verifier that sees it.
+.PP
+An identity can have several keys, of which K must sign. This allows identities shared by a group, and recovery with the help of friends.
+.SH STATEMENTS AND BUNDLES
+There are three kinds of statements. A name says who a name refers to. A grant gives a tag to a subject. A revocation cancels an earlier statement or data signature by the same identity. Names and grants may expire. A statement is identified by the hash of its contents; its signatures are not part of the hash.
+.PP
+Items are stored as armored text: blocks between \-\-\-\-\-BEGIN WRIT\-\-\-\-\- and \-\-\-\-\-END WRIT\-\-\-\-\- lines. A file of such blocks is a bundle. \fBwrit show\fR prints any bundle in readable form.
+.SH TAGS
+A tag is a list of words, from general to specific: (ssh), (ssh nas), (zuko home relay). A tag covers itself and every longer tag that starts with it. The empty tag () covers everything. There are no wildcards, and words are compared exactly: (ssh nas) does not cover (ssh nasa).
+.PP
+Along a chain of grants, the subject holds the longest of the tags, if each tag starts with the one before it. If two tags in the chain differ, the chain grants nothing.
+.SH NAMES
+Names are local to the identity that makes them. The name path 'me alice laptops' means: whoever I call alice, then whoever she calls laptops. A name can refer to several subjects. A grant to a name path lets the identities along the path decide who gets the grant.
+.SH LEAF KEYS
+A leaf key is a key without a log. It uses ML\-DSA\-65 and Ed25519 together, and both signatures must be valid. Leaf keys sign and verify quickly, and every grant to a leaf key expires within 24 hours. Use them for machines that sign often.
+.SH TIME
+Each statement includes the time it was issued, as given by the signer, and may carry an expiry time. writ does not accept a statement issued more than 5 minutes in the future.
+.PP
+writ reads the clock, but never uses a time before its build date, or, with \-\-state, before the newest statement seen from the \-\-as identities. So setting the clock back does not make expired grants valid again. Setting it forward only makes grants expire early.
+.SH SECRET KEYS
+A secret key file holds one line per key, starting with WRIT\-SECRET\-KEY\-1. The file is not encrypted. writ creates key files that only their owner can read, and never overwrites a file. Commands that read keys accept \- (standard input) and /dev/fd/N, and commands that write keys accept \-, so keys can stay encrypted with age(1):
+.PP
+.RS 4
+.nf
+writ grant \-i me \-\-key <(age \-d me.key.age) alice '(ssh)'
+.fi
+.RE
+.SH SECURITY
+writ has no network protocol. Verifiers learn about rotations and revocations only from the bundles you give them. A verifier that never sees your rotation keeps trusting your old current key, including in the hands of a thief. \-\-max\-validity does not change that: a thief who has the key can keep making new statements. Give verifiers your newest bundle, and have them use \-\-state, so that once they see a rotation they never go back.
+.PP
+If two different rotations of one identity appear, writ refuses the identity: someone who holds its next keys signed both. writ keeps refusing it (with \-\-state) until you remove its file from the state directory.
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH ENVIRONMENT
+.TP
+\fBNO_COLOR\fR
+if set and not empty, do not use color, unless \-\-color=always
+.TP
+\fBCLICOLOR_FORCE\fR
+if set and not 0, use color even when output is not a terminal
+.TP
+\fBTERM\fR
+if dumb, do not use color
+.TP
+\fBCOLUMNS\fR
+the width to wrap help text to
+.SH FILES
+.TP
+\fBDIR/log.writ\fR
+the identity log
+.TP
+\fBDIR/issued.writ\fR
+every statement and data signature the identity issued; read by \fBwrit rotate\fR and \fBwrit export\fR
+.TP
+\fBDIR/next.writ\fR
+the public keys of every set of next keys the log has committed to
+.TP
+\fBDIR/current.key\fR
+the current secret key, unless you keep it somewhere else
+.TP
+\fBSTATE/floor\fR
+with \-\-state: the clock floor, in seconds since 1970
+.TP
+\fBSTATE/logs/ID.writ\fR
+with \-\-state: the log of each identity a question involved
+.SH EXAMPLES
+Create two identities:
+.PP
+.RS 4
+.nf
+writ init me \-\-next\-out \- | age \-p > me\-next.key.age
+writ init alice \-\-next\-out alice\-next.key
+.fi
+.RE
+.PP
+Name alice, and let her log in to nas:
+.PP
+.RS 4
+.nf
+writ name \-i me alice alice >> bundle.writ
+writ grant \-i me 'me alice' '(ssh nas)' >> bundle.writ
+.fi
+.RE
+.PP
+Check, as nas would:
+.PP
+.RS 4
+.nf
+writ check \-\-as me alice '(ssh nas)' < bundle.writ
+.fi
+.RE
+.SH STANDARDS
+SLH\-DSA (FIPS 205), ML\-DSA (FIPS 204), Ed25519 (RFC 8032), SHA\-3 and SHAKE (FIPS 202), bech32m (BIP 350). The exact formats are in SPEC.md in the writ source.
+.SH SEE ALSO
+\fBwrit\-init\fR(1), \fBwrit\-id\fR(1), \fBwrit\-rotate\fR(1), \fBwrit\-export\fR(1), \fBwrit\-name\fR(1), \fBwrit\-grant\fR(1), \fBwrit\-revoke\fR(1), \fBwrit\-leaf\fR(1), \fBwrit\-sign\fR(1), \fBwrit\-verify\fR(1), \fBwrit\-check\fR(1), \fBwrit\-resolve\fR(1), \fBwrit\-prove\fR(1), \fBwrit\-show\fR(1), \fBwrit\-keygen\fR(1), \fBwrit\-pubkey\fR(1), \fBwrit\-completions\fR(1), \fBage\fR(1), \fBssh\-keygen\fR(1)

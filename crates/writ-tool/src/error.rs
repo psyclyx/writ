@@ -10,8 +10,8 @@ pub enum Error {
         spec: &'static Spec,
         message: String,
     },
-    /// `--help` was asked for.
-    Help(&'static Spec),
+    /// Help was asked for: `-h` (short) or `--help` (long).
+    Help { spec: &'static Spec, long: bool },
     /// The answer is no; the explanation has been printed.
     Denied,
     /// Anything else.
@@ -23,7 +23,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl Error {
     pub fn exit_code(&self) -> u8 {
         match self {
-            Error::Help(_) => 0,
+            Error::Help { .. } => 0,
             Error::Denied => 1,
             Error::Usage { .. } | Error::Msg(_) => 2,
         }

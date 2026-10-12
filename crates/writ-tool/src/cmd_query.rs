@@ -1,111 +1,16 @@
 //! `check`, `resolve`, `prove`, `verify`, `show`.
 
-use crate::args::{Opt, Parsed, Spec, flag, opt, short};
+use crate::args::{Parsed, Spec};
 use crate::error::{Error, Result, err};
 use crate::ident::{self, IdentityDir};
+use crate::specs::{CHECK, PROVE, RESOLVE, VERIFY};
 use crate::state::State;
+use crate::style::{self, Stream};
 use crate::{display, fs, subject, wall_clock};
 use libwrit::time::parse_duration;
 use libwrit::{Body, Denial, Floor, Id, Item, Material, Policy, Time, Verifier};
 use std::collections::BTreeSet;
 use std::path::Path;
-
-macro_rules! query_opts {
-    ($($extra:expr),* $(,)?) => {
-        &[
-            opt("as", "ID", "whose point of view: an id or identity directory (repeatable)"),
-            opt("in", "PATH", "read material from PATH (repeatable; '-' for stdin)"),
-            opt("at", "TIME", "answer as of TIME (2027-01-01, 2027-01-01T12:00Z, @UNIX)"),
-            opt("state", "DIR", "verifier state: clock floor and remembered logs"),
-            opt("leaf-ceiling", "DUR", "accept leaf grants of at most DUR (≤ 24h)"),
-            $($extra,)*
-            short(flag("quiet", "no explanation; just the exit status"), 'q'),
-        ]
-    };
-}
-
-const CHECK_OPTS: &[Opt] = query_opts!();
-const RESOLVE_OPTS: &[Opt] =
-    query_opts!(short(flag("verbose", "show each answer's derivation"), 'v'));
-const PROVE_OPTS: &[Opt] = query_opts!();
-const VERIFY_OPTS: &[Opt] = query_opts!(
-    short(
-        opt("tag", "TAG", "what the signer must hold (required)"),
-        't'
-    ),
-    short(
-        opt(
-            "context",
-            "CONTEXT",
-            "the application label it was signed for (required)"
-        ),
-        'c'
-    ),
-);
-
-pub static CHECK: Spec = Spec {
-    name: "check",
-    usage: "check --as ID SUBJECT TAG [options] [< bundle]",
-    about: "does SUBJECT hold TAG?",
-    details: "\
-Exit status 0 means yes, and the chain of grants is printed; 1 means no, and
-the reasons are printed to stderr.
-
-SUBJECT is an id, an identity directory, a key file, or an OpenSSH public
-key. TAG is what's being asked for: holding '(ssh)' covers '(ssh nas)'.
-
-The material (identity logs, statements, revocations) comes from --in files,
-from stdin when it is piped, and from each --as directory's own log and
-issuance log. Order doesn't matter.
-
-Time: the wall clock, never earlier than writ's build date or the --state
-floor (the newest statement from your roots seen so far). --at overrides it.",
-    opts: CHECK_OPTS,
-};
-
-pub static RESOLVE: Spec = Spec {
-    name: "resolve",
-    usage: "resolve --as ID NAMEPATH [options] [< bundle]",
-    about: "who does NAMEPATH refer to?",
-    details: "\
-NAMEPATH is names in someone's namespace: 'writ1… alice', 'me alice
-laptops', or just 'alice' to start from the (first) --as identity. Prints one
-subject per line.
-
-The material comes from --in, piped stdin, and --as directories.",
-    opts: RESOLVE_OPTS,
-};
-
-pub static PROVE: Spec = Spec {
-    name: "prove",
-    usage: "prove --as ID SUBJECT TAG [options] [< bundle] [> proof.writ]",
-    about: "print just the material that shows SUBJECT holds TAG",
-    details: "\
-The proof is a bundle: the logs and statements on one chain, nothing else.
-Hand verifiers the proof rather than everything you know — statements reveal
-who knows whom.",
-    opts: PROVE_OPTS,
-};
-
-pub static VERIFY: Spec = Spec {
-    name: "verify",
-    usage: "verify --as ID --tag TAG --context CONTEXT FILE SIGNATURE [options] [< bundle]",
-    about: "is SIGNATURE on FILE by someone who holds TAG?",
-    details: "\
-Checks the signature over FILE ('-' for stdin) in CONTEXT, then that its
-signer holds TAG from the --as point of view. Exit status 0 means good.
-
-The material comes from --in, piped stdin, and --as directories.",
-    opts: VERIFY_OPTS,
-};
-
-pub static SHOW: Spec = Spec {
-    name: "show",
-    usage: "show [FILE...]",
-    about: "print bundles readably",
-    details: "Reads armored or binary bundles from FILEs or stdin.",
-    opts: &[],
-};
 
 /// Everything a question needs.
 struct Query {
@@ -121,7 +26,8 @@ struct Query {
 impl Query {
     fn setup(parsed: &Parsed, spec: &'static Spec, stdin_free: bool) -> Result<Query> {
         if parsed.values("as").is_empty() {
-            return Err(spec.usage_error("--as ID is required: from whose point of view?".into()));
+            return Err(spec
+                .usage_error("--as is required: the identity whose point of view to use".into()));
         }
         let mut material = Material::new();
         let mut roots = Vec::new();
@@ -214,7 +120,11 @@ impl Query {
 
     fn deny(&self, parsed: &Parsed, headline: String, d: &Denial) -> Error {
         if !parsed.flag("quiet") {
-            eprint!("denied: {headline}: {}", display::denial(d, &self.material));
+            eprint!(
+                "{} {headline}: {}",
+                style::paint(Stream::Err, style::BAD, "denied:"),
+                display::denial(d, &self.material)
+            );
         }
         Error::Denied
     }
@@ -252,7 +162,8 @@ pub fn check(parsed: &Parsed) -> Result<()> {
             q.persist(proof.ids.iter().copied().chain(subject_id(&holder)))?;
             if !parsed.flag("quiet") {
                 fs::print(&format!(
-                    "allowed: {} holds {tag}\n{}",
+                    "{} {} holds {tag}\n{}",
+                    style::paint(Stream::Out, style::OK, "allowed:"),
                     display::holder(&holder),
                     display::proof(&proof, &q.material, q.now)
                 ))?;
@@ -352,7 +263,7 @@ pub fn verify(parsed: &Parsed) -> Result<()> {
     let [file, sig_path] = parsed.exact(&VERIFY, ["FILE", "SIGNATURE"])?;
     require_as(parsed, &VERIFY)?;
     let tag = subject::tag(parsed.value("tag").ok_or_else(|| {
-        VERIFY.usage_error("--tag TAG is required: what must the signer hold?".into())
+        VERIFY.usage_error("--tag is required: what the signer must hold".into())
     })?)?;
     let context = parsed
         .value("context")
@@ -383,7 +294,8 @@ pub fn verify(parsed: &Parsed) -> Result<()> {
             q.persist(proof.ids.iter().copied())?;
             if !parsed.flag("quiet") {
                 fs::print(&format!(
-                    "good signature by {signer}, signed {}, holding {tag}\n{}",
+                    "{} by {signer}, signed {}, holding {tag}\n{}",
+                    style::paint(Stream::Out, style::OK, "good signature"),
                     display::time(sig.body.issued),
                     display::proof(&proof, &q.material, q.now)
                 ))?;
@@ -456,7 +368,9 @@ fn label_roots_names(roots: &[Id], material: &Material) {
 
 fn require_as(parsed: &Parsed, spec: &'static Spec) -> Result<()> {
     if parsed.values("as").is_empty() {
-        return Err(spec.usage_error("--as ID is required: from whose point of view?".into()));
+        return Err(
+            spec.usage_error("--as is required: the identity whose point of view to use".into())
+        );
     }
     Ok(())
 }

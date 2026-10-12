@@ -166,7 +166,7 @@ fn names_grants_revocation() {
         &["check", "--as", "me", &alice, "(ssh)", "--in", "b.writ"],
         1,
     );
-    assert!(err.contains("only conveys (ssh nas)"), "{err}");
+    assert!(err.contains("grants only (ssh nas)"), "{err}");
     // Quiet mode: status only.
     let (code, out, err) = s.run(&[
         "check", "-q", "--as", "me", "alice", "(ssh)", "--in", "b.writ",
@@ -438,7 +438,7 @@ fn rotation_keeps_and_drops() {
         ],
         2,
     );
-    assert!(err.contains("current key, not the next"), "{err}");
+    assert!(err.contains("holds the current key"), "{err}");
     let (code, _, err) = s.run(&[
         "rotate",
         "-i",
@@ -457,7 +457,7 @@ fn rotation_keeps_and_drops() {
     assert_eq!(s.read("me/current.key"), s.read("me-next.key"));
     // The old key is retired and refused.
     let err = s.fails(&["grant", "-i", "me", "--key", "old.key", &alice, "(x)"], 2);
-    assert!(err.contains("retired"), "{err}");
+    assert!(err.contains("no longer a current key"), "{err}");
     s.ok(&["grant", "-i", "me", &alice, "(fresh)"]);
     // Rotating again needs the new next key.
     s.fails(
@@ -555,7 +555,7 @@ fn k_of_n_and_friends() {
         "friend.pub",
     ]);
     assert_eq!(code, 0, "{err}");
-    assert!(err.contains("2 of 3"), "{err}");
+    assert!(err.contains("any 2 of these 3"), "{err}");
     let cold = s.read("cold.keys");
     let mut lines = cold.lines();
     std::fs::write(s.path("cold1.key"), lines.next().unwrap()).unwrap();
@@ -662,7 +662,7 @@ fn state_ratchet_and_equivocation() {
         ],
         1,
     );
-    assert!(err.contains("not kept"), "{err}");
+    assert!(err.contains("did not keep it"), "{err}");
 
     // The twin rotates differently with the same next key: equivocation.
     s.ok(&[
@@ -692,7 +692,7 @@ fn state_ratchet_and_equivocation() {
         ],
         1,
     );
-    assert!(err.contains("equivocated"), "{err}");
+    assert!(err.contains("two different versions"), "{err}");
     // Once seen, it stays seen.
     let err = s.fails(
         &[
@@ -708,7 +708,7 @@ fn state_ratchet_and_equivocation() {
         ],
         1,
     );
-    assert!(err.contains("equivocated"), "{err}");
+    assert!(err.contains("two different versions"), "{err}");
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -751,7 +751,10 @@ fn ssh_keys_and_max_validity() {
         ],
         2,
     );
-    assert!(err.contains("can't delegate"), "{err}");
+    assert!(
+        err.contains("does not work with an application key"),
+        "{err}"
+    );
     std::fs::write(s.path("id_ed25519.pub"), format!("{line}\n")).unwrap();
     let out = s.ok(&["check", "--as", "me", "id_ed25519.pub", "(ssh nas)"]);
     assert!(out.contains("ssh-ed25519"), "{out}");
@@ -783,9 +786,11 @@ fn usage_and_help() {
     assert!(out.contains("Questions"));
     let (code, out, _) = s.run(&["grant", "--help"]);
     assert_eq!(code, 0);
-    assert!(out.contains("--delegate") && out.contains("Usage: writ grant"));
+    assert!(
+        out.contains("--delegate") && out.contains("Usage:") && out.contains("writ grant -i DIR")
+    );
     let err = s.fails(&["gran"], 2);
-    assert!(err.contains("did you mean `grant`"), "{err}");
+    assert!(err.contains("did you mean 'grant'"), "{err}");
     let err = s.fails(&["grant", "-i", "me"], 2);
     assert!(err.contains("missing SUBJECT TAG"), "{err}");
     let err = s.fails(&["check", "x", "()"], 2);
@@ -881,7 +886,7 @@ fn a_key_with_a_future_role_is_not_retired() {
         "1",
     ]);
     assert_eq!(code, 0, "{err}");
-    assert!(err.contains("left as is"), "{err}");
+    assert!(err.contains("was not changed"), "{err}");
     assert_eq!(s.read("me/current.key"), before);
 }
 
@@ -909,4 +914,68 @@ fn state_remembers_only_what_was_involved() {
         logs.iter().any(|l| l.starts_with(&alice)) || logs.len() == 1,
         "{logs:?}"
     );
+}
+
+#[test]
+fn color_follows_the_conventions() {
+    let s = Sandbox::new("color");
+    let esc = |args: &[&str], env: &[(&str, &str)]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_writ"))
+            .args(args)
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR_FORCE")
+            .envs(env.iter().copied())
+            .current_dir(&s.dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).contains('\x1b')
+    };
+    // Not a terminal: no color unless asked.
+    assert!(!esc(&["--help"], &[]));
+    assert!(esc(&["--color=always", "--help"], &[]));
+    assert!(esc(&["--help", "--color", "always"], &[]));
+    assert!(esc(&["--help"], &[("CLICOLOR_FORCE", "1")]));
+    assert!(!esc(&["--help"], &[("CLICOLOR_FORCE", "0")]));
+    assert!(!esc(
+        &["--help"],
+        &[("CLICOLOR_FORCE", "1"), ("NO_COLOR", "1")]
+    ));
+    assert!(esc(&["--color=always", "--help"], &[("NO_COLOR", "1")]));
+    assert!(!esc(
+        &["--color=never", "--help"],
+        &[("CLICOLOR_FORCE", "1")]
+    ));
+    let err = s.fails(&["--color=sometimes", "--help"], 2);
+    assert!(err.contains("auto, always, or never"), "{err}");
+}
+
+#[test]
+fn help_comes_in_two_lengths() {
+    let s = Sandbox::new("helplen");
+    let short = s.ok(&["grant", "-h"]);
+    let long = s.ok(&["grant", "--help"]);
+    assert!(short.contains("Usage:") && !short.contains("Examples:"));
+    assert!(long.contains("Examples:") && long.contains("Arguments:"));
+    assert_eq!(s.ok(&["help", "grant"]), long);
+    for cmd in [
+        "init",
+        "id",
+        "rotate",
+        "export",
+        "name",
+        "grant",
+        "revoke",
+        "leaf",
+        "sign",
+        "verify",
+        "check",
+        "resolve",
+        "prove",
+        "show",
+        "keygen",
+        "pubkey",
+        "completions",
+    ] {
+        s.ok(&[cmd, "--help"]);
+    }
 }

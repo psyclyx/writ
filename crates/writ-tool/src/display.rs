@@ -1,5 +1,6 @@
 //! Readable output: `writ show`, proofs, and denials.
 
+use crate::style::{self, Stream};
 use libwrit::time::{Duration, Rfc3339};
 use libwrit::{
     Authority, Body, Claim, DataSig, Denial, Event, Hash, Holder, Id, Issuer, Item, Material,
@@ -186,7 +187,12 @@ fn event(out: &mut String, e: &Signed<Event>) {
     let body = &e.body;
     match body {
         Event::Inception(_) => {
-            let _ = writeln!(out, "inception {}", id_full(&body.id()));
+            let _ = writeln!(
+                out,
+                "{} {}",
+                style::paint(Stream::Out, style::BOLD, "inception"),
+                id_full(&body.id())
+            );
         }
         Event::Rotation(r) => {
             let _ = writeln!(out, "rotation {} of {}", r.n, id_full(&r.id));
@@ -218,7 +224,12 @@ fn event(out: &mut String, e: &Signed<Event>) {
 
 fn statement(out: &mut String, s: &Signed<Statement>) {
     let b = &s.body;
-    let _ = writeln!(out, "{} {}", b.kind(), b.hash());
+    let _ = writeln!(
+        out,
+        "{} {}",
+        style::paint(Stream::Out, style::BOLD, b.kind()),
+        dim(&b.hash().to_hex())
+    );
     row(out, "issuer", issuer(&b.issuer));
     row(out, "issued", time(b.issued));
     if let Some(e) = b.expires {
@@ -256,7 +267,12 @@ fn statement(out: &mut String, s: &Signed<Statement>) {
 
 fn data_sig(out: &mut String, s: &Signed<DataSig>) {
     let b = &s.body;
-    let _ = writeln!(out, "signature {}", b.hash());
+    let _ = writeln!(
+        out,
+        "{} {}",
+        style::paint(Stream::Out, style::BOLD, "signature"),
+        dim(&b.hash().to_hex())
+    );
     row(out, "signer", issuer(&b.signer));
     row(out, "issued", time(b.issued));
     row(out, "context", print_atom(&b.context));
@@ -265,6 +281,16 @@ fn data_sig(out: &mut String, s: &Signed<DataSig>) {
 }
 
 /// The chain behind a positive answer.
+/// A proof-line label, padded and colored for stdout.
+fn line_label(text: &str) -> String {
+    style::paint(Stream::Out, style::ACCENT, &format!("{text:<8}"))
+}
+
+/// A hash or other secondary detail, dimmed for stdout.
+fn dim(text: &str) -> String {
+    style::paint(Stream::Out, style::DIM, text)
+}
+
 pub fn proof(p: &Proof, material: &Material, now: Time) -> String {
     let mut out = String::new();
     let start = if p.steps.is_empty() && !p.names.is_empty() {
@@ -272,7 +298,7 @@ pub fn proof(p: &Proof, material: &Material, now: Time) -> String {
     } else {
         "root"
     };
-    let _ = writeln!(out, "  {start:<8} {}", id_full(&p.root));
+    let _ = writeln!(out, "  {} {}", line_label(start), id_full(&p.root));
     let mut from = id(&p.root);
     for step in &p.steps {
         for h in &step.names {
@@ -282,8 +308,9 @@ pub fn proof(p: &Proof, material: &Material, now: Time) -> String {
                 let who = issuer_short(&st.body.issuer);
                 let _ = writeln!(
                     out,
-                    "  name     {}  {who}'s {} is {}",
-                    short(h),
+                    "  {} {}  {who}'s {} is {}",
+                    line_label("name"),
+                    dim(&short(h)),
                     print_atom(name),
                     subject(s)
                 );
@@ -294,8 +321,9 @@ pub fn proof(p: &Proof, material: &Material, now: Time) -> String {
         {
             let _ = writeln!(
                 out,
-                "  grant    {}  {from} → {} {tag}{}",
-                short(&step.grant),
+                "  {} {}  {from} → {} {tag}{}",
+                line_label("grant"),
+                dim(&short(&step.grant)),
                 holder(&step.holder),
                 if *delegate { " (delegable)" } else { "" }
             );
@@ -309,27 +337,29 @@ pub fn proof(p: &Proof, material: &Material, now: Time) -> String {
             let who = issuer_short(&st.body.issuer);
             let _ = writeln!(
                 out,
-                "  name     {}  {who}'s {} is {}",
-                short(h),
+                "  {} {}  {who}'s {} is {}",
+                line_label("name"),
+                dim(&short(h)),
                 print_atom(name),
                 subject(s)
             );
         }
     }
     if p.signature.is_none() && p.steps.is_empty() && p.names.is_empty() {
-        let _ = writeln!(out, "  (the subject is a root)");
+        let _ = writeln!(out, "  (the subject is an --as identity)");
     }
     match p.expires {
         Some(e) => {
             let _ = writeln!(
                 out,
-                "  until    {} (in {})",
+                "  {} {} (in {})",
+                line_label("until"),
                 time(e),
                 approx(e.saturating_sub(now))
             );
         }
         None => {
-            let _ = writeln!(out, "  until    no expiry");
+            let _ = writeln!(out, "  {} no expiry", line_label("until"));
         }
     }
     out
@@ -348,28 +378,34 @@ pub fn denial(d: &Denial, material: &Material) -> String {
     match d {
         Denial::NotFound { rejected } => {
             if rejected.is_empty() {
-                out.push_str("  no statement in the material applies\n");
+                out.push_str("  no statement in the input applies\n");
             } else {
-                out.push_str("  candidates that failed:\n");
+                out.push_str("  statements that did not apply:\n");
             }
             for r in rejected {
                 let what = material
                     .statement(&r.statement)
                     .map(|s| describe(&s.body))
                     .unwrap_or_default();
-                let _ = writeln!(out, "    {} {what}: {}", short(&r.statement), r.reason);
+                let _ = writeln!(
+                    out,
+                    "    {} {what}: {}",
+                    style::paint(Stream::Err, style::DIM, &short(&r.statement)),
+                    r.reason
+                );
             }
         }
         Denial::Compromised(e) => {
             let _ = writeln!(
                 out,
-                "  two different events numbered {} were signed by its next authority; \
-                 every query involving it fails until you intervene",
+                "  its next keys signed two different versions of event {}. writ refuses \
+                 this identity; with --state it keeps refusing it until you delete \
+                 its file from the state directory",
                 e.n()
             );
         }
         Denial::Root { .. } => {
-            out.push_str("  (is the root's log in the input? `--as DIR` adds it)\n");
+            out.push_str("  the input has no valid log for this identity; give its directory with --as, or its log with --in\n");
         }
         _ => {}
     }

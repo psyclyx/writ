@@ -1,0 +1,40 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-SHOW 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-show \- print bundles in readable form
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit show\fR [\fIFILE\fR]...
+.ad
+.hy
+.SH DESCRIPTION
+Print each item in the bundles: identity events, statements, data signatures, keys. Ids and hashes are printed in full.
+.SH ARGUMENTS
+.TP
+\fIFILE\fR
+bundle files (default: standard input)
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Find the hash of a statement to revoke:
+.PP
+.RS 4
+.nf
+writ show me/issued.writ
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-export\fR(1), \fBwrit\-revoke\fR(1)

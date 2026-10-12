@@ -47,7 +47,7 @@ impl IdentityDir {
         let path = PathBuf::from(dir);
         if !is_identity_dir(&path) {
             return err(format!(
-                "{dir} is not a writ identity (no {LOG}; create one with `writ init {dir}`)"
+                "{dir} is not a writ identity: it has no {LOG}. Create one with 'writ init {dir}'"
             ));
         }
         let lock = lock
@@ -101,7 +101,7 @@ impl IdentityDir {
         let paths: Vec<String> = if key_paths.is_empty() {
             if !default.exists() {
                 return err(format!(
-                    "no key: {} doesn't exist; pass --key PATH",
+                    "no key given, and {} does not exist; give the key with --key PATH",
                     default.display()
                 ));
             }
@@ -139,12 +139,12 @@ impl IdentityDir {
             });
             return match retired {
                 Some(n) => err(format!(
-                    "the key in {path} was retired: it signed for event {n}, and the log is at event {} \
-                     (after a rotation, the key you revealed with --next-key is the current key)",
-                    self.log.head_n()
+                    "the key in {path} is no longer a current key: rotation {} replaced it. \
+                     After a rotation, sign with the next key you gave to 'writ rotate'",
+                    n + 1
                 )),
                 None => err(format!(
-                    "the key in {path} is not in the current authority of {}",
+                    "the key in {path} is not a current key of {}",
                     self.name()
                 )),
             };
@@ -152,7 +152,7 @@ impl IdentityDir {
         let k = authority.k();
         if signers.len() < k {
             return err(format!(
-                "{} needs {k} of its {} keys to sign; got {}",
+                "{} needs {k} of its {} keys to sign, but {} were given",
                 self.name(),
                 authority.keys().len(),
                 signers.len()
@@ -167,7 +167,7 @@ impl IdentityDir {
         let items = fs::read_bundle_file(&path)?;
         if items.is_empty() {
             return err(format!(
-                "{} is missing: it records the next authority's public keys",
+                "{} is missing; rotation needs the public next keys it holds",
                 path.display()
             ));
         }
@@ -182,7 +182,7 @@ impl IdentityDir {
             })
             .ok_or_else(|| {
                 Error::Msg(format!(
-                    "{}: no authority matches the log's commitment",
+                    "{}: none of these next keys match the identity log",
                     path.display()
                 ))
             })

@@ -1,0 +1,63 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-PROVE 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-prove \- print only the statements that show SUBJECT holds TAG
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit prove\fR \fB\-\-as\fR\ \fIID\fR... [\fB\-\-in\fR\ \fIPATH\fR]... [\fB\-\-at\fR\ \fITIME\fR] [\fB\-\-state\fR\ \fIDIR\fR] [\fB\-\-leaf\-ceiling\fR\ \fIDUR\fR] [\fB\-q\fR] \fISUBJECT\fR \fITAG\fR
+.ad
+.hy
+.SH DESCRIPTION
+Like \fBwrit check\fR, but print a bundle with only the identity logs and statements the answer needs. Give a verifier this proof instead of everything you have. Statements show who you know, so share only what a verifier needs.
+.PP
+writ reads statements, identity logs and revocations from the \-\-in files, from standard input when it is a file or a pipe, and from each \-\-as identity directory. The order does not matter.
+.SH ARGUMENTS
+.TP
+\fISUBJECT\fR
+an id, an identity directory, a key file, or an OpenSSH public key
+.TP
+\fITAG\fR
+a list of words from general to specific, such as '(ssh nas)'
+.SH OPTIONS
+.TP
+\fB\-\-as\fR \fIID\fR
+the identity whose point of view to use: an id or an identity directory
+.TP
+\fB\-\-in\fR \fIPATH\fR
+read statements from PATH; '\-' means standard input
+.TP
+\fB\-\-at\fR \fITIME\fR
+answer for TIME instead of now: 2027\-01\-01, 2027\-01\-01T12:00Z, or @SECONDS
+.TP
+\fB\-\-state\fR \fIDIR\fR
+keep state in DIR between runs: the identity logs seen, and the clock floor
+.TP
+\fB\-\-leaf\-ceiling\fR \fIDUR\fR
+accept grants to leaf keys only if they last at most DUR (at most 24h)
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+print nothing; only set the exit status
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Send only what nas needs to let alice in:
+.PP
+.RS 4
+.nf
+writ prove \-\-as me alice '(ssh nas)' < bundle.writ > alice\-nas.writ
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-check\fR(1), \fBwrit\-export\fR(1)

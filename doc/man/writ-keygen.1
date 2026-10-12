@@ -1,0 +1,39 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-KEYGEN 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-keygen \- make a secret key
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit keygen\fR [\fB\-\-out\fR\ \fIPATH\fR]
+.ad
+.hy
+.SH DESCRIPTION
+Make a new secret key. Use it when someone asks you to hold one of their next keys: give them the public key from \fBwrit pubkey\fR, and keep the secret key safe.
+.SH OPTIONS
+.TP
+\fB\-\-out\fR \fIPATH\fR
+where to write the key (default: standard output)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Make a key for a friend's identity:
+.PP
+.RS 4
+.nf
+writ keygen \-\-out for\-alice.key && writ pubkey for\-alice.key > for\-alice.pub
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-pubkey\fR(1), \fBwrit\-init\fR(1)

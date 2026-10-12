@@ -1,0 +1,60 @@
+.\" Generated from crates/writ-tool/src/specs.rs; do not edit.
+.TH WRIT\-SIGN 1 2026-10-12 "writ 0.1.0" "writ manual"
+.SH NAME
+writ\-sign \- sign a file
+.SH SYNOPSIS
+.nh
+.ad l
+\fBwrit sign\fR (\-i DIR [\-\-key PATH]... | \-\-leaf KEY) \-c CONTEXT [\-\-out PATH] [\-q] [FILE]
+.ad
+.hy
+.SH DESCRIPTION
+Sign FILE and print the signature. The context says what the signature is for. A verifier must ask for the same context, so a signature made for one purpose can't be used for another.
+.PP
+Signatures by an identity are added to DIR/issued.writ, so that a later rotation keeps them. A signature by a leaf key is valid while the leaf key's grant is.
+.SH ARGUMENTS
+.TP
+\fIFILE\fR
+the file to sign (default: standard input)
+.SH OPTIONS
+.TP
+\fB\-i\fR, \fB\-\-identity\fR \fIDIR\fR
+sign as this identity
+.TP
+\fB\-\-key\fR \fIPATH\fR
+secret key file (default: DIR/current.key); give one \-\-key per key when several keys must sign; '\-' means standard input
+.TP
+\fB\-\-leaf\fR \fIKEY\fR
+sign with this secret leaf key instead
+.TP
+\fB\-c\fR, \fB\-\-context\fR \fICONTEXT\fR
+what the signature is for, such as example/release/v1
+.TP
+\fB\-\-out\fR \fIPATH\fR
+write the signature to PATH instead of standard output
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+print only the signature
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help; \fB\-h\fR is short, \fB\-\-help\fR is long
+.SH EXIT STATUS
+.TP
+0
+success; for questions, the answer is yes
+.TP
+1
+the answer is no: the check, verification, proof or name lookup was denied
+.TP
+2
+an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Sign a release with a leaf key:
+.PP
+.RS 4
+.nf
+writ sign \-\-leaf build.key \-c example/release/v1 app.tar > app.tar.sig
+.fi
+.RE
+.SH SEE ALSO
+\fBwrit\fR(1), \fBwrit\-verify\fR(1), \fBwrit\-leaf\fR(1)

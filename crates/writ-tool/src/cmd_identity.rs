@@ -1,8 +1,9 @@
 //! `init`, `id`, `rotate`, `export`, `keygen`, `pubkey`.
 
-use crate::args::{Parsed, Spec, flag, opt, short};
+use crate::args::Parsed;
 use crate::error::{Context, Error, Result, err};
 use crate::ident::{self, CURRENT_KEY, ISSUED, IdentityDir, LOG, NEXT};
+use crate::specs::{EXPORT, ID, INIT, KEYGEN, PUBKEY, ROTATE};
 use crate::{OsRng, fs, say, wall_clock};
 use libwrit::keys::RootSigner;
 use libwrit::time::{Duration, parse_duration};
@@ -10,148 +11,6 @@ use libwrit::{
     Authority, Body, Claim, Item, Policy, PublicKey, RootKey, Seed, Signer, Subject, Verifier,
 };
 use std::collections::BTreeSet;
-
-pub static INIT: Spec = Spec {
-    name: "init",
-    usage: "init DIR --next-out PATH [options]",
-    about: "create an identity",
-    details: "\
-Creates DIR with the identity log, an empty issuance log, and the current
-(warm) key in DIR/current.key. The next (cold) key goes to --next-out,
-which you must choose explicitly: keep it offline; it is the only way to
-rotate. Prints the new id.
-
-Keys are plaintext; compose with age to encrypt them at rest:
-  writ init me --next-out - | age -p > me-next.key.age
-
-Next authority: by default one fresh key, which must sign the next rotation.
-With --next-n/--next-k/--next-pub it is K of N keys (social recovery: e.g.
-2 of {your cold key, a friend's key, a key in a safe}). Prefer K > N/2: if
-two disjoint groups could each rotate, a race between them looks exactly
-like a compromise, and verifiers will refuse the identity.",
-    opts: &[
-        opt(
-            "next-out",
-            "PATH",
-            "where to write the next key(s) ('-' for stdout); required",
-        ),
-        opt("next-n", "N", "fresh next keys to generate (default 1)"),
-        opt("next-k", "K", "next keys needed to rotate (default 1)"),
-        opt(
-            "next-pub",
-            "PATH",
-            "add someone else's public key (from `writ pubkey`) to the next authority",
-        ),
-        opt(
-            "key-out",
-            "PATH",
-            "where to write the current key (default DIR/current.key)",
-        ),
-        opt(
-            "max-validity",
-            "DUR",
-            "require every statement to expire within DUR (e.g. 90d)",
-        ),
-        short(flag("quiet", "print only the id"), 'q'),
-    ],
-};
-
-pub static ID: Spec = Spec {
-    name: "id",
-    usage: "id DIR",
-    about: "print an identity's id",
-    details: "",
-    opts: &[],
-};
-
-pub static ROTATE: Spec = Spec {
-    name: "rotate",
-    usage: "rotate -i DIR --next-key PATH... --next-out PATH [options]",
-    about: "reveal the next key(s) and commit to new ones",
-    details: "\
-Rotation replaces the identity's keys without changing its id. The keys
-committed to at the last event (--next-key) sign the rotation and become the
-current keys; fresh next keys go to --next-out.
-
-Statements issued before the rotation stay valid only if the rotation keeps
-them. writ keeps everything in DIR/issued.writ that is still live: not
-revoked, not expired, and not a leaf grant (leaf keys get new grants). A
-thief holding the old current key is cut off from every verifier that sees
-the rotation.
-
-If DIR/current.key exists, it is replaced by the revealed key(s) and the old,
-now useless key is deleted. Otherwise, use the revealed key with --key.
-
-  writ rotate -i me --next-key <(age -d me-next.key.age) --next-out - | age -p > me-next2.key.age",
-    opts: &[
-        short(opt("identity", "DIR", "the identity"), 'i'),
-        opt(
-            "next-key",
-            "PATH",
-            "a next key committed to by the log (repeat for K of N; '-' for stdin)",
-        ),
-        opt(
-            "next-out",
-            "PATH",
-            "where to write the new next key(s) ('-' for stdout); required",
-        ),
-        opt("next-n", "N", "fresh next keys to generate (default 1)"),
-        opt(
-            "next-k",
-            "K",
-            "next keys needed for the following rotation (default 1)",
-        ),
-        opt(
-            "next-pub",
-            "PATH",
-            "add someone else's public key to the new next authority",
-        ),
-        opt("max-validity", "DUR", "set the statement lifetime limit"),
-        flag("no-max-validity", "remove the statement lifetime limit"),
-        short(flag("quiet", "say nothing on success"), 'q'),
-    ],
-};
-
-pub static EXPORT: Spec = Spec {
-    name: "export",
-    usage: "export -i DIR [--all]",
-    about: "print an identity's log and live statements as a bundle",
-    details: "\
-The bundle others need to verify what this identity says: its log, every
-statement still valid now, and its revocations (so verifiers learn of them).
-Data signatures travel with their data and are left out unless --all.",
-    opts: &[
-        short(opt("identity", "DIR", "the identity"), 'i'),
-        flag(
-            "all",
-            "everything ever issued, including expired, revoked and signatures",
-        ),
-    ],
-};
-
-pub static KEYGEN: Spec = Spec {
-    name: "keygen",
-    usage: "keygen [--out PATH]",
-    about: "make a secret key (e.g. to be someone's recovery key)",
-    details: "\
-Prints a new secret key. Give its public key (`writ pubkey`) to whoever adds
-you to their next authority with --next-pub.",
-    opts: &[opt(
-        "out",
-        "PATH",
-        "where to write the key (default stdout); never overwrites",
-    )],
-};
-
-pub static PUBKEY: Spec = Spec {
-    name: "pubkey",
-    usage: "pubkey [--leaf] [KEYFILE]",
-    about: "print the public key of a secret key",
-    details: "\
-Reads secret keys (default: stdin) and prints their public keys as armored
-items. Root keys are for --next-pub; leaf keys (--leaf) can be grant subjects.",
-    opts: &[flag("leaf", "treat the keys as leaf keys")],
-};
 
 fn count(parsed: &Parsed, name: &str, default: usize) -> Result<usize> {
     match parsed.value(name) {
@@ -211,16 +70,16 @@ fn new_next(parsed: &Parsed) -> Result<(Vec<Seed>, Authority)> {
     keys.extend(pubs);
     let total = keys.len();
     if total == 0 {
-        return err("the next authority needs at least one key");
+        return err("there must be at least one next key: give --next-n or --next-pub");
     }
-    let authority =
-        Authority::new(k, keys).map_err(|e| Error::Msg(format!("next authority: {e}")))?;
+    let authority = Authority::new(k, keys).map_err(|e| Error::Msg(format!("next keys: {e}")))?;
     if 2 * k <= total && total > 1 {
-        eprintln!(
-            "writ: warning: with {k} of {total}, two disjoint groups of key holders could each \
-             sign a rotation; verifiers treat that as a compromise. Prefer --next-k {}.",
+        crate::warn(format!(
+            "with --next-k {k} and {total} next keys, two separate groups of key \
+             holders could each rotate this identity, and verifiers would then refuse \
+             it. Use --next-k {} or more.",
             total / 2 + 1
-        );
+        ));
     }
     Ok((seeds, authority))
 }
@@ -292,7 +151,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
     }
     if next.keys().len() > 1 {
         lines.push(format!(
-            "  next authority: {} of {} keys",
+            "  next keys    any {} of these {} can rotate",
             next.k(),
             next.keys().len()
         ));
@@ -419,10 +278,10 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
                     .is_some();
                 return err(if current {
                     format!(
-                        "the key in {path} is the current key, not the next one; rotation needs the next (cold) key"
+                        "{path} holds the current key. Rotation needs the next key: the one that init or the last rotate wrote to --next-out"
                     )
                 } else {
-                    format!("the key in {path} is not in the next authority {dir} committed to")
+                    format!("{path} does not hold a next key of {dir}")
                 });
             }
             if !signers.iter().any(|s| s.root_key() == signer.root_key()) {
@@ -433,7 +292,7 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     }
     if signers.len() < revealed.k() {
         return err(format!(
-            "rotation needs {} of the {} next keys; got {}",
+            "rotation needs {} of the {} next keys, but {} were given",
             revealed.k(),
             revealed.keys().len(),
             signers.len()
@@ -495,10 +354,10 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
                 dropped.push(format!("{} revoked", stats.revoked));
             }
             if stats.leaf > 0 {
-                dropped.push(format!("{} leaf grants (reissue them)", stats.leaf));
+                dropped.push(format!("{} leaf grants (issue new ones)", stats.leaf));
             }
             if stats.dead > 0 {
-                dropped.push(format!("{} already invalid", stats.dead));
+                dropped.push(format!("{} that were no longer valid", stats.dead));
             }
             if dropped.is_empty() {
                 String::new()
@@ -526,15 +385,18 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
         if retired {
             fs::replace_secret(&current_path, &fs::seeds_text(&revealed_seeds))?;
             lines.push(format!(
-                "  {path_str} now holds the revealed key, replacing the retired one"
+                "  {path_str} now holds the new current key; the old one was removed"
             ));
         } else {
             lines.push(format!(
-                "  {path_str} left as is: its key still has a role; the revealed key is now current"
+                "  {path_str} was not changed, because its key is still in use; sign with --key and the next key you gave"
             ));
         }
     } else {
-        lines.push("  the key(s) you revealed are now the current key: sign with --key".to_owned());
+        lines.push(
+            "  the next key you gave is now the current key; give it with --key when you sign"
+                .to_owned(),
+        );
     }
     if !next_seeds.is_empty() {
         lines.push(format!("  next key  {next_out}  keep it offline"));
@@ -578,7 +440,7 @@ pub fn keygen(parsed: &Parsed) -> Result<()> {
     let public = seed.root().root_key();
     fs::write_secret(out, &fs::seeds_text(std::slice::from_ref(&seed)))?;
     eprintln!(
-        "public key: slh-dsa-shake-128s {}\n(`writ pubkey` prints it as a file for --next-pub)",
+        "public key: slh-dsa-shake-128s {}\nTo make a public key file for --next-pub, run 'writ pubkey' on the key file.",
         libwrit::Hash(public.0)
     );
     Ok(())
@@ -629,14 +491,14 @@ pub fn expiry(
     let chosen = explicit.or(default.map(|d| issued.saturating_add(d)));
     match (chosen, max_validity) {
         (Some(e), Some(mv)) if e - issued > mv => err(format!(
-            "this identity requires statements to expire within {}; --expires is later",
+            "this identity requires statements to expire within {}; --expires is too late",
             Duration(mv)
         )),
         (None, Some(mv)) => {
-            eprintln!(
-                "writ: this identity requires an expiry; expiring in {}",
+            crate::note(format!(
+                "this identity requires an expiry; the statement expires in {}",
                 Duration(mv)
-            );
+            ));
             Ok(Some(issued.saturating_add(mv)))
         }
         (e, _) => Ok(e),

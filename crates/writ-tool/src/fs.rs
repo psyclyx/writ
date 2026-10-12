@@ -18,7 +18,7 @@ thread_local! {
 pub fn claim_stdin(purpose: &'static str) -> Result<()> {
     match STDIN_USED.get() {
         Some(prev) => err(format!(
-            "stdin can only be read once (already used for {prev}, now wanted for {purpose})"
+            "standard input can be read only once: it is already used for {prev}, so it can't also give {purpose}"
         )),
         None => {
             STDIN_USED.set(Some(purpose));
@@ -114,7 +114,7 @@ pub fn check_secret_target(path: &str) -> Result<()> {
     }
     match std::fs::symlink_metadata(path) {
         Ok(_) => err(format!(
-            "{path} already exists; writ never overwrites a key (use '-' or /dev/fd/N for a stream)"
+            "{path} already exists, and writ never overwrites a key file; choose another path, or '-' for standard output"
         )),
         Err(_) => Ok(()),
     }
@@ -250,7 +250,7 @@ pub fn emit(item: &Item, recorded_in: Option<&Path>) -> Result<()> {
         && std::io::stdout().is_terminal()
     {
         eprintln!(
-            "(recorded in {}; redirect stdout to also get the armored item)",
+            "recorded in {}; standard output is a terminal, so the item was not printed",
             path.display()
         );
         return Ok(());
