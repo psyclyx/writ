@@ -244,7 +244,11 @@ fn names_and_compound_names() {
     let b = Ident::new(2);
     let leaf = FakeLeaf::new(9);
     let alice = a.say(name("alice", Subject::Id(b.id)), 10, None);
-    let devices = b.say(name("devices", Subject::Leaf(leaf.0.clone())), 10, None);
+    let devices = b.say(
+        name("devices", Subject::Leaf(leaf.0.clone())),
+        10,
+        Some(1000),
+    );
     let g = a.say(
         grant(path(a.id, &["alice", "devices"]), "(ssh)", false),
         10,
@@ -486,6 +490,28 @@ fn leaf_keys() {
         ..body.clone()
     };
     assert!(issue(long, &a.log(), &[&a.keys[0]], &mut TestRng::new(0)).is_err());
+    // So must names of leaf keys, or a grant to the name would outlive the
+    // ceiling (and survive rotation).
+    let leaf_name = Statement {
+        claim: name("svc", Subject::Leaf(leaf.0.clone())),
+        ..body.clone()
+    };
+    assert!(matches!(
+        issue(leaf_name, &a.log(), &[&a.keys[0]], &mut TestRng::new(0)),
+        Err(IssueError::Rule(_))
+    ));
+    let via = a.say(grant(path(a.id, &["svc"]), "(svc)", false), 10, None);
+    let forever = a.say(name("svc", Subject::Leaf(leaf.0.clone())), 10, None);
+    let w = World::new(&a, [st(forever), st(via.clone())]);
+    assert!(w.check(Holder::Leaf(leaf.0.clone()), "(svc)", 20).is_err());
+    let day = a.say(name("svc", Subject::Leaf(leaf.0.clone())), 10, Some(1000));
+    let w = World::new(&a, [st(day), st(via)]);
+    let proof = w.check(Holder::Leaf(leaf.0.clone()), "(svc)", 20).unwrap();
+    assert_eq!(proof.expires, Some(1000));
+    assert!(
+        w.check(Holder::Leaf(leaf.0.clone()), "(svc)", 1000)
+            .is_err()
+    );
     // The verifier may lower the ceiling.
     let mut w = World::new(&a, [st(al.clone())]);
     w.policy.leaf_ceiling = 1800;
@@ -562,6 +588,22 @@ fn data_signatures() {
     assert_eq!(
         v.verify(&bad, &data, b"app/v1", &tag("(release)"), 30),
         Err(Denial::Signature(Reason::BadSignature))
+    );
+    // The same check, for signatures in the material (what `rotate` keeps).
+    let mut forged = sig.clone();
+    forged.body.data = Hash::of_data(b"evil");
+    let w = World::new(
+        &a,
+        [
+            Item::Signature(sig.clone()),
+            Item::Signature(forged.clone()),
+        ],
+    );
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    assert_eq!(v.signature_status(&sig.body.hash(), 30), Ok(()));
+    assert_eq!(
+        v.signature_status(&forged.body.hash(), 30),
+        Err(Reason::BadSignature)
     );
 
     // Identity signatures: valid while current, then only if kept.

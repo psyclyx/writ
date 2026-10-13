@@ -59,13 +59,34 @@ fn base(ident: &IdentityDir, issued: libwrit::Time) -> (Issuer, libwrit::Time) {
     )
 }
 
+/// `--expires` for a name or grant. One for a leaf key must expire within
+/// 24 hours (DESIGN.md §7).
+fn subject_expiry(
+    parsed: &Parsed,
+    ident: &IdentityDir,
+    subj: &Subject,
+    issued: libwrit::Time,
+) -> Result<Option<libwrit::Time>> {
+    let is_leaf = matches!(subj, Subject::Leaf(_));
+    if is_leaf && parsed.value("expires").is_none() {
+        return err(
+            "a name or grant for a leaf key must expire within 24 hours; add --expires, such as --expires 24h",
+        );
+    }
+    let expires = expiry(parsed, issued, ident.log.head().max_validity(), None)?;
+    if is_leaf && expires.is_some_and(|e| e - issued > LEAF_CEILING) {
+        return err("a name or grant for a leaf key can last at most 24 hours");
+    }
+    Ok(expires)
+}
+
 pub fn name(parsed: &Parsed) -> Result<()> {
     let [name_text, subject_text] = parsed.exact(&NAME, ["NAME", "SUBJECT"])?;
     let mut ident = identity(parsed, &NAME)?;
     let name = subject::name(name_text)?;
     let subj = subject::subject(subject_text)?;
     let (issuer, issued) = base(&ident, wall_clock());
-    let expires = expiry(parsed, issued, ident.log.head().max_validity(), None)?;
+    let expires = subject_expiry(parsed, &ident, &subj, issued)?;
     let signed = issue(
         parsed,
         &mut ident,
@@ -106,16 +127,7 @@ pub fn grant(parsed: &Parsed) -> Result<()> {
         );
     }
     let (issuer, issued) = base(&ident, wall_clock());
-    let is_leaf = matches!(subj, Subject::Leaf(_));
-    if is_leaf && parsed.value("expires").is_none() {
-        return err(
-            "a grant to a leaf key must expire within 24 hours; add --expires, such as --expires 24h",
-        );
-    }
-    let expires = expiry(parsed, issued, ident.log.head().max_validity(), None)?;
-    if is_leaf && expires.is_some_and(|e| e - issued > LEAF_CEILING) {
-        return err("a grant to a leaf key can last at most 24 hours");
-    }
+    let expires = subject_expiry(parsed, &ident, &subj, issued)?;
     if let Subject::Name(p) = &subj {
         say(
             parsed,

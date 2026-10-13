@@ -420,8 +420,30 @@ fn rotation_keeps_and_drops() {
     s.ok(&["grant", "-i", "me", &alice, "(kept)"]);
     s.ok(&["grant", "-i", "me", &alice, "(short)", "--expires", "1s"]);
     s.ok(&["leaf", "-i", "me", "(svc)", "--out", "leaf.key"]);
+    // Names for a leaf key expire within a day, like grants to one.
+    std::fs::write(s.path("leaf.pub"), s.ok(&["pubkey", "--leaf", "leaf.key"])).unwrap();
+    let err = s.fails(&["name", "-i", "me", "svc", "leaf.pub"], 2);
+    assert!(err.contains("must expire within 24 hours"), "{err}");
+    s.fails(
+        &["name", "-i", "me", "svc", "leaf.pub", "--expires", "2d"],
+        2,
+    );
+    s.ok(&["name", "-i", "me", "svc", "leaf.pub", "--expires", "1h"]);
     std::fs::write(s.path("d"), b"x").unwrap();
     std::fs::write(s.path("d.sig"), s.ok(&["sign", "-i", "me", "-c", "c", "d"])).unwrap();
+    // A data signature slipped into issued.writ whose signature doesn't
+    // match its body: the rotation must not endorse it.
+    let mut forged = libwrit::Item::decode_bundle(s.read("d.sig").as_bytes())
+        .unwrap()
+        .remove(0);
+    let libwrit::Item::Signature(f) = &mut forged else {
+        panic!("not a signature");
+    };
+    f.body.data = libwrit::Hash::of_data(b"evil");
+    let forged = writ_sexp::armor::encode(&forged.encode());
+    std::fs::write(s.path("evil"), b"evil").unwrap();
+    std::fs::write(s.path("evil.sig"), &forged).unwrap();
+    s.append("me/issued.writ", &forged);
     std::fs::write(s.path("old.key"), s.read("me/current.key")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2100));
 
@@ -451,8 +473,17 @@ fn rotation_keeps_and_drops() {
     assert_eq!(code, 0, "{err}");
     assert!(err.contains("kept 2 statements"), "{err}");
     assert!(
-        err.contains("1 expired") && err.contains("1 leaf grants"),
+        err.contains("1 expired")
+            && err.contains("2 statements for leaf keys")
+            && err.contains("1 that were no longer valid"),
         "{err}"
+    );
+    s.ok(&["verify", "--as", "me", "-t", "()", "-c", "c", "d", "d.sig"]);
+    s.fails(
+        &[
+            "verify", "--as", "me", "-t", "()", "-c", "c", "evil", "evil.sig",
+        ],
+        1,
     );
     let installed = s.read("me/current.key");
     assert_ne!(installed, s.read("old.key"));

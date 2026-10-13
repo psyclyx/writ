@@ -299,10 +299,13 @@ pub static ROTATE: Spec = Spec {
          --next-out, or, with --same-next, keeps the next keys you have. \
          Keeping them suits next keys held by friends or kept in a safe.",
         "A rotation lists the statements that stay valid. writ keeps every \
-         statement in DIR/issued.writ that is still valid: not revoked, not \
-         expired, and not a grant to a leaf key. Anything else signed with \
-         the old current key becomes invalid for every verifier that sees the \
-         rotation. Use this to recover from a stolen current key.",
+         statement and signature in DIR/issued.writ that is still valid: \
+         correctly signed, not revoked, not expired, and not a name or grant \
+         for a leaf key. Anything else signed with the old current key \
+         becomes invalid for every verifier that sees the rotation. Use this \
+         to recover from a stolen current key. If whoever stole it could also \
+         write to DIR/issued.writ, read it first (writ show < \
+         DIR/issued.writ) and revoke anything you did not sign.",
         "With --key-pub, the current keys include other people's keys, and \
          --key-k of them must sign each statement. Use this for an identity \
          that a group shares.",
@@ -365,7 +368,8 @@ pub static NAME: Spec = Spec {
          subject. It then works as a group.",
         "SUBJECT can be:",
         SUBJECTS,
-        "writ prints the signed statement and adds it to DIR/issued.writ.",
+        "A name for a leaf key must expire within 24 hours, like a grant to \
+         one. writ prints the signed statement and adds it to DIR/issued.writ.",
     ],
     examples: &[
         (
@@ -871,8 +875,8 @@ pub static MANUAL: &[(&str, &[&str])] = &[
         &[
             "A leaf key is a key without a log. It uses ML-DSA-65 and Ed25519 \
              together, and both signatures must be valid. Leaf keys sign and \
-             verify quickly, and every grant to a leaf key expires within 24 \
-             hours. Use them for machines that sign often.",
+             verify quickly, and every grant to a leaf key, or name for one, \
+             expires within 24 hours. Use them for machines that sign often.",
         ],
     ),
     (

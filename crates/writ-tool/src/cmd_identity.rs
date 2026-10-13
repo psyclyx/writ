@@ -7,9 +7,7 @@ use crate::specs::{EXPORT, ID, INIT, KEYGEN, PUBKEY, ROTATE};
 use crate::{OsRng, fs, say, wall_clock};
 use libwrit::keys::RootSigner;
 use libwrit::time::{Duration, parse_duration};
-use libwrit::{
-    Authority, Body, Claim, Item, Policy, PublicKey, RootKey, Seed, Signer, Subject, Verifier,
-};
+use libwrit::{Authority, Body, Claim, Item, Policy, PublicKey, RootKey, Seed, Signer, Verifier};
 use std::collections::BTreeSet;
 
 fn count(parsed: &Parsed, name: &str, default: usize) -> Result<usize> {
@@ -166,7 +164,9 @@ pub fn id(parsed: &Parsed) -> Result<()> {
     fs::print(&format!("{}\n", ident.id()))
 }
 
-/// What a rotation keeps: everything issued that is still live.
+/// What a rotation keeps: everything this identity issued that is still
+/// live. The cold keys endorse kept items by hash, so each one must verify
+/// here: DIR/issued.writ is not trusted.
 fn compute_keep(ident: &IdentityDir, now: libwrit::Time) -> (Vec<libwrit::Hash>, KeepStats) {
     let roots = [ident.id()];
     let material = ident.material();
@@ -175,55 +175,32 @@ fn compute_keep(ident: &IdentityDir, now: libwrit::Time) -> (Vec<libwrit::Hash>,
     let mut stats = KeepStats::default();
     let mut keep = BTreeSet::new();
     for item in &ident.issued {
-        match item {
-            Item::Statement(s) => {
+        let (h, status) = match item {
+            Item::Statement(s) if s.body.issuer.id() == Some(ident.id()) => {
+                if matches!(s.body.claim, Claim::Revoke { .. }) {
+                    continue;
+                }
+                if s.body.claim.is_about_leaf() {
+                    stats.leaf += 1;
+                    continue;
+                }
                 let h = s.body.hash();
-                match &s.body.claim {
-                    Claim::Revoke { .. } => continue,
-                    Claim::Grant {
-                        subject: Subject::Leaf(_),
-                        ..
-                    } => {
-                        stats.leaf += 1;
-                        continue;
-                    }
-                    _ => {}
-                }
-                match verifier.statement_status(&h, now) {
-                    Ok(()) => {
-                        keep.insert(h);
-                    }
-                    Err(libwrit::Reason::Expired(_)) => stats.expired += 1,
-                    Err(libwrit::Reason::Revoked(_)) => stats.revoked += 1,
-                    // Issued for the future: keep it, it isn't dead.
-                    Err(libwrit::Reason::NotYetValid(_)) => {
-                        keep.insert(h);
-                    }
-                    Err(_) => stats.dead += 1,
-                }
+                (h, verifier.statement_status(&h, now))
             }
-            Item::Signature(s) => {
+            Item::Signature(s) if s.body.signer.id() == Some(ident.id()) => {
                 let h = s.body.hash();
-                let current = match &s.body.signer {
-                    libwrit::Issuer::Identity { id, event } => {
-                        *id == ident.id() && (*event == ident.log.head_n() || ident.log.keeps(&h))
-                    }
-                    libwrit::Issuer::Leaf(_) => false,
-                };
-                let revoked = ident.issued.iter().any(|i| {
-                    matches!(i, Item::Statement(r)
-                        if matches!(&r.body.claim, Claim::Revoke { target } if *target == h)
-                        && verifier.statement_status(&r.body.hash(), now).is_ok())
-                });
-                if revoked {
-                    stats.revoked += 1;
-                } else if current {
-                    keep.insert(h);
-                } else {
-                    stats.dead += 1;
-                }
+                (h, verifier.signature_status(&h, now))
             }
-            _ => {}
+            _ => continue,
+        };
+        match status {
+            // Issued for the future: keep it, it isn't dead.
+            Ok(()) | Err(libwrit::Reason::NotYetValid(_)) => {
+                keep.insert(h);
+            }
+            Err(libwrit::Reason::Expired(_)) => stats.expired += 1,
+            Err(libwrit::Reason::Revoked(_)) => stats.revoked += 1,
+            Err(_) => stats.dead += 1,
         }
     }
     (keep.into_iter().collect(), stats)
@@ -440,7 +417,11 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
                 dropped.push(format!("{} revoked", stats.revoked));
             }
             if stats.leaf > 0 {
-                dropped.push(format!("{} leaf grants (issue new ones)", stats.leaf));
+                dropped.push(format!(
+                    "{} statement{} for leaf keys (issue new ones)",
+                    stats.leaf,
+                    if stats.leaf == 1 { "" } else { "s" }
+                ));
             }
             if stats.dead > 0 {
                 dropped.push(format!("{} that were no longer valid", stats.dead));

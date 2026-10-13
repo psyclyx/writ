@@ -156,7 +156,11 @@ impl fmt::Display for Reason {
                 write!(f, "lasts longer than its issuer allows ({})", Duration(*mv))
             }
             Reason::LeafCeiling(c) => {
-                write!(f, "a grant to a leaf key may last at most {}", Duration(*c))
+                write!(
+                    f,
+                    "a name or grant for a leaf key may last at most {}",
+                    Duration(*c)
+                )
             }
             Reason::Covers(t) => write!(f, "grants only {t} on this chain"),
             Reason::OutsideIssuer { granted, held } => write!(
@@ -408,30 +412,11 @@ impl<'a> Verifier<'a> {
         }
         let mut q = Query::new(self, now);
         let hash = sig.body.hash();
+        q.data_sig_status(sig, &hash).map_err(Denial::Signature)?;
         let holder = match &sig.body.signer {
-            Issuer::Identity { id, event } => {
-                q.signed_by_identity(sig, &hash, *id, *event, None)
-                    .and_then(|()| q.check_revoked(*id, &hash))
-                    .map_err(Denial::Signature)?;
-                Holder::Id(*id)
-            }
-            Issuer::Leaf(k) => {
-                if !self.policy.accepts(Suite::MlDsa65Ed25519) {
-                    return Err(Denial::Signature(Reason::Suite(Suite::MlDsa65Ed25519)));
-                }
-                let key = leaf_cache_key(k);
-                if !self
-                    .material
-                    .sig_cached(hash, key, &sig.sigs, || sig.verify_leaf(k))
-                {
-                    return Err(Denial::Signature(Reason::BadSignature));
-                }
-                Holder::Leaf(k.clone())
-            }
+            Issuer::Identity { id, .. } => Holder::Id(*id),
+            Issuer::Leaf(k) => Holder::Leaf(k.clone()),
         };
-        if sig.body.issued > now.saturating_add(self.policy.skew) {
-            return Err(Denial::Signature(Reason::NotYetValid(sig.body.issued)));
-        }
         let mut proof = q.check(&holder, tag)?;
         if let Issuer::Identity { id, .. } = &sig.body.signer {
             proof.ids.insert(*id);
@@ -467,6 +452,15 @@ impl<'a> Verifier<'a> {
     /// Whether a statement is valid at `now`, and if not, why.
     pub fn statement_status(&self, hash: &Hash, now: Time) -> Result<(), Reason> {
         Query::new(self, now).status(hash)
+    }
+
+    /// Whether a data signature in the material is valid at `now` (SPEC §7),
+    /// and if not, why. Says nothing about what its signer holds.
+    pub fn signature_status(&self, hash: &Hash, now: Time) -> Result<(), Reason> {
+        let Some(sig) = self.material.signature(hash) else {
+            return Err(Reason::Malformed("unknown signature"));
+        };
+        Query::new(self, now).data_sig_status(sig, hash)
     }
 }
 
@@ -574,6 +568,33 @@ impl<'v, 'a> Query<'v, 'a> {
         result
     }
 
+    /// A data signature's validity (SPEC §7): signed (or kept), not revoked,
+    /// not issued in the future.
+    fn data_sig_status(&mut self, sig: &Signed<DataSig>, hash: &Hash) -> Result<(), Reason> {
+        match &sig.body.signer {
+            Issuer::Identity { id, event } => {
+                self.signed_by_identity(sig, hash, *id, *event, None)?;
+                self.check_revoked(*id, hash)?;
+            }
+            Issuer::Leaf(k) => {
+                if !self.v.policy.accepts(Suite::MlDsa65Ed25519) {
+                    return Err(Reason::Suite(Suite::MlDsa65Ed25519));
+                }
+                let ok = self
+                    .v
+                    .material
+                    .sig_cached(*hash, leaf_cache_key(k), &sig.sigs, || sig.verify_leaf(k));
+                if !ok {
+                    return Err(Reason::BadSignature);
+                }
+            }
+        }
+        if sig.body.issued > self.now.saturating_add(self.v.policy.skew) {
+            return Err(Reason::NotYetValid(sig.body.issued));
+        }
+        Ok(())
+    }
+
     fn compute_status(&mut self, hash: &Hash) -> Result<(), Reason> {
         let Some(st) = self.v.material.statement(hash) else {
             return Err(Reason::Malformed("unknown statement"));
@@ -608,11 +629,7 @@ impl<'v, 'a> Query<'v, 'a> {
         {
             return Err(Reason::Expired(e));
         }
-        if let Claim::Grant {
-            subject: Subject::Leaf(_),
-            ..
-        } = &body.claim
-        {
+        if body.claim.is_about_leaf() {
             let ceiling = self.v.policy.leaf_ceiling.min(LEAF_CEILING);
             match body.expires {
                 Some(e) if e - body.issued <= ceiling => {}

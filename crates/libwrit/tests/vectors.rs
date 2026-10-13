@@ -398,6 +398,59 @@ fn world() -> World {
     )
     .unwrap();
 
+    // Names for a leaf key carry the leaf ceiling too. The first is signed
+    // by an issuer that ignored the rule.
+    let leaf_name = |name: &str, expires: Option<Time>, rng: &mut VectorRng| {
+        sign_with_authority(
+            Statement {
+                issuer: Issuer::Identity {
+                    id: me.id(),
+                    event: 0,
+                },
+                issued: T0,
+                expires,
+                note: None,
+                claim: Claim::Name {
+                    name: name.as_bytes().to_vec(),
+                    subject: Subject::Leaf(leaf.leaf_key().clone()),
+                },
+            },
+            &Authority::single(me.keys[0].root_key()),
+            &[&me.keys[0]],
+            rng,
+        )
+        .unwrap()
+    };
+    add(
+        "me-names-leaf-forever",
+        leaf_name("forever", None, &mut rng),
+        &mut m,
+    );
+    add(
+        "me-names-leaf-day",
+        leaf_name("day", Some(T0 + 3600), &mut rng),
+        &mut m,
+    );
+    for (label, name) in [
+        ("me-grants-leaf-forever", "forever"),
+        ("me-grants-leaf-day", "day"),
+    ] {
+        let subject = Subject::Name(NamePath {
+            base: me.id(),
+            names: vec![name.as_bytes().to_vec()],
+        });
+        add(
+            label,
+            me.say(
+                grant(subject, &format!("(named {name})"), false),
+                T0,
+                None,
+                &mut rng,
+            ),
+            &mut m,
+        );
+    }
+
     let mut all: Vec<Item> = Vec::new();
     for id in m.ids().copied().collect::<Vec<_>>() {
         match &*m.log(&id) {
@@ -504,6 +557,14 @@ fn items_and_chains() {
         ("signed by a next key", "bob", "(ssh next)", T0 + 100),
         ("through an equivocating identity", "bob", "(q)", T0 + 100),
         ("about an equivocating identity", "quinn", "()", T0 + 100),
+        (
+            "leaf named without expiry",
+            "leaf",
+            "(named forever)",
+            T0 + 100,
+        ),
+        ("leaf named for an hour", "leaf", "(named day)", T0 + 100),
+        ("leaf name expired", "leaf", "(named day)", T0 + 3600),
         ("nothing at all", "alice", "(nope)", T0 + 100),
     ];
     let roots = [w.root];

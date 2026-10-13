@@ -36,7 +36,7 @@ tag = (ssh)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-names-leaf-forever:malformed
 
 case = before expiry
 subject = bob
@@ -53,7 +53,7 @@ tag = (web)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-web:expired
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-web:expired me-names-leaf-forever:malformed
 
 case = revoked
 subject = bob
@@ -61,7 +61,7 @@ tag = (mail)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-mail:revoked
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-mail:revoked me-names-leaf-forever:malformed
 
 case = issued in the future
 subject = bob
@@ -69,7 +69,7 @@ tag = (future)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-future:not-yet-valid
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-future:not-yet-valid me-names-leaf-forever:malformed
 
 case = issued in the future, within skew
 subject = bob
@@ -95,7 +95,7 @@ tag = (svc read)
 now = 1800003600
 result = denied
 reason = not-found
-rejected = me-grants-leaf:expired
+rejected = me-grants-leaf:expired me-names-leaf-day:expired me-names-leaf-forever:malformed
 
 case = issued after rotation
 subject = bob
@@ -112,7 +112,7 @@ tag = (ssh old)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-old:not-kept alice-grants-bob-ssh-nas:covers
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-old:not-kept alice-grants-bob-ssh-nas:covers me-names-leaf-forever:malformed
 
 case = signed by a next key
 subject = bob
@@ -120,7 +120,7 @@ tag = (ssh next)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers alice-next-key-grants-bob:bad-signature
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers alice-next-key-grants-bob:bad-signature me-names-leaf-forever:malformed
 
 case = through an equivocating identity
 subject = bob
@@ -138,10 +138,35 @@ result = denied
 reason = compromised
 event = 1
 
+case = leaf named without expiry
+subject = leaf
+tag = (named forever)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = me-grants-leaf-day:covers me-grants-leaf:covers me-names-leaf-forever:malformed
+
+case = leaf named for an hour
+subject = leaf
+tag = (named day)
+now = 1800000100
+result = allowed
+chain = me-names-leaf-day me-grants-leaf-day
+effective-tag = (named day)
+expires = 1800003600
+
+case = leaf name expired
+subject = leaf
+tag = (named day)
+now = 1800003600
+result = denied
+reason = not-found
+rejected = me-grants-leaf:expired me-names-leaf-day:expired me-names-leaf-forever:malformed
+
 case = nothing at all
 subject = alice
 tag = (nope)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = me-grants-alice-ssh:covers
+rejected = me-grants-alice-ssh:covers me-names-leaf-forever:malformed

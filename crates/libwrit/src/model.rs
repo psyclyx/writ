@@ -749,6 +749,21 @@ pub enum Claim {
     },
 }
 
+impl Claim {
+    /// The subject of a name or grant.
+    pub fn subject(&self) -> Option<&Subject> {
+        match self {
+            Claim::Name { subject, .. } | Claim::Grant { subject, .. } => Some(subject),
+            Claim::Revoke { .. } => None,
+        }
+    }
+
+    /// Whether the subject is a leaf key, so the leaf ceiling applies.
+    pub fn is_about_leaf(&self) -> bool {
+        matches!(self.subject(), Some(Subject::Leaf(_)))
+    }
+}
+
 /// A statement body (DESIGN.md §5.1).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Statement {
@@ -764,7 +779,8 @@ pub struct Statement {
     pub claim: Claim,
 }
 
-/// The leaf ceiling (DESIGN.md §7): a grant to a leaf key lives at most this long.
+/// The leaf ceiling (DESIGN.md §7): a name or grant whose subject is a leaf
+/// key lives at most this long.
 pub const LEAF_CEILING: u64 = 24 * 3600;
 
 impl Statement {
@@ -798,22 +814,21 @@ impl Statement {
             (Issuer::Leaf(_), _) => return Err("a leaf key may only issue grants"),
             (Issuer::Identity { .. }, _) => {}
         }
+        if self.claim.is_about_leaf() {
+            match self.expires {
+                None => return Err("a name or grant for a leaf key must expire"),
+                Some(e) if e - self.issued > LEAF_CEILING => {
+                    return Err("a name or grant for a leaf key may last at most 24 hours");
+                }
+                Some(_) => {}
+            }
+        }
         match &self.claim {
             Claim::Grant {
                 subject: Subject::Opaque(_),
                 delegate: true,
                 ..
             } => return Err("an opaque key cannot delegate"),
-            Claim::Grant {
-                subject: Subject::Leaf(_),
-                ..
-            } => match self.expires {
-                None => return Err("a grant to a leaf key must expire"),
-                Some(e) if e - self.issued > LEAF_CEILING => {
-                    return Err("a grant to a leaf key may last at most 24 hours");
-                }
-                Some(_) => {}
-            },
             Claim::Revoke { .. } if self.expires.is_some() => {
                 return Err("revocations do not expire");
             }

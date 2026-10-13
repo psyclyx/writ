@@ -105,3 +105,23 @@ kind = grant
 hash = a9f5cf325d5790ebc79b0ffeaac3e0b425661eb6dbff719eb0fbac598ac4ed92
 label = alice-next-key-grants-bob
 encoded-length = 8021
+
+kind = name
+hash = 865ffdcfe0788e1aad8360f75f3e4ea468f5218117ea7b06762515a8fc07cb73
+label = me-names-leaf-forever
+encoded-length = 9982
+
+kind = name
+hash = 82f9a6a966f2d098daaafc2ee021a04016107f546b9316e64384c09598c376f5
+label = me-names-leaf-day
+encoded-length = 10002
+
+kind = grant
+hash = 079a6d4eaf50c01f0d36b5c3cafa473a53e4f4e9e436e026c8d9628980bb7222
+label = me-grants-leaf-forever
+encoded-length = 8037
+
+kind = grant
+hash = 47dc1a8ddfe43e1b999fb5b67f4f0eae5ae099876fe2e24cfca17e168ecb3478
+label = me-grants-leaf-day
+encoded-length = 8029

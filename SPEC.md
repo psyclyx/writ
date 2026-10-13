@@ -240,7 +240,8 @@ A statement is **well-formed** when:
 1. if `expires` is present, `expires > issued`;
 2. a leaf issuer issues only grants, without `(delegate)`;
 3. a grant to an opaque key (`(key …)`) has no `(delegate)`;
-4. a grant to a leaf key has `expires` with `expires − issued ≤ 86400`;
+4. a name or grant whose subject is a leaf key has `expires` with
+   `expires − issued ≤ 86400`;
 5. a revocation has no `expires`.
 
 Ill-formed statements decode (so they can be displayed) but are never valid.
@@ -298,7 +299,8 @@ A statement with hash `h` is **valid at time `now`** under policy `P` when:
    signature with index 0 verifies under the key.
 4. `issued ≤ now + P.skew`.
 5. If `expires` is present: `now < expires`.
-6. If it is a grant to a leaf key: `expires − issued ≤ min(P.leaf_ceiling, 86400)`.
+6. If it is a name or grant whose subject is a leaf key:
+   `expires − issued ≤ min(P.leaf_ceiling, 86400)`.
 
 A data signature by `(id, e)` is valid under rule 2 (without the
 `max-validity` check: data signatures do not expire) and rule 4, with `h` its
@@ -400,5 +402,7 @@ DIR/logs/ID.writ    the log of each identity a question involved (roots, chain i
 ```
 
 On rotation, the tool's `keep` is every statement and data signature in
-`issued.writ` that is still valid (or valid later), except revocations and
-grants to leaf keys.
+`issued.writ` by the identity that is still valid (or valid later) under
+§7, signatures included, except revocations and names and grants whose
+subject is a leaf key. `issued.writ` is not trusted: the rotation endorses
+each kept hash, and verifiers never check its signatures again.

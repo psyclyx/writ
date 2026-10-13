@@ -80,11 +80,7 @@ impl Reference<'_> {
         if s.expires.is_some_and(|e| self.now >= e) {
             return false;
         }
-        if let Claim::Grant {
-            subject: Subject::Leaf(_),
-            ..
-        } = &s.claim
-        {
+        if s.claim.is_about_leaf() {
             let ceiling = self.policy.leaf_ceiling.min(LEAF_CEILING);
             if !s.expires.is_some_and(|e| e - s.issued <= ceiling) {
                 return false;
@@ -387,7 +383,9 @@ fn build(w: &GenWorld) -> Built {
             {
                 *event = 0;
             }
-            if let GenClaim::Grant(GenSubject::Leaf(_), _, _) = g.claim {
+            if let GenClaim::Grant(GenSubject::Leaf(_), _, _)
+            | GenClaim::Name(_, GenSubject::Leaf(_)) = g.claim
+            {
                 g.lifetime = Some(g.lifetime.unwrap_or(10).min(20));
             }
         }

@@ -169,7 +169,9 @@ under an earlier event is valid only if its hash is in the latest rotation's
 `keep` list. Kept statements are endorsed by hash — their original signatures no
 longer need checking, which is what allows a retired suite's verify code to be
 deleted. The CLI computes `keep` from its issuance log as: issued − revoked −
-expired − leaf delegations. Rotation thereby also garbage-collects.
+expired − names and grants for leaf keys, keeping only items whose signatures
+verify (the log is a file, not a witness). Rotation thereby also
+garbage-collects.
 
 (There is no `keep: all`. A rotation that keeps everything retires nothing: a
 thief with the old warm key could keep signing under the old event number,
@@ -281,12 +283,13 @@ a ⊆ b   iff  b is a prefix of a
 ## 7. Leaf keys (the fast path)
 
 A leaf key is a bare `mldsa65-ed25519` public key with no log. It exists only as
-the subject of a grant from an identity.
+the subject of a grant (or name) from an identity.
 
-- A grant to a leaf key **must** carry `expires`, with
+- A grant to a leaf key, or a name for one, **must** carry `expires`, with
   `expires − issued ≤ 24 hours` (the leaf ceiling: a protocol constant; verifiers
-  may lower it). Renewal is a root-suite signature per leaf per day — trivial for
-  a daemon holding its device identity's warm key. Anything that needs a longer
+  may lower it). Names count because a grant to a name reaches whatever it
+  names. Renewal is a root-suite signature per leaf per day — trivial for a
+  daemon holding its device identity's warm key. Anything that needs a longer
   life should be a regular identity; only speed and size differ.
 - A leaf key may issue grants only with `delegate: false`, and may sign data.
   It may not issue names or revocations.
@@ -630,6 +633,23 @@ Four findings where the draft's claims didn't hold; decided as follows.
   CLI: `rotate` makes a fresh current key (`--key-out`, or in place of a retired
   `DIR/current.key`), `--same-next` keeps the next keys, and `--key-pub` /
   `--key-k` make a shared current authority.
+
+### Resolved after format audit (2026-10-13)
+
+- **A name could carry a leaf key past the leaf ceiling.** The ceiling applied
+  only to grants whose subject is a leaf key, so naming a leaf and granting to
+  the name gave it an unexpiring grant that also survived rotation, defeating
+  §7 and the leaf rows of §10. **Decision:** the ceiling applies to every
+  statement whose subject is a leaf key, names included (SPEC §5.4 rule 4,
+  §7 rule 6), and `rotate` drops them all. Naming leaves stays possible for a
+  day at a time.
+- **`rotate` must not trust `issued.writ`.** A kept hash is endorsed without
+  its signatures being checked again, but the CLI kept data signatures from
+  `issued.writ` without verifying them, so anyone who could write that file
+  got arbitrary signatures endorsed by the next keys. **Decision:** `keep`
+  takes only items by the identity that verify under SPEC §7. A thief holding
+  the current key can still add validly signed statements to the file; the
+  rotate help says to read it first after a theft.
 
 ## 17. Open questions
 

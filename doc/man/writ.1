@@ -99,7 +99,7 @@ Along a chain of grants, the subject holds the longest of the tags, if each tag 
 .SH NAMES
 Names are local to the identity that makes them. The name path 'me alice laptops' means: whoever I call alice, then whoever she calls laptops. A name can refer to several subjects. A grant to a name path lets the identities along the path decide who gets the grant.
 .SH LEAF KEYS
-A leaf key is a key without a log. It uses ML\-DSA\-65 and Ed25519 together, and both signatures must be valid. Leaf keys sign and verify quickly, and every grant to a leaf key expires within 24 hours. Use them for machines that sign often.
+A leaf key is a key without a log. It uses ML\-DSA\-65 and Ed25519 together, and both signatures must be valid. Leaf keys sign and verify quickly, and every grant to a leaf key, or name for one, expires within 24 hours. Use them for machines that sign often.
 .SH TIME
 Each statement includes the time it was issued, as given by the signer, and may carry an expiry time. writ does not accept a statement issued more than 5 minutes in the future.
 .PP
