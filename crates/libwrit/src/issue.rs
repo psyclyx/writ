@@ -127,18 +127,37 @@ pub fn incept(
     Ok((id, sign_with_authority(event, &authority, signers, rng)?))
 }
 
-/// Extends `log` with a rotation revealing `revealed` (which must hash to
-/// the head's `next`), committing to `next`, keeping `keep`
-/// (DESIGN.md §4.3). Signed by `k` of `revealed`.
+/// What a rotation sets (DESIGN.md §4.3).
+#[derive(Clone, Debug)]
+pub struct RotationPlan {
+    /// The next authority the log committed to. It signs the rotation.
+    pub revealed: Authority,
+    /// The new current authority, which signs statements from now on.
+    pub authority: Authority,
+    /// The authority allowed to sign the following rotation. It may be
+    /// `revealed` again: next keys can serve for many rotations.
+    pub next: Authority,
+    /// The statement lifetime limit from now on.
+    pub max_validity: Option<u64>,
+    /// Earlier statements and signatures that stay valid.
+    pub keep: Vec<Hash>,
+}
+
+/// Extends `log` with a rotation. `plan.revealed` must hash to the head's
+/// `next`; `k` of its keys sign.
 pub fn rotate(
     log: &Log,
-    revealed: Authority,
-    next: &Authority,
-    max_validity: Option<u64>,
-    mut keep: Vec<Hash>,
+    plan: RotationPlan,
     signers: &[&dyn Signer],
     rng: &mut dyn Rng,
 ) -> Result<Signed<Event>, IssueError> {
+    let RotationPlan {
+        revealed,
+        authority,
+        next,
+        max_validity,
+        mut keep,
+    } = plan;
     if revealed.hash() != *log.head().next() {
         return Err(IssueError::WrongNext);
     }
@@ -154,7 +173,8 @@ pub fn rotate(
         id: log.id(),
         n: log.head_n() + 1,
         prev,
-        authority: revealed.clone(),
+        revealed: revealed.clone(),
+        authority,
         next: next.hash(),
         max_validity,
         keep,

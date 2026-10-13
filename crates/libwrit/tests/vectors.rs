@@ -94,7 +94,9 @@ const T0: Time = 1_800_000_000;
 
 struct Who {
     log: Log,
+    /// The current key at each event.
     keys: Vec<RootSigner>,
+    next: RootSigner,
 }
 
 impl Who {
@@ -113,7 +115,8 @@ impl Who {
         let log = m.log(&id).as_ref().clone().unwrap();
         Who {
             log,
-            keys: vec![k0, k1],
+            keys: vec![k0],
+            next: k1,
         }
     }
 
@@ -319,16 +322,21 @@ fn world() -> World {
     );
 
     // alice rotates, keeping one statement; then speaks under event 1.
+    let alice_current = seed(23).root();
     let rotation = rotate(
         &alice.log,
-        Authority::single(alice.keys[1].root_key()),
-        &Authority::single(seed(22).root().root_key()),
-        None,
-        vec![kept.body.hash()],
-        &[&alice.keys[1]],
+        RotationPlan {
+            revealed: Authority::single(alice.next.root_key()),
+            authority: Authority::single(alice_current.root_key()),
+            next: Authority::single(seed(22).root().root_key()),
+            max_validity: None,
+            keep: vec![kept.body.hash()],
+        },
+        &[&alice.next],
         &mut rng,
     )
     .unwrap();
+    alice.keys.push(alice_current);
     m.add(Item::Event(rotation));
     alice.log = m.log(&alice.id()).as_ref().clone().unwrap();
     add(
@@ -342,15 +350,38 @@ fn world() -> World {
         &mut m,
     );
 
+    // After the rotation, alice's revealed next key tries to sign a
+    // statement: next keys only ever sign rotations.
+    let by_next = sign_with_authority(
+        Statement {
+            issuer: Issuer::Identity {
+                id: alice.id(),
+                event: 1,
+            },
+            issued: T0 + 3,
+            expires: None,
+            note: None,
+            claim: grant(Subject::Id(bob.id()), "(ssh next)", false),
+        },
+        &Authority::single(alice.next.root_key()),
+        &[&alice.next],
+        &mut rng,
+    )
+    .unwrap();
+    add("alice-next-key-grants-bob", by_next, &mut m);
+
     // quinn's next key signs two different rotation 1s.
     for keep in [vec![], vec![Hash([1; 32])]] {
         let r = rotate(
             &quinn.log,
-            Authority::single(quinn.keys[1].root_key()),
-            &Authority::single(seed(42).root().root_key()),
-            None,
-            keep,
-            &[&quinn.keys[1]],
+            RotationPlan {
+                revealed: Authority::single(quinn.next.root_key()),
+                authority: Authority::single(seed(43).root().root_key()),
+                next: Authority::single(seed(42).root().root_key()),
+                max_validity: None,
+                keep,
+            },
+            &[&quinn.next],
             &mut rng,
         )
         .unwrap();
@@ -470,6 +501,7 @@ fn items_and_chains() {
         ("leaf grant expired", "app", "(svc read)", T0 + 3600),
         ("issued after rotation", "bob", "(ssh ftp)", T0 + 100),
         ("not kept by rotation", "bob", "(ssh old)", T0 + 100),
+        ("signed by a next key", "bob", "(ssh next)", T0 + 100),
         ("through an equivocating identity", "bob", "(q)", T0 + 100),
         ("about an equivocating identity", "quinn", "()", T0 + 100),
         ("nothing at all", "alice", "(nope)", T0 + 100),

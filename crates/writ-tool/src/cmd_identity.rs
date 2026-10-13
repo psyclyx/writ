@@ -64,7 +64,6 @@ fn read_root_pubs(paths: &[String]) -> Result<Vec<RootKey>> {
 fn new_next(parsed: &Parsed) -> Result<(Vec<Seed>, Authority)> {
     let pubs = read_root_pubs(parsed.values("next-pub"))?;
     let n = count(parsed, "next-n", usize::from(pubs.is_empty()))?;
-    let k = count(parsed, "next-k", 1)?;
     let seeds: Vec<Seed> = (0..n).map(|_| Seed::generate(&mut OsRng)).collect();
     let mut keys: Vec<RootKey> = seeds.iter().map(|s| s.root().root_key()).collect();
     keys.extend(pubs);
@@ -72,15 +71,8 @@ fn new_next(parsed: &Parsed) -> Result<(Vec<Seed>, Authority)> {
     if total == 0 {
         return err("there must be at least one next key: give --next-n or --next-pub");
     }
+    let k = threshold(parsed, "next-k", total)?;
     let authority = Authority::new(k, keys).map_err(|e| Error::Msg(format!("next keys: {e}")))?;
-    if 2 * k <= total && total > 1 {
-        crate::warn(format!(
-            "with --next-k {k} and {total} next keys, two separate groups of key \
-             holders could each rotate this identity, and verifiers would then refuse \
-             it. Use --next-k {} or more.",
-            total / 2 + 1
-        ));
-    }
     Ok((seeds, authority))
 }
 
@@ -250,35 +242,55 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     let dir = parsed
         .value("identity")
         .ok_or_else(|| ROTATE.usage_error("-i DIR is required".into()))?;
-    let next_out = parsed.value("next-out").ok_or_else(|| {
-        ROTATE.usage_error("--next-out PATH is required: where should the new next key go?".into())
-    })?;
     if parsed.values("next-key").is_empty() {
         return Err(ROTATE.usage_error(
-            "--next-key PATH is required: the key(s) committed to at the last event".into(),
+            "--next-key PATH is required: a next key from init or the last rotate".into(),
         ));
     }
-    fs::check_secret_target(next_out)?;
+    let same_next = parsed.flag("same-next");
+    let next_out = match (same_next, parsed.value("next-out")) {
+        (true, None) => None,
+        (false, Some(p)) => Some(p),
+        (true, Some(_)) => {
+            return Err(ROTATE.usage_error(
+                "--same-next keeps the next keys, so there is nothing to write to --next-out"
+                    .into(),
+            ));
+        }
+        (false, None) => {
+            return Err(ROTATE.usage_error(
+                "--next-out PATH is required: where to write the new next key (or give --same-next)"
+                    .into(),
+            ));
+        }
+    };
+    if same_next
+        && ["next-n", "next-k", "next-pub"]
+            .iter()
+            .any(|o| !parsed.values(o).is_empty())
+    {
+        return Err(ROTATE.usage_error(
+            "--same-next can't be combined with --next-n, --next-k or --next-pub".into(),
+        ));
+    }
+    if let Some(p) = next_out {
+        fs::check_secret_target(p)?;
+    }
     // Serialise rotations of this identity: two concurrent rotations would
     // sign two different events with the same number.
     let ident = IdentityDir::open_locked(dir, true)?;
     let revealed = ident.next_authority()?;
+    let old_authority = ident.log.head().authority().clone();
 
-    let mut revealed_seeds = Vec::new();
     let mut signers: Vec<RootSigner> = Vec::new();
     for path in parsed.values("next-key") {
         for seed in fs::read_seeds(path)? {
             let signer = seed.root();
             if revealed.index_of(&signer.root_key()).is_none() {
-                let current = ident
-                    .log
-                    .head()
-                    .authority()
-                    .index_of(&signer.root_key())
-                    .is_some();
-                return err(if current {
+                return err(if old_authority.index_of(&signer.root_key()).is_some() {
                     format!(
-                        "{path} holds the current key. Rotation needs the next key: the one that init or the last rotate wrote to --next-out"
+                        "{path} holds a current key. Rotation needs a next key: the one that \
+                         init or the last rotate wrote to --next-out"
                     )
                 } else {
                     format!("{path} does not hold a next key of {dir}")
@@ -286,7 +298,6 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
             }
             if !signers.iter().any(|s| s.root_key() == signer.root_key()) {
                 signers.push(signer);
-                revealed_seeds.push(seed);
             }
         }
     }
@@ -299,6 +310,52 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
         ));
     }
 
+    // Where the new current key goes: --key-out, or in place of a retired
+    // DIR/current.key. A key file that still has a role is never replaced.
+    let current_path = ident.dir.join(CURRENT_KEY);
+    let current_path_str = current_path.display().to_string();
+    let (current_seed, current) = current_keys(parsed)?;
+    let next_authority;
+    let next_seeds;
+    if same_next {
+        next_authority = revealed.clone();
+        next_seeds = Vec::new();
+    } else {
+        (next_seeds, next_authority) = new_next(parsed)?;
+    }
+    let key_out = match parsed.value("key-out") {
+        Some(p) => {
+            if Some(p) == next_out && p == "-" {
+                return err("--next-out and --key-out can't both be standard output");
+            }
+            fs::check_secret_target(p)?;
+            KeyOut::Path(p.to_owned())
+        }
+        None if current_path.is_file() => {
+            let old = fs::read_seeds(&current_path_str)?;
+            let retired = old.iter().all(|s| {
+                let k = s.root().root_key();
+                old_authority.index_of(&k).is_some()
+                    && revealed.index_of(&k).is_none()
+                    && next_authority.index_of(&k).is_none()
+                    && current.index_of(&k).is_none()
+            });
+            if !retired {
+                return err(format!(
+                    "{current_path_str} holds a key that is still in use, so writ won't \
+                     replace it; give --key-out PATH for the new current key"
+                ));
+            }
+            KeyOut::Replace
+        }
+        None => {
+            return Err(ROTATE.usage_error(format!(
+                "--key-out PATH is required: where to write the new current key \
+                 ({current_path_str} does not exist)"
+            )));
+        }
+    };
+
     let max_validity = if parsed.flag("no-max-validity") {
         None
     } else {
@@ -309,14 +366,16 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     };
     let now = wall_clock();
     let (keep, stats) = compute_keep(&ident, now);
-    let (next_seeds, next) = new_next(parsed)?;
     let signer_refs: Vec<&dyn Signer> = signers.iter().map(|s| s as &dyn Signer).collect();
     let event = libwrit::rotate(
         &ident.log,
-        revealed.clone(),
-        &next,
-        max_validity,
-        keep.clone(),
+        libwrit::RotationPlan {
+            revealed: revealed.clone(),
+            authority: current.clone(),
+            next: next_authority.clone(),
+            max_validity,
+            keep: keep.clone(),
+        },
         &signer_refs,
         &mut OsRng,
     )
@@ -330,15 +389,42 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
         ));
     }
 
-    // Order matters for crash safety: the new next keys and the new next
-    // authority must be on disk before the log commits to them. next.writ is
-    // append-only, so a crash before the log write leaves the old commitment
-    // satisfiable.
-    if !next_seeds.is_empty() {
-        fs::write_secret(next_out, &fs::seeds_text(&next_seeds))?;
+    // Order matters for crash safety: every new secret key and the new next
+    // authority must be on disk before the log commits to them. next.writ
+    // is append-only, so a crash before the log write leaves the old
+    // commitment satisfiable.
+    if let Some(p) = next_out
+        && !next_seeds.is_empty()
+    {
+        fs::write_secret(p, &fs::seeds_text(&next_seeds))?;
     }
-    fs::append_items(&ident.dir.join(NEXT), &[Item::Authority(next.clone())])?;
+    let current_text = fs::seeds_text(std::slice::from_ref(&current_seed));
+    let key_shown = match &key_out {
+        KeyOut::Path(p) => {
+            fs::write_secret(p, &current_text)?;
+            p.clone()
+        }
+        KeyOut::Replace => {
+            // Write it beside the old key first; the rename below, after the
+            // log commits, retires the old one.
+            current_path_str.clone()
+        }
+    };
+    let staged = ident.dir.join(format!("{CURRENT_KEY}.new"));
+    if matches!(key_out, KeyOut::Replace) {
+        fs::write_secret(&staged.display().to_string(), &current_text)?;
+    }
+    if !same_next {
+        fs::append_items(
+            &ident.dir.join(NEXT),
+            &[Item::Authority(next_authority.clone())],
+        )?;
+    }
     fs::append_items(&ident.dir.join(LOG), &[Item::Event(event)])?;
+    if matches!(key_out, KeyOut::Replace) {
+        std::fs::rename(&staged, &current_path)
+            .context(|| format!("replacing {current_path_str}"))?;
+    }
 
     let mut lines = vec![format!("rotated {} to event {n}", ident.id())];
     lines.push(format!(
@@ -366,45 +452,63 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
             }
         }
     ));
-
-    // Install the revealed keys as the current key, if that's how this
-    // identity is kept.
-    let current_path = ident.dir.join(CURRENT_KEY);
-    if current_path.is_file() {
-        let path_str = current_path.display().to_string();
-        let old = fs::read_seeds(&path_str)?;
-        // Only a key that signed for the old event and has no role from now on
-        // is retired; anything else stays where it is.
-        let old_authority = ident.log.head().authority();
-        let retired = old.iter().all(|s| {
-            let k = s.root().root_key();
-            old_authority.index_of(&k).is_some()
-                && revealed.index_of(&k).is_none()
-                && next.index_of(&k).is_none()
-        });
-        if retired {
-            fs::replace_secret(&current_path, &fs::seeds_text(&revealed_seeds))?;
-            lines.push(format!(
-                "  {path_str} now holds the new current key; the old one was removed"
-            ));
-        } else {
-            lines.push(format!(
-                "  {path_str} was not changed, because its key is still in use; sign with --key and the next key you gave"
-            ));
+    lines.push(match key_out {
+        KeyOut::Replace => {
+            format!("  current key  {key_shown}  replaced; the old key no longer signs anything")
         }
-    } else {
-        lines.push(
-            "  the next key you gave is now the current key; give it with --key when you sign"
-                .to_owned(),
-        );
+        KeyOut::Path(_) => format!("  current key  {key_shown}"),
+    });
+    if current.keys().len() > 1 {
+        lines.push(format!(
+            "  current keys any {} of these {} sign statements",
+            current.k(),
+            current.keys().len()
+        ));
     }
-    if !next_seeds.is_empty() {
-        lines.push(format!("  next key  {next_out}  keep it offline"));
+    match next_out {
+        Some(p) if !next_seeds.is_empty() => {
+            lines.push(format!("  next key     {p}  keep it offline"));
+        }
+        _ => lines.push("  next keys    unchanged".to_owned()),
     }
-    if next_out != "-" || !parsed.flag("quiet") {
+    if next_out != Some("-") || !parsed.flag("quiet") {
         say(parsed, lines.join("\n"));
     }
     Ok(())
+}
+
+enum KeyOut {
+    /// Write the new current key here.
+    Path(String),
+    /// Replace the retired DIR/current.key.
+    Replace,
+}
+
+/// A fresh current key, plus other people's keys from --key-pub.
+fn current_keys(parsed: &Parsed) -> Result<(Seed, Authority)> {
+    let pubs = read_root_pubs(parsed.values("key-pub"))?;
+    let seed = Seed::generate(&mut OsRng);
+    let mut keys = vec![seed.root().root_key()];
+    keys.extend(pubs);
+    let k = threshold(parsed, "key-k", keys.len())?;
+    let authority =
+        Authority::new(k, keys).map_err(|e| Error::Msg(format!("current keys: {e}")))?;
+    Ok((seed, authority))
+}
+
+/// The threshold from --NAME, defaulting to a majority of `total`; must be
+/// more than half of `total`.
+fn threshold(parsed: &Parsed, name: &str, total: usize) -> Result<usize> {
+    let k = count(parsed, name, total / 2 + 1)?;
+    if total > 0 && 2 * k <= total {
+        return err(format!(
+            "--{name} {k} is too low for {total} keys: it must be more than half, so at \
+             least {}. Otherwise two separate groups of key holders could each act, and \
+             verifiers would refuse the identity",
+            total / 2 + 1
+        ));
+    }
+    Ok(k)
 }
 
 pub fn export(parsed: &Parsed) -> Result<()> {

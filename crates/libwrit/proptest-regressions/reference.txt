@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 79f36429526d0e940865e0ba74b8ea6722f57d2fd5b6e7b30f939db976c47521 # shrinks to w = GenWorld { rotated: [false, false, true, false], keep_mask: [0, 0, 0, 0], max_validity: [false, false, false, false], equivocate: false, statements: [GenStatement { raw: false, issuer: Ok((2, 1)), claim: Grant(Id(0), 0, false), issued: 0, lifetime: None, good_sig: false }], max_chain: 2, max_name_depth: 1 }, q = Id(0), t = 0, now = 0
+cc ffbe00e36aa177c6aa1e516bc8d3359b8e3bbde8a1c70fa99fd25b3d70e408f7 # shrinks to w = GenWorld { rotated: [false, false, false, true], keep_mask: [0, 0, 0, 0], max_validity: [false, false, false, false], equivocate: false, statements: [GenStatement { raw: false, issuer: Ok((3, 1)), claim: Grant(Id(0), 0, false), issued: 0, lifetime: None, good_sig: false }], max_chain: 2, max_name_depth: 1 }, base = 0, names = [false], now = 0
+cc a2462219287b30cf019f2c446d45c75feb2ac433fcf1c97aeb9cf8d319853a00 # shrinks to w = GenWorld { rotated: [true, false, false, false], keep_mask: [0, 0, 0, 0], max_validity: [false, false, false, false], equivocate: false, statements: [GenStatement { raw: false, issuer: Ok((0, 1)), claim: Grant(Id(0), 0, false), issued: 0, lifetime: None, good_sig: false }], max_chain: 2, max_name_depth: 1 }, now = 0

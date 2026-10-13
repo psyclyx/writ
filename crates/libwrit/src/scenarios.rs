@@ -11,8 +11,10 @@ use crate::*;
 
 pub(crate) struct Ident {
     pub id: Id,
-    /// keys[n] is the authority key revealed at event n; keys[n+1] the next.
+    /// keys[n] is the current key at event n.
     pub keys: Vec<FakeRoot>,
+    /// next[n] is the next key committed to at event n.
+    pub next: Vec<FakeRoot>,
     pub events: Vec<Signed<Event>>,
     pub seed: u8,
 }
@@ -35,7 +37,8 @@ impl Ident {
         .unwrap();
         Ident {
             id,
-            keys: vec![k0, k1],
+            keys: vec![k0],
+            next: vec![k1],
             events: vec![ev],
             seed,
         }
@@ -49,25 +52,38 @@ impl Ident {
         .unwrap()
     }
 
+    /// The current key at `event`, whether or not the log has reached it yet.
+    pub fn key(&self, event: u64) -> FakeRoot {
+        match event {
+            0 => FakeRoot::new(self.seed.wrapping_mul(16)),
+            n => FakeRoot::new(self.seed.wrapping_mul(16) + 2 * n as u8),
+        }
+    }
+
     pub fn head(&self) -> u64 {
         self.events.len() as u64 - 1
     }
 
     pub fn rotate(&mut self, keep: Vec<Hash>, max_validity: Option<u64>) -> Signed<Event> {
-        let n = self.keys.len();
-        let revealed = self.keys[n - 1];
-        let next = FakeRoot::new(self.seed.wrapping_mul(16) + n as u8);
+        let n = self.keys.len() as u8;
+        let revealed = self.next[self.next.len() - 1];
+        let current = FakeRoot::new(self.seed.wrapping_mul(16) + 2 * n);
+        let next = FakeRoot::new(self.seed.wrapping_mul(16) + 2 * n + 1);
         let ev = rotate(
             &self.log(),
-            Authority::single(revealed.0),
-            &Authority::single(next.0),
-            max_validity,
-            keep,
+            RotationPlan {
+                revealed: Authority::single(revealed.0),
+                authority: Authority::single(current.0),
+                next: Authority::single(next.0),
+                max_validity,
+                keep,
+            },
             &[&revealed],
             &mut TestRng::new(0),
         )
         .unwrap();
-        self.keys.push(next);
+        self.keys.push(current);
+        self.next.push(next);
         self.events.push(ev.clone());
         ev
     }
@@ -100,7 +116,7 @@ impl Ident {
             note: None,
             claim,
         };
-        let key = self.keys[event as usize];
+        let key = self.key(event);
         sign_with_authority(
             body,
             &Authority::single(key.0),
@@ -668,7 +684,7 @@ fn broken_and_garbage_rotations() {
         panic!()
     };
     bad.prev = Hash([9; 32]);
-    let key = b.keys[1];
+    let key = b.next[0];
     let bad = sign_with_authority(
         Event::Rotation(bad),
         &Authority::single(key.0),
@@ -686,7 +702,7 @@ fn broken_and_garbage_rotations() {
         panic!()
     };
     let mallory = FakeRoot::new(200);
-    garbage.authority = Authority::single(mallory.0);
+    garbage.revealed = Authority::single(mallory.0);
     let garbage = sign_with_authority(
         Event::Rotation(garbage),
         &Authority::single(mallory.0),
@@ -1051,4 +1067,97 @@ fn junk_signatures_never_travel() {
     let log = m.log(&a.id);
     let log = log.as_ref().as_ref().unwrap();
     assert!(log.items().all(|i| Item::decode(&i.encode()).is_ok()));
+}
+
+/// Next keys sign rotations and nothing else; the new current key signs
+/// statements. The same next keys can serve for several rotations.
+#[test]
+fn next_keys_only_rotate() {
+    let mut a = Ident::new(1);
+    let b = Ident::new(2);
+    let recovery = a.next[0];
+    a.rotate(vec![], None);
+    // The revealed next key is not a current key.
+    let body = Statement {
+        issuer: a.issuer(),
+        issued: 10,
+        expires: None,
+        note: None,
+        claim: grant(Subject::Id(b.id), "()", false),
+    };
+    assert_eq!(
+        issue(body.clone(), &a.log(), &[&recovery], &mut TestRng::new(0)),
+        Err(IssueError::NotInAuthority)
+    );
+    let forged = sign_with_authority(
+        body.clone(),
+        &Authority::single(recovery.0),
+        &[&recovery],
+        &mut TestRng::new(0),
+    )
+    .unwrap();
+    let w = World::new(&a, [st(forged.clone())]);
+    let d = w.check(Holder::Id(b.id), "()", 50).unwrap_err();
+    assert_eq!(
+        rejected_for(&d, forged.body.hash()),
+        Some(Reason::BadSignature)
+    );
+    // The new current key works.
+    let ok = issue(body, &a.log(), &[&a.keys[1]], &mut TestRng::new(0)).unwrap();
+    let w = World::new(&a, [st(ok)]);
+    assert!(w.check(Holder::Id(b.id), "()", 50).is_ok());
+
+    // Keep the same next keys across several rotations.
+    let mut c = Ident::new(3);
+    let recovery = c.next[0];
+    let mut log = c.log();
+    for n in 1..4u8 {
+        let current = FakeRoot::new(150 + n);
+        let ev = rotate(
+            &log,
+            RotationPlan {
+                revealed: Authority::single(recovery.0),
+                authority: Authority::single(current.0),
+                next: Authority::single(recovery.0),
+                max_validity: None,
+                keep: vec![],
+            },
+            &[&recovery],
+            &mut TestRng::new(0),
+        )
+        .unwrap();
+        c.events.push(ev);
+        log = c.log();
+        assert_eq!(log.head_n(), u64::from(n));
+    }
+}
+
+#[test]
+fn thresholds_must_be_a_majority() {
+    let keys: Vec<RootKey> = (0..4).map(|i| FakeRoot::new(120 + i).0).collect();
+    for (k, n, ok) in [
+        (1, 1, true),
+        (1, 2, false),
+        (2, 2, true),
+        (2, 3, true),
+        (2, 4, false),
+        (3, 4, true),
+    ] {
+        let got = Authority::new(k, keys[..n].to_vec());
+        assert_eq!(got.is_ok(), ok, "{k} of {n}");
+        if !ok {
+            assert_eq!(got, Err(crate::model::AuthorityError::Quorum));
+        }
+    }
+    // Decoding enforces it too.
+    let weak = writ_sexp::Sexp::list(vec![
+        writ_sexp::Sexp::atom("writ/v1"),
+        writ_sexp::Sexp::list(vec![
+            writ_sexp::Sexp::atom("authority"),
+            writ_sexp::Sexp::atom("1"),
+            keys[0].to_sexp(),
+            keys[1].to_sexp(),
+        ]),
+    ]);
+    assert!(Item::decode(&weak.encode()).is_err());
 }

@@ -90,7 +90,7 @@ const NEXT_K: Opt = opt(
     "next-k",
     "K",
     Value::Text,
-    "how many next keys must sign the next rotation (default: 1)",
+    "how many next keys must sign a rotation (default: more than half of them)",
 );
 const NEXT_PUB: Opt = opt(
     "next-pub",
@@ -193,9 +193,8 @@ pub static INIT: Spec = Spec {
         "    writ init me --next-out - | age -p > me-next.key.age",
         "The next keys can be K of N keys held by different people. For \
          example, 2 of 3: your own offline key, a friend's key, and a key in \
-         a safe. Choose K greater than N/2. If two separate groups of key \
-         holders could each rotate, verifiers can't tell that from theft, \
-         and they refuse the identity.",
+         a safe. K must be more than half of N, so that two separate groups of \
+         holders can't each rotate.",
     ],
     examples: &[
         (
@@ -227,7 +226,11 @@ pub static ID: Spec = Spec {
 pub static ROTATE: Spec = Spec {
     name: "rotate",
     about: "replace the keys of an identity, keeping its id",
-    synopsis: None,
+    synopsis: Some(
+        "-i DIR --next-key PATH... (--next-out PATH | --same-next) [--key-out PATH] \
+         [--key-pub PATH]... [--key-k K] [--next-n N] [--next-k K] [--next-pub PATH]... \
+         [--max-validity DUR | --no-max-validity] [-q]",
+    ),
     args: &[],
     opts: &[
         opt("identity", "DIR", Value::Identity, "the identity to rotate")
@@ -237,8 +240,8 @@ pub static ROTATE: Spec = Spec {
             "next-key",
             "PATH",
             Value::File,
-            "a next key from the last rotation (or from init); give one \
-             --next-key per key; '-' means standard input",
+            "a next key, from init or the last rotate; give one --next-key per \
+             key when several must sign; '-' means standard input",
         )
         .required()
         .many(),
@@ -247,8 +250,32 @@ pub static ROTATE: Spec = Spec {
             "PATH",
             Value::OutFile,
             "where to write the new next key; '-' means standard output",
+        ),
+        flag(
+            "same-next",
+            "keep the next keys you have, instead of making new ones",
+        ),
+        opt(
+            "key-out",
+            "PATH",
+            Value::OutFile,
+            "where to write the new current key (default: in place of \
+             DIR/current.key)",
+        ),
+        opt(
+            "key-pub",
+            "PATH",
+            Value::File,
+            "add another person's public key (from `writ pubkey`) to the current keys",
         )
-        .required(),
+        .many(),
+        opt(
+            "key-k",
+            "K",
+            Value::Text,
+            "how many current keys must sign each statement (default: more than \
+             half of them)",
+        ),
         NEXT_N,
         NEXT_K,
         NEXT_PUB,
@@ -265,21 +292,31 @@ pub static ROTATE: Spec = Spec {
         flag("quiet", "print nothing on success").short('q'),
     ],
     description: &[
-        "Rotate the identity in DIR. The next keys (--next-key) sign the \
-         rotation and become the current keys. writ makes new next keys and \
-         writes them to --next-out. The id does not change.",
+        "Rotate the identity in DIR: replace its current keys, and keep its id.",
+        "The next keys (--next-key) sign the rotation, and nothing else. writ \
+         makes a new current key and writes it to --key-out, or in place of \
+         DIR/current.key. Then it makes new next keys and writes them to \
+         --next-out, or, with --same-next, keeps the next keys you have. \
+         Keeping them suits next keys held by friends or kept in a safe.",
         "A rotation lists the statements that stay valid. writ keeps every \
          statement in DIR/issued.writ that is still valid: not revoked, not \
          expired, and not a grant to a leaf key. Anything else signed with \
-         the old keys becomes invalid for every verifier that sees the \
+         the old current key becomes invalid for every verifier that sees the \
          rotation. Use this to recover from a stolen current key.",
-        "If DIR/current.key exists, writ replaces it with the key you \
-         revealed. If not, give the revealed key with --key from now on.",
+        "With --key-pub, the current keys include other people's keys, and \
+         --key-k of them must sign each statement. Use this for an identity \
+         that a group shares.",
     ],
-    examples: &[(
-        "Rotate, with the next keys encrypted by age:",
-        "writ rotate -i me --next-key <(age -d me-next.key.age) --next-out - | age -p > me-next2.key.age",
-    )],
+    examples: &[
+        (
+            "Rotate, with the next keys encrypted by age:",
+            "writ rotate -i me --next-key <(age -d me-next.key.age) --next-out - | age -p > me-next2.key.age",
+        ),
+        (
+            "Recover from a stolen current key, keeping the next keys:",
+            "writ rotate -i me --next-key <(age -d me-next.key.age) --same-next",
+        ),
+    ],
     see_also: &["init", "export"],
 };
 
@@ -768,13 +805,15 @@ pub static MANUAL: &[(&str, &[&str])] = &[
             "Identity keys use SLH-DSA-SHAKE-128s, a signature scheme whose \
              security rests only on hash functions. Each event names the \
              current keys, which sign statements, and commits to the next \
-             keys, which can sign only the next rotation. A thief who steals \
-             the current key can't rotate the identity. A rotation makes \
+             keys, which can sign only the next rotation. A rotation makes new current keys, \
+             and can keep the same next keys, so next keys held by friends or \
+             kept in a safe serve for many rotations. A thief who steals the \
+             current key can't rotate the identity, and a rotation makes \
              everything the thief signed invalid for every verifier that sees \
              it.",
-            "An identity can have several keys, of which K must sign. This \
-             allows identities shared by a group, and recovery with the help \
-             of friends.",
+            "An identity can have several keys, of which K must sign, and K \
+             must be more than half of them. This allows identities shared by \
+             a group, and recovery with the help of friends.",
         ],
     ),
     (

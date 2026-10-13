@@ -114,6 +114,14 @@ result = denied
 reason = not-found
 rejected = alice-grants-bob-ftp:covers alice-grants-bob-old:not-kept alice-grants-bob-ssh-nas:covers
 
+case = signed by a next key
+subject = bob
+tag = (ssh next)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers alice-next-key-grants-bob:bad-signature
+
 case = through an equivocating identity
 subject = bob
 tag = (q)

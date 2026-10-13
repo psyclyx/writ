@@ -8,6 +8,7 @@
     missing_docs
 )]
 
+use libwrit::keys::RootSigner;
 use libwrit::*;
 
 struct SeqRng(u8);
@@ -114,28 +115,20 @@ fn identity_leaf_and_rotation() {
         Err(Denial::Signature(Reason::BadSignature))
     );
 
-    // Rotate: reveal the cold key, keep nothing; the leaf grant dies.
-    let rotation = rotate(
-        &log,
-        Authority::single(cold.root_key()),
-        &Authority::single(cold2.root_key()),
-        None,
-        vec![],
-        &[&cold],
-        &mut rng,
-    )
-    .unwrap();
+    // Rotate: the cold key signs, a new warm key takes over, keep nothing;
+    // the leaf grant dies.
+    let warm2 = seed(4).root();
+    let plan = |revealed: &RootSigner| RotationPlan {
+        revealed: Authority::single(revealed.root_key()),
+        authority: Authority::single(warm2.root_key()),
+        next: Authority::single(cold2.root_key()),
+        max_validity: None,
+        keep: vec![],
+    };
+    let rotation = rotate(&log, plan(&cold), &[&cold], &mut rng).unwrap();
     // The warm key can't rotate.
     assert_eq!(
-        rotate(
-            &log,
-            Authority::single(warm.root_key()),
-            &Authority::single(cold2.root_key()),
-            None,
-            vec![],
-            &[&warm],
-            &mut rng,
-        ),
+        rotate(&log, plan(&warm), &[&warm], &mut rng),
         Err(IssueError::WrongNext)
     );
     fresh.add(Item::Event(rotation));

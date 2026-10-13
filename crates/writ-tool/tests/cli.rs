@@ -438,7 +438,7 @@ fn rotation_keeps_and_drops() {
         ],
         2,
     );
-    assert!(err.contains("holds the current key"), "{err}");
+    assert!(err.contains("holds a current key"), "{err}");
     let (code, _, err) = s.run(&[
         "rotate",
         "-i",
@@ -454,7 +454,9 @@ fn rotation_keeps_and_drops() {
         err.contains("1 expired") && err.contains("1 leaf grants"),
         "{err}"
     );
-    assert_eq!(s.read("me/current.key"), s.read("me-next.key"));
+    let installed = s.read("me/current.key");
+    assert_ne!(installed, s.read("old.key"));
+    assert_ne!(installed, s.read("me-next.key"));
     // The old key is retired and refused.
     let err = s.fails(&["grant", "-i", "me", "--key", "old.key", &alice, "(x)"], 2);
     assert!(err.contains("no longer a current key"), "{err}");
@@ -514,7 +516,17 @@ fn age_style_composition() {
     assert!(err.contains("--key"), "{err}");
     // Rotate with the next key on stdin, new next key on stdout.
     let out = s.run_with(
-        &["rotate", "-i", "me", "--next-key", "-", "--next-out", "-"],
+        &[
+            "rotate",
+            "-i",
+            "me",
+            "--next-key",
+            "-",
+            "--next-out",
+            "-",
+            "--key-out",
+            "cur2.key",
+        ],
         &next_key,
     );
     assert!(
@@ -524,17 +536,14 @@ fn age_style_composition() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("WRIT-SECRET-KEY-1"));
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("now the current key"), "{err}");
-    // The revealed key now signs.
+    assert!(err.contains("cur2.key"), "{err}");
+    // Next keys only rotate; the new current key signs.
     let out = s.run_with(
         &["grant", "-i", "me", "--key", "-", &alice, "(d)"],
         &next_key,
     );
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_eq!(out.status.code(), Some(2));
+    s.ok(&["grant", "-i", "me", "--key", "cur2.key", &alice, "(d)"]);
 }
 
 #[test]
@@ -586,9 +595,24 @@ fn k_of_n_and_friends() {
         "n.key",
     ]);
     assert_eq!(code, 0, "{err}");
-    // A weak threshold is warned about.
-    let (_, _, err) = s.run(&["init", "weak", "--next-out", "w.keys", "--next-n", "2"]);
-    assert!(err.contains("warning"), "{err}");
+    // A threshold of half or less is refused; the default is a majority.
+    let err = s.fails(
+        &[
+            "init",
+            "weak",
+            "--next-out",
+            "w.keys",
+            "--next-n",
+            "2",
+            "--next-k",
+            "1",
+        ],
+        2,
+    );
+    assert!(err.contains("more than half"), "{err}");
+    s.ok(&["init", "strong", "--next-out", "s.keys", "--next-n", "2"]);
+    let shown = s.ok(&["show", "strong/next.writ"]);
+    assert!(shown.contains("2 of 2"), "{shown}");
 }
 
 #[test]
@@ -816,6 +840,7 @@ fn rotation_survives_a_crash_before_the_log_write() {
     let s = Sandbox::new("crash");
     s.init("me");
     let log_before = std::fs::read(s.path("me/log.writ")).unwrap();
+    let key_before = std::fs::read(s.path("me/current.key")).unwrap();
     s.ok(&[
         "rotate",
         "-i",
@@ -827,8 +852,12 @@ fn rotation_survives_a_crash_before_the_log_write() {
         "-q",
     ]);
     // As if writ died after recording the new next authority and key, but
-    // before appending the rotation to the log.
+    // before appending the rotation to the log: the old current key is still
+    // in place, and the new one is staged beside it.
     std::fs::write(s.path("me/log.writ"), log_before).unwrap();
+    std::fs::remove_file(s.path("me/current.key")).unwrap();
+    std::fs::write(s.path("me/current.key"), &key_before).unwrap();
+    s.ok(&["keygen", "--out", "me/current.key.new"]);
     let (code, _, err) = s.run(&[
         "rotate",
         "-i",
@@ -882,11 +911,31 @@ fn a_key_with_a_future_role_is_not_retired() {
         "n.key",
         "--next-pub",
         "warm.pub",
-        "--next-k",
+        "--next-n",
         "1",
+        "--next-k",
+        "2",
+    ]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("still in use"), "{err}");
+    let (code, _, err) = s.run(&[
+        "rotate",
+        "-i",
+        "me",
+        "--next-key",
+        "me-next.key",
+        "--next-out",
+        "n.key",
+        "--next-pub",
+        "warm.pub",
+        "--next-n",
+        "1",
+        "--next-k",
+        "2",
+        "--key-out",
+        "new.key",
     ]);
     assert_eq!(code, 0, "{err}");
-    assert!(err.contains("was not changed"), "{err}");
     assert_eq!(s.read("me/current.key"), before);
 }
 
@@ -978,4 +1027,64 @@ fn help_comes_in_two_lengths() {
     ] {
         s.ok(&[cmd, "--help"]);
     }
+}
+
+#[test]
+fn an_interrupted_key_install_is_finished() {
+    let s = Sandbox::new("install");
+    s.init("me");
+    s.ok(&[
+        "rotate",
+        "-i",
+        "me",
+        "--next-key",
+        "me-next.key",
+        "--same-next",
+        "-q",
+    ]);
+    let current = s.read("me/current.key");
+    // As if writ died after committing the rotation but before moving the
+    // new key into place.
+    std::fs::rename(s.path("me/current.key"), s.path("me/current.key.new")).unwrap();
+    s.ok(&["init", "alice", "--next-out", "a.key", "-q"]);
+    let (code, _, err) = s.run(&["grant", "-i", "me", "alice", "(x)"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("interrupted rotation"), "{err}");
+    assert_eq!(s.read("me/current.key"), current);
+    assert!(!s.path("me/current.key.new").exists());
+}
+
+#[test]
+fn same_next_keeps_the_recovery_keys() {
+    let s = Sandbox::new("samenext");
+    s.init("me");
+    let alice = s.init("alice");
+    for i in 0..2 {
+        let (code, _, err) = s.run(&[
+            "rotate",
+            "-i",
+            "me",
+            "--next-key",
+            "me-next.key",
+            "--same-next",
+        ]);
+        assert_eq!(code, 0, "rotation {i}: {err}");
+        assert!(err.contains("next keys    unchanged"), "{err}");
+    }
+    s.ok(&["grant", "-i", "me", &alice, "(x)"]);
+    s.ok(&["check", "--as", "me", &alice, "(x)"]);
+    let err = s.fails(
+        &[
+            "rotate",
+            "-i",
+            "me",
+            "--next-key",
+            "me-next.key",
+            "--same-next",
+            "--next-out",
+            "x.key",
+        ],
+        2,
+    );
+    assert!(err.contains("nothing to write"), "{err}");
 }

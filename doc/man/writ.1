@@ -85,9 +85,9 @@ print the version
 .SH IDENTITIES AND KEYS
 An identity is a log of key events. The first event creates the identity, and its hash is the id. Later events, called rotations, replace the keys. The id stays the same.
 .PP
-Identity keys use SLH\-DSA\-SHAKE\-128s, a signature scheme whose security rests only on hash functions. Each event names the current keys, which sign statements, and commits to the next keys, which can sign only the next rotation. A thief who steals the current key can't rotate the identity. A rotation makes everything the thief signed invalid for every verifier that sees it.
+Identity keys use SLH\-DSA\-SHAKE\-128s, a signature scheme whose security rests only on hash functions. Each event names the current keys, which sign statements, and commits to the next keys, which can sign only the next rotation. A rotation makes new current keys, and can keep the same next keys, so next keys held by friends or kept in a safe serve for many rotations. A thief who steals the current key can't rotate the identity, and a rotation makes everything the thief signed invalid for every verifier that sees it.
 .PP
-An identity can have several keys, of which K must sign. This allows identities shared by a group, and recovery with the help of friends.
+An identity can have several keys, of which K must sign, and K must be more than half of them. This allows identities shared by a group, and recovery with the help of friends.
 .SH STATEMENTS AND BUNDLES
 There are three kinds of statements. A name says who a name refers to. A grant gives a tag to a subject. A revocation cancels an earlier statement or data signature by the same identity. Names and grants may expire. A statement is identified by the hash of its contents; its signatures are not part of the hash.
 .PP

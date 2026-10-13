@@ -32,7 +32,7 @@ impl Log {
         };
         // Keep only verified signatures (one per index): a log, and anything
         // derived from it, never carries junk merged in from other copies.
-        let Some(inception) = verified(inception, inception.body.authority()) else {
+        let Some(inception) = verified(inception, inception.body.signers()) else {
             return Err(LogError::BadSignature { n: 0 });
         };
         let id = inception.body.id();
@@ -50,14 +50,14 @@ impl Log {
                 let Event::Rotation(r) = &ev.body else {
                     continue;
                 };
-                if r.id != id || r.n != n || r.authority.hash() != committed {
+                if r.id != id || r.n != n || r.revealed.hash() != committed {
                     continue;
                 }
                 let h = ev.body.hash();
                 if candidates.iter().any(|(_, c)| *c == h) {
                     continue;
                 }
-                if let Some(ev) = verified(ev, &r.authority) {
+                if let Some(ev) = verified(ev, &r.revealed) {
                     candidates.push((ev, h));
                 }
             }

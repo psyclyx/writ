@@ -7,9 +7,9 @@ id = writ1vgnuqqchjwxkacx72fcpgdjqa3dx2ravcctcvj57ve6vawz83rtq4qek2d
 encoded-length = 8012
 
 kind = rotation
-hash = 55d4bea45c045c3f55ad2c1b853b3f6c67efa3898b3211c1b7c7a7dc6a3e9a11
+hash = 13d2e6c692304fb534c2281ea8f014ae7435148003732e72f349492d9c1532d8
 id = writ1vgnuqqchjwxkacx72fcpgdjqa3dx2ravcctcvj57ve6vawz83rtq4qek2d
-encoded-length = 8146
+encoded-length = 8232
 
 kind = inception
 hash = e077180b06cbcb820f10fc69898c0c91a83a54603a7467d9cf784479f4bc0181
@@ -22,14 +22,14 @@ id = writ1ekhjd9u8mz2ppthf648duwpthqazf4aj6gc80upgvadztmha7zmqwy8uc7
 encoded-length = 8012
 
 kind = rotation
-hash = 4c50e0f011fa7e9a6d72ae85d08e2b8af3a7b0959a80ead854041af8dacd56e8
+hash = f246c3b3decdcb3f7025ebb17e4e1c7eeba7ad5350b7dda72e9a3cb4557eadf8
 id = writ1ekhjd9u8mz2ppthf648duwpthqazf4aj6gc80upgvadztmha7zmqwy8uc7
-encoded-length = 8111
+encoded-length = 8197
 
 kind = rotation
-hash = 6ae5558f8be77a5383fb2bcf57e80926af052927cedf1ca1714a2ed06f89ed23
+hash = a8e9fc428c94a02f97508310a2b0b7a434b998cda45b5514b1056e7ff154ffa9
 id = writ1ekhjd9u8mz2ppthf648duwpthqazf4aj6gc80upgvadztmha7zmqwy8uc7
-encoded-length = 8146
+encoded-length = 8232
 
 kind = inception
 hash = deb44d1cd3cbb1ef0a5be3176a8a891842be7655c04939f5e7808839a2b59235
@@ -100,3 +100,8 @@ kind = grant
 hash = 6271cabfcce014d14fc07e2f2b06d27e55e9b44d58a8ebfbef00471d1d5e6786
 label = alice-grants-bob-ftp
 encoded-length = 8020
+
+kind = grant
+hash = a9f5cf325d5790ebc79b0ffeaac3e0b425661eb6dbff719eb0fbac598ac4ed92
+label = alice-next-key-grants-bob
+encoded-length = 8021

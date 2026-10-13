@@ -408,7 +408,7 @@ fn build(w: &GenWorld) -> Built {
                 let mut s = idents[i].say_as(key_event, claim, g.issued, expires);
                 if event != key_event {
                     s.body.issuer = Issuer::Identity { id: ids[i], event };
-                    let key = idents[i].keys[key_event as usize];
+                    let key = idents[i].key(key_event);
                     s = sign_with_authority(
                         s.body,
                         &Authority::single(key.0),

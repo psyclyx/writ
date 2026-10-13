@@ -265,6 +265,8 @@ pub enum AuthorityError {
     Threshold,
     /// The same key twice.
     Duplicate,
+    /// `k` is at most half the keys, so two disjoint groups could each act.
+    Quorum,
 }
 
 impl fmt::Display for AuthorityError {
@@ -275,6 +277,9 @@ impl fmt::Display for AuthorityError {
             }
             AuthorityError::Threshold => write!(f, "threshold must be between 1 and the key count"),
             AuthorityError::Duplicate => write!(f, "an authority may not list a key twice"),
+            AuthorityError::Quorum => {
+                write!(f, "the threshold must be more than half of the keys")
+            }
         }
     }
 }
@@ -282,7 +287,10 @@ impl fmt::Display for AuthorityError {
 impl std::error::Error for AuthorityError {}
 
 impl Authority {
-    /// `k` of `keys`. Sorts the keys; rejects duplicates.
+    /// `k` of `keys`. Sorts the keys; rejects duplicates, and thresholds of
+    /// half the keys or fewer: any two groups of `k` holders must share a
+    /// holder, so two different signed events at one position always mean
+    /// some holder signed both.
     pub fn new(
         k: usize,
         mut keys: Vec<RootKey>,
@@ -296,6 +304,9 @@ impl Authority {
         keys.sort();
         if keys.windows(2).any(|w| w.first() == w.get(1)) {
             return Err(AuthorityError::Duplicate);
+        }
+        if 2 * k <= keys.len() {
+            return Err(AuthorityError::Quorum);
         }
         Ok(Authority { k: k as u8, keys })
     }
@@ -380,7 +391,10 @@ pub struct Rotation {
     pub n: u64,
     /// Hash of event `n − 1`.
     pub prev: Hash,
-    /// The newly revealed authority; must hash to event `n − 1`'s `next`.
+    /// The next authority committed to by event `n − 1` (it must hash to
+    /// that event's `next`). It signs this rotation, and nothing else.
+    pub revealed: Authority,
+    /// The current authority from this event on: it signs statements.
     pub authority: Authority,
     /// Commitment to the next authority.
     pub next: Hash,
@@ -408,7 +422,16 @@ impl Event {
         }
     }
 
-    /// The authority that signs this event and statements issued under it.
+    /// The authority that signs this event: the inception's own authority,
+    /// or a rotation's revealed next authority.
+    pub fn signers(&self) -> &Authority {
+        match self {
+            Event::Inception(i) => &i.authority,
+            Event::Rotation(r) => &r.revealed,
+        }
+    }
+
+    /// The current authority under this event: it signs statements.
     pub fn authority(&self) -> &Authority {
         match self {
             Event::Inception(i) => &i.authority,
@@ -503,6 +526,7 @@ impl Body for Event {
                     tagged("id", [Sexp::atom(r.id.0)]),
                     tagged("n", [num(r.n)]),
                     tagged("prev", [Sexp::atom(r.prev.0)]),
+                    tagged("revealed", [r.revealed.to_sexp()]),
                 ]
                 .into_iter()
                 .chain(Event::fields_tail(&r.authority, &r.next, r.max_validity))
@@ -540,6 +564,9 @@ impl Body for Event {
             return bad("rotation number must be positive");
         }
         let prev = Hash(atom32(f.single("prev", "prev")?, "prev")?);
+        let mut rf = f.field("revealed", "revealed")?;
+        let revealed = Authority::from_sexp(rf.next("revealed authority")?)?;
+        rf.end("revealed")?;
         let (authority, next, max_validity) = tail(&mut f)?;
         let mut kf = f.field("keep", "keep")?;
         let mut keep = Vec::new();
@@ -554,6 +581,7 @@ impl Body for Event {
             id,
             n,
             prev,
+            revealed,
             authority,
             next,
             max_validity,
@@ -1180,7 +1208,7 @@ impl Item {
                 let sigs = sigs(&mut f, Some(ROOT_SIGNATURE_SIZE))?;
                 if sigs
                     .iter()
-                    .any(|s| usize::from(s.index) >= body.authority().keys().len())
+                    .any(|s| usize::from(s.index) >= body.signers().keys().len())
                 {
                     return bad("signature index outside authority");
                 }

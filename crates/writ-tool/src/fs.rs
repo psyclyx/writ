@@ -158,14 +158,6 @@ pub fn write_secret(path: &str, text: &str) -> Result<()> {
         .context(|| format!("writing {path}"))
 }
 
-/// Replaces a secret key file atomically with new contents (mode 0600):
-/// used only to install a rotation's revealed key over the retired one.
-pub fn replace_secret(path: &Path, text: &str) -> Result<()> {
-    let tmp = tmp_path(path);
-    write_secret(&tmp.display().to_string(), text)?;
-    std::fs::rename(&tmp, path).context(|| format!("replacing {}", path.display()))
-}
-
 /// Seeds as key-file text, one per line.
 pub fn seeds_text(seeds: &[Seed]) -> Zeroizing<String> {
     let mut s = Zeroizing::new(String::new());

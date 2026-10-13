@@ -30,7 +30,8 @@ mod testing;
 
 pub use hash::{Hash, ID_HRP, Id, label, labelled_message};
 pub use issue::{
-    IssueError, incept, issue, issue_leaf, rotate, sign_data, sign_data_leaf, sign_with_authority,
+    IssueError, RotationPlan, incept, issue, issue_leaf, rotate, sign_data, sign_data_leaf,
+    sign_with_authority,
 };
 pub use keys::{LeafKey, PublicKey, Rng, RootKey, Seed, Signer, Suite};
 pub use log::{Evidence, Log, LogError, equivocation};

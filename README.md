@@ -68,7 +68,8 @@ package installs the man pages and completions for you. Color follows
 
 ## Documents
 
-- [DESIGN.md](DESIGN.md) — what writ is and why; §17 lists open findings.
+- [DESIGN.md](DESIGN.md) — what writ is and why; §16 records the decisions made
+  during implementation.
 - [SPEC.md](SPEC.md) — the byte-level specification.
 - [vectors/](vectors/README.md) — test vectors (NIST ACVP, Ed25519 edge cases,
   writ's own).

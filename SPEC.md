@@ -190,8 +190,9 @@ a file.
 authority = "(" "authority" k 1*16rootkey ")"
 ```
 
-`k` is a decimal threshold, 1 ≤ k ≤ number of keys. Keys MUST be distinct and
-sorted by strictly increasing public-key bytes. `hash = H("writ/v1/authority",
+`k` is a decimal threshold, 1 ≤ k ≤ number of keys, and `2k` MUST be greater
+than the number of keys: any two groups of `k` holders share a holder. Keys
+MUST be distinct and sorted by strictly increasing public-key bytes. `hash = H("writ/v1/authority",
 canonical(authority))`. An authority item `(writ/v1 authority)` records an
 identity's pending next authority.
 
@@ -200,13 +201,19 @@ identity's pending next authority.
 ```
 inception = "(" "inception" authority "(" "next" hash ")" [ "(" "max-validity" secs ")" ] ")"
 rotation  = "(" "rotation" "(" "id" id ")" "(" "n" n ")" "(" "prev" hash ")"
+                "(" "revealed" authority ")"
                 authority "(" "next" hash ")" [ "(" "max-validity" secs ")" ]
                 "(" "keep" *hash ")" ")"
 ```
 
 - `id`, `hash`: 32 bytes. `n` ≥ 1. `secs` ≥ 1.
 - `keep` hashes MUST be strictly increasing (bytewise).
-- An event's signature indices MUST be less than its own authority's key count.
+- An event's signers are its own authority (inception) or its `revealed`
+  authority (rotation). Its signature indices MUST be less than that
+  authority's key count.
+- A rotation's `revealed` authority signs only the rotation. Its `authority`
+  is the current authority: it signs statements and data signatures issued
+  under this event. `next` may commit to the `revealed` authority again.
 - The **id** of an identity is `H("writ/v1/id", canonical(inception))`.
 - The **hash** of an event is `H("writ/v1/event", canonical(event))`.
 
@@ -256,8 +263,8 @@ An identity's log is valid when:
    at least `k` distinct keys of its own authority (a signature counts if its
    index names an authority key and it verifies under that key).
 2. For each `n ≥ 1`, consider every rotation in the material with `id` and `n`
-   whose authority hashes to event `n − 1`'s `next` and which is signed by `k`
-   distinct keys of that authority. Rotations failing these checks are
+   whose `revealed` authority hashes to event `n − 1`'s `next` and which is
+   signed by `k` distinct keys of that revealed authority. Rotations failing these checks are
    ignored: anyone can make them.
    - None: the log ends at `n − 1`.
    - Two or more with different hashes: **equivocation**. The identity is

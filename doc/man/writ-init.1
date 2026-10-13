@@ -21,7 +21,7 @@ writ init me \-\-next\-out \- | age \-p > me\-next.key.age
 .fi
 .RE
 .PP
-The next keys can be K of N keys held by different people. For example, 2 of 3: your own offline key, a friend's key, and a key in a safe. Choose K greater than N/2. If two separate groups of key holders could each rotate, verifiers can't tell that from theft, and they refuse the identity.
+The next keys can be K of N keys held by different people. For example, 2 of 3: your own offline key, a friend's key, and a key in a safe. K must be more than half of N, so that two separate groups of holders can't each rotate.
 .SH ARGUMENTS
 .TP
 \fIDIR\fR
@@ -35,7 +35,7 @@ where to write the next key; '\-' means standard output
 how many new next keys to make (default: 1)
 .TP
 \fB\-\-next\-k\fR \fIK\fR
-how many next keys must sign the next rotation (default: 1)
+how many next keys must sign a rotation (default: more than half of them)
 .TP
 \fB\-\-next\-pub\fR \fIPATH\fR
 add another person's public key (from \fBwrit pubkey\fR) to the next keys

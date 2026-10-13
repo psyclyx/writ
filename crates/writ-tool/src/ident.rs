@@ -71,6 +71,9 @@ impl IdentityDir {
             Ok(log) => log.clone(),
             Err(e) => return err(format!("{dir}/{LOG}: {e}")),
         };
+        if lock.is_some() {
+            finish_key_install(&path, &log)?;
+        }
         let issued = fs::read_bundle_file(&path.join(ISSUED))?;
         crate::display::label(id, dir);
         Ok(IdentityDir {
@@ -211,4 +214,34 @@ pub fn create_dir(dir: &str) -> Result<PathBuf> {
         Err(e) => return err(format!("{dir}: {e}")),
     }
     Ok(path)
+}
+
+/// `writ rotate` writes the new current key to `DIR/current.key.new` before
+/// the log commits to it, and renames it over `DIR/current.key` after. If a
+/// run stopped in between, finish its work: install the staged key if the
+/// log uses it, or remove it if the rotation never happened.
+fn finish_key_install(dir: &Path, log: &Log) -> Result<()> {
+    let staged = dir.join(format!("{CURRENT_KEY}.new"));
+    if !staged.is_file() {
+        return Ok(());
+    }
+    let staged_str = staged.display().to_string();
+    let seeds = fs::read_seeds(&staged_str)?;
+    let committed = seeds.iter().all(|s| {
+        log.head()
+            .authority()
+            .index_of(&s.root().root_key())
+            .is_some()
+    });
+    if committed {
+        std::fs::rename(&staged, dir.join(CURRENT_KEY))
+            .context(|| format!("installing {staged_str}"))?;
+        crate::note(format!(
+            "finished an interrupted rotation: {} now holds the current key",
+            dir.join(CURRENT_KEY).display()
+        ));
+    } else {
+        std::fs::remove_file(&staged).context(|| format!("removing {staged_str}"))?;
+    }
+    Ok(())
 }

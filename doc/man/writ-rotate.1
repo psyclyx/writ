@@ -5,31 +5,45 @@ writ\-rotate \- replace the keys of an identity, keeping its id
 .SH SYNOPSIS
 .nh
 .ad l
-\fBwrit rotate\fR \fB\-i\fR\ \fIDIR\fR \fB\-\-next\-key\fR\ \fIPATH\fR... \fB\-\-next\-out\fR\ \fIPATH\fR [\fB\-\-next\-n\fR\ \fIN\fR] [\fB\-\-next\-k\fR\ \fIK\fR] [\fB\-\-next\-pub\fR\ \fIPATH\fR]... [\fB\-\-max\-validity\fR\ \fIDUR\fR] [\fB\-\-no\-max\-validity\fR] [\fB\-q\fR]
+\fBwrit rotate\fR \-i DIR \-\-next\-key PATH... (\-\-next\-out PATH | \-\-same\-next) [\-\-key\-out PATH] [\-\-key\-pub PATH]... [\-\-key\-k K] [\-\-next\-n N] [\-\-next\-k K] [\-\-next\-pub PATH]... [\-\-max\-validity DUR | \-\-no\-max\-validity] [\-q]
 .ad
 .hy
 .SH DESCRIPTION
-Rotate the identity in DIR. The next keys (\-\-next\-key) sign the rotation and become the current keys. writ makes new next keys and writes them to \-\-next\-out. The id does not change.
+Rotate the identity in DIR: replace its current keys, and keep its id.
 .PP
-A rotation lists the statements that stay valid. writ keeps every statement in DIR/issued.writ that is still valid: not revoked, not expired, and not a grant to a leaf key. Anything else signed with the old keys becomes invalid for every verifier that sees the rotation. Use this to recover from a stolen current key.
+The next keys (\-\-next\-key) sign the rotation, and nothing else. writ makes a new current key and writes it to \-\-key\-out, or in place of DIR/current.key. Then it makes new next keys and writes them to \-\-next\-out, or, with \-\-same\-next, keeps the next keys you have. Keeping them suits next keys held by friends or kept in a safe.
 .PP
-If DIR/current.key exists, writ replaces it with the key you revealed. If not, give the revealed key with \-\-key from now on.
+A rotation lists the statements that stay valid. writ keeps every statement in DIR/issued.writ that is still valid: not revoked, not expired, and not a grant to a leaf key. Anything else signed with the old current key becomes invalid for every verifier that sees the rotation. Use this to recover from a stolen current key.
+.PP
+With \-\-key\-pub, the current keys include other people's keys, and \-\-key\-k of them must sign each statement. Use this for an identity that a group shares.
 .SH OPTIONS
 .TP
 \fB\-i\fR, \fB\-\-identity\fR \fIDIR\fR
 the identity to rotate
 .TP
 \fB\-\-next\-key\fR \fIPATH\fR
-a next key from the last rotation (or from init); give one \-\-next\-key per key; '\-' means standard input
+a next key, from init or the last rotate; give one \-\-next\-key per key when several must sign; '\-' means standard input
 .TP
 \fB\-\-next\-out\fR \fIPATH\fR
 where to write the new next key; '\-' means standard output
+.TP
+\fB\-\-same\-next\fR
+keep the next keys you have, instead of making new ones
+.TP
+\fB\-\-key\-out\fR \fIPATH\fR
+where to write the new current key (default: in place of DIR/current.key)
+.TP
+\fB\-\-key\-pub\fR \fIPATH\fR
+add another person's public key (from \fBwrit pubkey\fR) to the current keys
+.TP
+\fB\-\-key\-k\fR \fIK\fR
+how many current keys must sign each statement (default: more than half of them)
 .TP
 \fB\-\-next\-n\fR \fIN\fR
 how many new next keys to make (default: 1)
 .TP
 \fB\-\-next\-k\fR \fIK\fR
-how many next keys must sign the next rotation (default: 1)
+how many next keys must sign a rotation (default: more than half of them)
 .TP
 \fB\-\-next\-pub\fR \fIPATH\fR
 add another person's public key (from \fBwrit pubkey\fR) to the next keys
@@ -61,6 +75,14 @@ Rotate, with the next keys encrypted by age:
 .RS 4
 .nf
 writ rotate \-i me \-\-next\-key <(age \-d me\-next.key.age) \-\-next\-out \- | age \-p > me\-next2.key.age
+.fi
+.RE
+.PP
+Recover from a stolen current key, keeping the next keys:
+.PP
+.RS 4
+.nf
+writ rotate \-i me \-\-next\-key <(age \-d me\-next.key.age) \-\-same\-next
 .fi
 .RE
 .SH SEE ALSO
