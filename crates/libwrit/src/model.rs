@@ -2,7 +2,7 @@
 //! (SPEC.md §5–§7). Decoding is syntactic and total; semantic rules live in
 //! [`Statement::check_wellformed`] and the verifier.
 
-use crate::hash::{Hash, Id, label, labelled_message};
+use crate::hash::{Hash, Id, LeafId, label, labelled_message};
 use crate::keys::{
     LEAF_SIGNATURE_SIZE, LeafKey, MLDSA65_PUBLIC_KEY_SIZE, PublicKey, ROOT_SIGNATURE_SIZE, RootKey,
     Suite,
@@ -603,15 +603,15 @@ pub enum Issuer {
         /// The event whose authority signed.
         event: u64,
     },
-    /// A leaf key.
-    Leaf(LeafKey),
+    /// A leaf key, by id. The key itself travels in the grant to it.
+    Leaf(LeafId),
 }
 
 impl Issuer {
     fn to_sexp(&self) -> Sexp {
         match self {
             Issuer::Identity { id, event } => tagged("issuer", [Sexp::atom(id.0), num(*event)]),
-            Issuer::Leaf(k) => tagged("issuer", [k.to_sexp()]),
+            Issuer::Leaf(k) => tagged("issuer", [tagged("leaf", [Sexp::atom(k.0)])]),
         }
     }
 
@@ -623,7 +623,12 @@ impl Issuer {
                 id: Id(atom32(id, "issuer id")?),
                 event: decimal(f.atom("issuer event")?, "issuer event")?,
             },
-            Sexp::List(_) => Issuer::Leaf(LeafKey::from_sexp(first)?),
+            Sexp::List(_) => {
+                let mut leaf = Fields::of(first, "leaf", "leaf issuer")?;
+                let id = LeafId(atom32(leaf.atom("leaf id")?, "leaf id")?);
+                leaf.end("leaf issuer")?;
+                Issuer::Leaf(id)
+            }
         };
         f.end("issuer")?;
         Ok(issuer)

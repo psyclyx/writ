@@ -69,7 +69,15 @@ impl Reference<'_> {
                 }
             }
             Issuer::Leaf(k) => {
-                if !st.verify_leaf(k) {
+                // The key comes from any statement about it.
+                let key = self
+                    .m
+                    .statements()
+                    .find_map(|(_, s)| match s.body.claim.subject() {
+                        Some(Subject::Leaf(key)) if key.id() == *k => Some(key),
+                        _ => None,
+                    });
+                if !key.is_some_and(|key| st.verify_leaf(key)) {
                     return false;
                 }
             }
@@ -148,11 +156,7 @@ impl Reference<'_> {
         names: &Table,
     ) -> bool {
         for (h, st) in self.m.statements() {
-            let issuer = match &st.body.issuer {
-                Issuer::Identity { id, .. } => Holder::Id(*id),
-                Issuer::Leaf(k) => Holder::Leaf(k.clone()),
-            };
-            if issuer != *from {
+            if !issued_by(&st.body.issuer, from) {
                 continue;
             }
             let Claim::Grant {
@@ -184,6 +188,15 @@ impl Reference<'_> {
             }
         }
         false
+    }
+}
+
+/// Whether `holder` is `issuer`.
+fn issued_by(issuer: &Issuer, holder: &Holder) -> bool {
+    match (issuer, holder) {
+        (Issuer::Identity { id, .. }, Holder::Id(h)) => id == h,
+        (Issuer::Leaf(k), Holder::Leaf(h)) => *k == h.id(),
+        _ => false,
     }
 }
 
@@ -422,7 +435,7 @@ fn build(w: &GenWorld) -> Built {
             }
             Err(l) => {
                 let body = Statement {
-                    issuer: Issuer::Leaf(leaves[l].0.clone()),
+                    issuer: Issuer::Leaf(leaves[l].0.id()),
                     issued: g.issued,
                     expires,
                     note: None,
@@ -511,12 +524,8 @@ fn proof_is_sound(r: &Reference<'_>, proof: &Proof, want: &Holder, tag: &Tag) ->
         else {
             return false;
         };
-        let issuer = match &st.body.issuer {
-            Issuer::Identity { id, .. } => Holder::Id(*id),
-            Issuer::Leaf(k) => Holder::Leaf(k.clone()),
-        };
         let last = i + 1 == proof.steps.len();
-        if issuer != from || !r.valid(&step.grant) || (!last && !delegate) {
+        if !issued_by(&st.body.issuer, &from) || !r.valid(&step.grant) || (!last && !delegate) {
             return false;
         }
         if !eval(subject, &names).contains(&step.holder) {

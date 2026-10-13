@@ -122,7 +122,22 @@ fn init_and_key_files() {
         assert_eq!(mode(&s.path("me/current.key")), 0o600);
         assert_eq!(mode(&s.path("me-next.key")), 0o600);
     }
-    assert!(s.read("me/current.key").starts_with("WRIT-SECRET-KEY-1"));
+    // A comment says what the key is; then the seed.
+    let key = s.read("me/current.key");
+    let mut lines = key.lines();
+    let comment = lines.next().unwrap();
+    assert!(
+        comment.starts_with("# writ current key for writ1") && comment.ends_with("(event 0)"),
+        "{key}"
+    );
+    assert!(
+        lines.next().unwrap().starts_with("WRIT-SECRET-KEY-1"),
+        "{key}"
+    );
+    assert!(
+        s.read("me-next.key")
+            .starts_with("# writ next key for writ1")
+    );
 
     // Never overwrite a key; never reuse a directory.
     let err = s.fails(&["init", "other", "--next-out", "me-next.key"], 2);
@@ -136,7 +151,15 @@ fn init_and_key_files() {
     // Secrets to stdout: the id goes to stderr instead.
     let (code, out, err) = s.run(&["init", "piped", "--next-out", "-"]);
     assert_eq!(code, 0);
-    assert!(out.starts_with("WRIT-SECRET-KEY-1") && out.lines().count() == 1);
+    assert!(
+        out.starts_with("# writ next key for writ1")
+            && out
+                .lines()
+                .nth(1)
+                .is_some_and(|l| l.starts_with("WRIT-SECRET-KEY-1"))
+            && out.lines().count() == 2,
+        "{out}"
+    );
     assert!(err.contains("created identity writ1"));
 }
 
@@ -565,7 +588,11 @@ fn age_style_composition() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("WRIT-SECRET-KEY-1"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.starts_with("# writ next key for") && text.contains("\nWRIT-SECRET-KEY-1"),
+        "{text}"
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("cur2.key"), "{err}");
     // Next keys only rotate; the new current key signs.
@@ -597,7 +624,7 @@ fn k_of_n_and_friends() {
     assert_eq!(code, 0, "{err}");
     assert!(err.contains("any 2 of these 3"), "{err}");
     let cold = s.read("cold.keys");
-    let mut lines = cold.lines();
+    let mut lines = cold.lines().filter(|l| !l.starts_with('#'));
     std::fs::write(s.path("cold1.key"), lines.next().unwrap()).unwrap();
     // One key is not enough.
     let err = s.fails(

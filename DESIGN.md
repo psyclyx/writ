@@ -63,11 +63,11 @@ path N refer to?", returning the proof.
 
 ### 3.1 Suites and roles
 
-| Role                            | Suite                             | Why                                                                                                                                                                                                                                           |
-| ------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Root** (identity authorities) | `slh-dsa-shake-128s` (FIPS 205)   | Security rests only on hash functions — the most conservative assumption available — for the one thing we never want to replace. 32-byte public keys. Large (7856 B), slow-to-make signatures are fine at human signing rates and are cached. |
-| **Leaf** (fast path)            | `mldsa65-ed25519` composite       | ML-DSA-65 (FIPS 204) and Ed25519 over the same domain-separated message; **both** must verify. Fast to sign and verify, ~3.4 KB. Less conservative than root, so always time-bounded and structurally limited (§7).                           |
-| Hash                            | SHA3-256; SHAKE256 for derivation | Keccak only — same family SLH-DSA already uses.                                                                                                                                                                                               |
+| Role                            | Suite                                      | Why                                                                                                                                                                                                                                           |
+| ------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Root** (identity authorities) | `slh-dsa-shake-128s` (FIPS 205)            | Security rests only on hash functions — the most conservative assumption available — for the one thing we never want to replace. 32-byte public keys. Large (7856 B), slow-to-make signatures are fine at human signing rates and are cached. |
+| **Leaf** (fast path)            | `mldsa65-ed25519` composite                | ML-DSA-65 (FIPS 204) and Ed25519 over the same domain-separated message; **both** must verify. Fast to sign and verify, ~3.4 KB. Less conservative than root, so always time-bounded and structurally limited (§7).                           |
+| Hash                            | SHA3-256; SHAKE256 for derivation and data | Keccak only — same family SLH-DSA already uses. Data hashes use SHAKE256 because libcrux absorbs it incrementally, so any file hashes in constant memory.                                                                                     |
 
 There is exactly one root suite and one leaf suite in v1. A suite is named by an
 identifier carried in every key, so a future version can add or retire suites
@@ -173,6 +173,15 @@ expired − names and grants for leaf keys, keeping only items whose signatures
 verify (the log is a file, not a witness). Rotation thereby also
 garbage-collects.
 
+The log is part of every proof that involves the identity, so its size
+matters. Each rotation adds about 8 KB (its SLH-DSA signature) plus 32 bytes
+per kept item, and the kept items repeat in every rotation. Yearly rotations
+with 100 live items come to about 110 KB after a decade; monthly ones with 500
+reach about 1.4 MB in five years. So rotate for compromise or
+suite migration rather than as a routine, and sign at high volume (releases,
+records) from a separate identity that this one grants to, so this one's
+`keep` stays short.
+
 (There is no `keep: all`. A rotation that keeps everything retires nothing: a
 thief with the old warm key could keep signing under the old event number,
 since timestamps are signer-chosen.)
@@ -213,7 +222,8 @@ signed    = { statement, signatures }
 hash      = SHA3-256("writ/v1/stmt" ‖ canonical(statement))   ; body only
 ```
 
-- `issuer` is `(id, event n)` for identities, or a leaf key.
+- `issuer` is `(id, event n)` for identities, or a leaf key's id (a hash of
+  the key; the key itself travels in the grant to the leaf).
 - `issued`: seconds since the Unix epoch, signer-asserted.
 - `expires`: optional; absent means indefinite (subject to §4.5 and §7).
 - `note`: optional UTF-8, signed, display-only. writ never interprets it.
@@ -295,6 +305,9 @@ the subject of a grant (or name) from an identity.
   It may not issue names or revocations.
 - Leaf keys never rotate; they expire and are reissued (daemons do this
   automatically).
+- What a leaf issues names it by id, a 32-byte hash, not by its 1984-byte key:
+  verifying needs the grant to the leaf anyway, and the grant carries the key.
+  A leaf data signature is then about 3.6 KB rather than 5.6 KB.
 
 Typical uses: an application's operational signing key (e.g. zuko locator
 records via `sign`), or a service issuing high volumes of short-lived,
@@ -309,7 +322,7 @@ lookup.
 ## 8. Signing data
 
 ```
-signature = { signer: (id, event n) | leaf key, issued, context, H(data), signatures }
+signature = { signer: (id, event n) | leaf id, issued, context, H(data), signatures }
 ```
 
 `context` is an application-chosen label (e.g. `zuko/locator/v1`) for domain
@@ -431,8 +444,9 @@ statement set.
   Non-canonical input is rejected.
 - A readable form for display (`writ show`).
 - **ids**: bech32m with prefix, e.g. `writ1…` (32 bytes → ~60 chars, typo-checked).
-- **Secret key files**: one 32-byte seed in bech32m (`WRIT-SECRET-KEY-1…`), one
-  line, **plaintext**. Encryption at rest is out of scope and composes with age
+- **Secret key files**: one 32-byte seed in bech32m (`WRIT-SECRET-KEY-1…`) per
+  line, **plaintext**, after a `#` line saying what the key is and whose (e.g.
+  `# writ current key for writ1… (event 0)`). Encryption at rest is out of scope and composes with age
   (§14). Leaf and root public keys are long; they live in files and bundles, not
   on the command line.
 - **Bundles**: concatenations of items (log events, statements, signatures).
@@ -650,6 +664,24 @@ Four findings where the draft's claims didn't hold; decided as follows.
   takes only items by the identity that verify under SPEC §7. A thief holding
   the current key can still add validly signed statements to the file; the
   rotate help says to read it first after a theft.
+- **Leaf-issued items name the leaf by id.** They carried the whole 1984-byte
+  key, which the grant to the leaf already carries and a verifier needs anyway.
+  **Decision:** the issuer is `(leaf <id>)`, with id
+  `H("writ/v1/leaf-id", canonical(key))`; verifiers take the key from a
+  statement about the leaf or a key item. The id replaces the old display
+  fingerprint label, so fingerprints are now the start of the id. A leaf
+  signature shrinks by about 2 KB. ML-DSA-65 stays: the other way to save
+  space (ML-DSA-44) saves less and gives up margin.
+- **Data hashes use SHAKE256.** The pinned libcrux exposes incremental SHAKE
+  but not incremental SHA3-256, so `sign` and `verify` had to read whole files
+  into memory. **Decision:** `D(data) = SHAKE256("writ/v1/data" ‖ 0x00 ‖ data,
+32)`; same security as SHA3-256 and still Keccak only. Everything else stays
+  SHA3-256.
+- **Key files say what they hold**: a `# writ current key for writ1… (event 0)`
+  line (or next, leaf, or a bare keygen key). Readers already skip `#` lines.
+- **Log growth is documented, not redesigned.** Moving `keep` out of rotations
+  would shrink the repeated lists but not the ~8 KB signature per rotation, at
+  the cost of a new item kind. §4.3 gives the numbers and the advice instead.
 
 ## 17. Open questions
 

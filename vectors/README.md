@@ -20,7 +20,7 @@ Text files are blocks of `key = value` lines separated by blank lines; `#`
 lines are comments. Hex is lower case.
 
 - `keys/derivation.txt` — seed → secret key line, SLH-DSA public key, ML-DSA-65
-  verification key, Ed25519 public key, leaf fingerprint (SPEC §4).
+  verification key, Ed25519 public key, leaf id (SPEC §4, §5.1).
 - `items/rejections.txt` — mutations of a valid statement item that decoders
   MUST reject (SPEC §3, §5); the first case is the valid original.
 - `chains/world.writ` — a bundle exercising every rule: names, delegation,
@@ -36,6 +36,6 @@ lines are comments. Hex is lower case.
   signature and its expected verification results.
 
 Reason kinds: `malformed`, `log`, `unknown-event`, `not-kept`,
-`bad-signature`, `suite`, `revoked`, `not-yet-valid`, `expired`,
+`unknown-leaf` (the leaf key is not in the material), `bad-signature`, `suite`, `revoked`, `not-yet-valid`, `expired`,
 `max-validity`, `leaf-ceiling`, `covers` (reaches the subject with too narrow
 a tag), `outside-issuer` (grants outside what its issuer holds).

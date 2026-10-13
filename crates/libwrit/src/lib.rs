@@ -28,7 +28,7 @@ mod scenarios;
 #[cfg(test)]
 mod testing;
 
-pub use hash::{Hash, ID_HRP, Id, label, labelled_message};
+pub use hash::{DataHasher, Hash, ID_HRP, Id, LeafId, label, labelled_message};
 pub use issue::{
     IssueError, RotationPlan, incept, issue, issue_leaf, rotate, sign_data, sign_data_leaf,
     sign_with_authority,

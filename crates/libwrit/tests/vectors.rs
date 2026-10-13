@@ -78,13 +78,13 @@ fn keys() {
         let leaf = s.leaf();
         let _ = write!(
             out,
-            "\nseed = {}\nsecret = {}\nroot = {}\nleaf-mldsa = {}\nleaf-ed25519 = {}\nleaf-fingerprint = {}\n",
+            "\nseed = {}\nsecret = {}\nroot = {}\nleaf-mldsa = {}\nleaf-ed25519 = {}\nleaf-id = {}\n",
             hex(s.as_bytes()),
             *s.to_text(),
             hex(&root.0),
             hex(leaf.leaf_key().mldsa.as_slice()),
             hex(&leaf.leaf_key().ed25519),
-            leaf.leaf_key().fingerprint(),
+            leaf.leaf_key().id(),
         );
     }
     check_file("keys/derivation.txt", &out);
@@ -288,7 +288,7 @@ fn world() -> World {
         "leaf-grants-app",
         issue_leaf(
             Statement {
-                issuer: Issuer::Leaf(leaf.leaf_key().clone()),
+                issuer: Issuer::Leaf(leaf.leaf_key().id()),
                 issued: T0 + 5,
                 expires: None,
                 note: Some("vector".into()),
@@ -484,6 +484,7 @@ fn reason_kind(r: &Reason) -> &'static str {
         Reason::Log(_) => "log",
         Reason::UnknownEvent { .. } => "unknown-event",
         Reason::NotKept { .. } => "not-kept",
+        Reason::UnknownLeaf(_) => "unknown-leaf",
         Reason::BadSignature => "bad-signature",
         Reason::Suite(_) => "suite",
         Reason::Revoked(_) => "revoked",

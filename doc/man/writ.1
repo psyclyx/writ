@@ -105,7 +105,7 @@ Each statement includes the time it was issued, as given by the signer, and may 
 .PP
 writ reads the clock, but never uses a time before its build date, or, with \-\-state, before the newest statement seen from the \-\-as identities. So setting the clock back does not make expired grants valid again. Setting it forward only makes grants expire early.
 .SH SECRET KEYS
-A secret key file holds one line per key, starting with WRIT\-SECRET\-KEY\-1. The file is not encrypted. writ creates key files that only their owner can read, and never overwrites a file. Commands that read keys accept \- (standard input) and /dev/fd/N, and commands that write keys accept \-, so keys can stay encrypted with age(1):
+A secret key file holds one line per key, starting with WRIT\-SECRET\-KEY\-1, after a line starting with # that says what the key is and which identity it belongs to. The file is not encrypted. writ creates key files that only their owner can read, and never overwrites a file. Commands that read keys accept \- (standard input) and /dev/fd/N, and commands that write keys accept \-, so keys can stay encrypted with age(1):
 .PP
 .RS 4
 .nf

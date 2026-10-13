@@ -324,7 +324,18 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
         &mut OsRng,
     )
     .map_err(|e| Error::Msg(e.to_string()))?;
-    fs::write_secret(out, &fs::seeds_text(std::slice::from_ref(&seed)))?;
+    fs::write_secret(
+        out,
+        &fs::seeds_text(
+            &format!(
+                "leaf key leaf:{}, granted {tag} by {} until {}",
+                leaf.leaf_key().fingerprint(),
+                ident.id(),
+                display::time(expires)
+            ),
+            std::slice::from_ref(&seed),
+        ),
+    )?;
     let item = Item::Statement(signed.clone());
     ident.record(std::slice::from_ref(&item))?;
     match parsed.value("grant-out") {
@@ -360,8 +371,7 @@ pub fn sign(parsed: &Parsed) -> Result<()> {
     let context = parsed.value("context").ok_or_else(|| {
         SIGN.usage_error("--context CONTEXT is required, e.g. --context example/release/v1".into())
     })?;
-    let data = fs::read_input(file, "the data to sign")?;
-    let hash = Hash::of_data(&data);
+    let hash = fs::hash_input(file, "the data to sign")?;
     let issued = wall_clock();
     let (item, by, ident) = match (parsed.value("identity"), parsed.value("leaf")) {
         (Some(_), Some(_)) => return err("sign with either -i DIR or --leaf KEY, not both"),

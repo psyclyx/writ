@@ -896,7 +896,9 @@ pub static MANUAL: &[(&str, &[&str])] = &[
         "SECRET KEYS",
         &[
             "A secret key file holds one line per key, starting with \
-             WRIT-SECRET-KEY-1. The file is not encrypted. writ creates key \
+             WRIT-SECRET-KEY-1, after a line starting with # that says what \
+             the key is and which identity it belongs to. The file is not \
+             encrypted. writ creates key \
              files that only their owner can read, and never overwrites a \
              file. Commands that read keys accept - (standard input) and \
              /dev/fd/N, and commands that write keys accept -, so keys can \

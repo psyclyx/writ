@@ -82,9 +82,9 @@ label = me-grants-leaf
 encoded-length = 10022
 
 kind = grant
-hash = 9e1154454d8e902b85745ba519c295879291001b4627310e97035a6a91d1d7a6
+hash = ce46f720899d550419283153df79a97aabdf7a4283fd434c959bc6bd01a45fe9
 label = leaf-grants-app
-encoded-length = 5562
+encoded-length = 3593
 
 kind = grant
 hash = 8864f3034006b63d7949441b9550268c78a366011e54dcbcadc622f3da31dfa0

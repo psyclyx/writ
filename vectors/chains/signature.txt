@@ -1,8 +1,8 @@
 # A data signature (SPEC.md §8) by the leaf key in chains/world.writ.
 
 data = 68656c6c6f2c20777269740a
-data-hash = 68feeca39c2699d05203369567dba44b761035e8feba5729a75ce00b4ab934a1
+data-hash = cd551e5aae8f1d86673bf303b1586e24e4f5e32debed18bdb3c40052ca1c9b2f
 context = writ/test-vectors/v1
-signature-hash = 336b5dbbef35acf6494fd69dee1d7eba94e5f4f1c03d6abd4f0ec359a2049825
+signature-hash = 6e8d1eee1a27adcdad8fa1c3e01d202e9cdfd3673121883b59457c6f17fdd793
 verify-as-root-for-(svc)-at-1800000100 = good
 verify-as-root-for-(svc)-at-1800003600 = bad

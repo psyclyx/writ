@@ -1,10 +1,10 @@
 //! Material: an indexed pile of log events, statements, and signatures, in
 //! any order (DESIGN.md §9.1). Adding is idempotent; duplicates merge.
 
-use crate::hash::{Hash, Id};
-use crate::keys::LeafKey;
+use crate::hash::{Hash, Id, LeafId};
+use crate::keys::{LeafKey, PublicKey};
 use crate::log::{Evidence, Log, LogError};
-use crate::model::{Body, Claim, DataSig, Event, Issuer, Item, Sig, Signed, Statement};
+use crate::model::{Body, Claim, DataSig, Event, Issuer, Item, Sig, Signed, Statement, Subject};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -14,8 +14,8 @@ use std::rc::Rc;
 pub enum Principal {
     /// An identity.
     Id(Id),
-    /// A leaf key.
-    Leaf(LeafKey),
+    /// A leaf key, by id.
+    Leaf(LeafId),
 }
 
 /// An indexed pile of items.
@@ -29,6 +29,7 @@ pub struct Material {
     grants: BTreeMap<Principal, Vec<Hash>>,
     revocations: BTreeMap<(Id, Hash), Vec<Hash>>,
     by_issuer: BTreeMap<Id, Vec<Hash>>,
+    leaf_keys: BTreeMap<LeafId, LeafKey>,
     logs: RefCell<HashMap<Id, Rc<Result<Log, LogError>>>>,
     sig_cache: RefCell<HashMap<(Hash, Hash, Hash), bool>>,
 }
@@ -48,8 +49,9 @@ impl Material {
         m
     }
 
-    /// Adds an item. Keys and authorities are ignored; everything else is
-    /// indexed. Adding a body already present merges its signatures.
+    /// Adds an item. Root keys and authorities are ignored; everything else
+    /// is indexed, including leaf keys by id. Adding a body already present
+    /// merges its signatures.
     pub fn add(&mut self, item: Item) {
         match item {
             Item::Event(ev) => {
@@ -86,6 +88,9 @@ impl Material {
                     }
                     return;
                 }
+                if let Some(Subject::Leaf(k)) = st.body.claim.subject() {
+                    self.leaf_keys.entry(k.id()).or_insert_with(|| k.clone());
+                }
                 let issuer_id = st.body.issuer.id();
                 match (&st.body.claim, &st.body.issuer) {
                     (Claim::Name { name, .. }, Issuer::Identity { id, .. }) => {
@@ -94,7 +99,7 @@ impl Material {
                     (Claim::Grant { .. }, issuer) => {
                         let p = match issuer {
                             Issuer::Identity { id, .. } => Principal::Id(*id),
-                            Issuer::Leaf(k) => Principal::Leaf(k.clone()),
+                            Issuer::Leaf(k) => Principal::Leaf(*k),
                         };
                         self.grants.entry(p).or_default().push(h);
                     }
@@ -121,6 +126,9 @@ impl Material {
                         self.signatures.insert(h, sig);
                     }
                 }
+            }
+            Item::PublicKey(PublicKey::Leaf(k)) => {
+                self.leaf_keys.entry(k.id()).or_insert(k);
             }
             Item::PublicKey(_) | Item::Authority(_) => {}
         }
@@ -192,6 +200,11 @@ impl Material {
             .get(&(*issuer, name.to_vec()))
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    /// A leaf key by id, from a statement about it or a key item.
+    pub fn leaf_key(&self, id: &LeafId) -> Option<&LeafKey> {
+        self.leaf_keys.get(id)
     }
 
     /// Hashes of grants issued by `principal`.

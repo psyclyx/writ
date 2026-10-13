@@ -52,6 +52,31 @@ pub fn stdin_is_piped() -> bool {
     }
 }
 
+/// Hashes an input as signed data, in constant memory: `-` is stdin.
+pub fn hash_input(path: &str, purpose: &'static str) -> Result<libwrit::Hash> {
+    let mut hasher = libwrit::DataHasher::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut feed = |r: &mut dyn Read| -> std::io::Result<()> {
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) => return Ok(()),
+                Ok(n) => hasher.update(buf.get(..n).unwrap_or_default()),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+    };
+    if path == "-" {
+        claim_stdin(purpose)?;
+        feed(&mut std::io::stdin().lock()).context(|| "reading stdin".into())?;
+    } else {
+        File::open(path)
+            .and_then(|mut f| feed(&mut f))
+            .context(|| format!("reading {path}"))?;
+    }
+    Ok(hasher.finish())
+}
+
 /// Reads a whole input: `-` is stdin.
 pub fn read_input(path: &str, purpose: &'static str) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
@@ -158,9 +183,10 @@ pub fn write_secret(path: &str, text: &str) -> Result<()> {
         .context(|| format!("writing {path}"))
 }
 
-/// Seeds as key-file text, one per line.
-pub fn seeds_text(seeds: &[Seed]) -> Zeroizing<String> {
-    let mut s = Zeroizing::new(String::new());
+/// Seeds as key-file text: a `# writ …` line saying what they are, then one
+/// seed per line.
+pub fn seeds_text(comment: &str, seeds: &[Seed]) -> Zeroizing<String> {
+    let mut s = Zeroizing::new(format!("# writ {comment}\n"));
     for seed in seeds {
         s.push_str(&seed.to_text());
         s.push('\n');

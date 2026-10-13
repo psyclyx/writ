@@ -279,8 +279,7 @@ pub fn verify(parsed: &Parsed) -> Result<()> {
             ));
         }
     };
-    let data = fs::read_input(file, "the signed data")?;
-    let hash = libwrit::Hash::of_data(&data);
+    let hash = fs::hash_input(file, "the signed data")?;
     let q = Query::setup(parsed, &VERIFY, file != "-" && sig_path != "-")?;
     let signer = match &sig.body.signer {
         libwrit::Issuer::Identity { id, .. } => display::id(id),

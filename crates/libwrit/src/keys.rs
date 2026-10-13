@@ -7,7 +7,7 @@
 //!   the label as its FIPS 204 context. Both must verify.
 
 use crate::bech32;
-use crate::hash::{label, labelled_message, shake256_labelled};
+use crate::hash::{LeafId, label, labelled_message, shake256_labelled};
 use core::fmt;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -106,11 +106,14 @@ impl LeafKey {
         ml_ok & ed_ok
     }
 
-    /// A short fingerprint for display: the first 8 bytes of
-    /// `SHA3-256("writ/v1/fingerprint" ‖ 0x00 ‖ canonical(key))` in hex.
+    /// The key's id: `SHA3-256("writ/v1/leaf-id" ‖ 0x00 ‖ canonical(key))`.
+    pub fn id(&self) -> LeafId {
+        LeafId(crate::Hash::labelled(label::LEAF_ID, &self.to_sexp().encode()).0)
+    }
+
+    /// A short fingerprint for display: the start of [`LeafKey::id`].
     pub fn fingerprint(&self) -> String {
-        let h = crate::Hash::labelled(label::FINGERPRINT, &self.to_sexp().encode());
-        crate::hash::hex(h.0.get(..8).unwrap_or_default())
+        self.id().fingerprint()
     }
 }
 

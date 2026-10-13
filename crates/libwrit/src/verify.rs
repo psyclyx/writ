@@ -5,7 +5,7 @@
 //! once it lies on a candidate path, and results are cached by hash in the
 //! [`Material`].
 
-use crate::hash::{Hash, Id};
+use crate::hash::{Hash, Id, LeafId};
 use crate::keys::{LeafKey, Suite};
 use crate::log::{Evidence, Log, LogError};
 use crate::material::{Material, Principal};
@@ -70,7 +70,7 @@ impl Holder {
     fn principal(&self) -> Option<Principal> {
         match self {
             Holder::Id(id) => Some(Principal::Id(*id)),
-            Holder::Leaf(k) => Some(Principal::Leaf(k.clone())),
+            Holder::Leaf(k) => Some(Principal::Leaf(k.id())),
             Holder::Opaque(_) => None,
         }
     }
@@ -106,6 +106,9 @@ pub enum Reason {
         /// The log's head.
         head: u64,
     },
+    /// Issued by a leaf key the material doesn't contain. The key travels
+    /// in the grant to the leaf.
+    UnknownLeaf(LeafId),
     /// Not signed by `k` of the authority (or by the leaf key).
     BadSignature,
     /// Signed under a suite the policy doesn't accept.
@@ -147,6 +150,11 @@ impl fmt::Display for Reason {
             Reason::NotKept { head, .. } => {
                 write!(f, "issued before rotation {head}, which did not keep it")
             }
+            Reason::UnknownLeaf(k) => write!(
+                f,
+                "issued by leaf:{}, whose key is missing (it comes with the grant to the leaf)",
+                k.fingerprint()
+            ),
             Reason::BadSignature => write!(f, "its signatures are missing or invalid"),
             Reason::Suite(s) => write!(f, "signed with {s}, which this verifier does not accept"),
             Reason::Revoked(by) => write!(f, "revoked by {}", by.to_hex().get(..16).unwrap_or("")),
@@ -313,7 +321,10 @@ fn shippable<T: Body + Clone>(s: &Signed<T>, issuer: &Issuer, material: &Materia
                 .unwrap_or_default(),
             Err(_) => Vec::new(),
         },
-        Issuer::Leaf(k) => s.valid_leaf_sigs(k),
+        Issuer::Leaf(k) => material
+            .leaf_key(k)
+            .map(|key| s.valid_leaf_sigs(key))
+            .unwrap_or_default(),
     };
     let sigs = if verified.is_empty() {
         let mut first: Vec<Sig> = Vec::new();
@@ -415,7 +426,12 @@ impl<'a> Verifier<'a> {
         q.data_sig_status(sig, &hash).map_err(Denial::Signature)?;
         let holder = match &sig.body.signer {
             Issuer::Identity { id, .. } => Holder::Id(*id),
-            Issuer::Leaf(k) => Holder::Leaf(k.clone()),
+            Issuer::Leaf(k) => Holder::Leaf(
+                self.material
+                    .leaf_key(k)
+                    .cloned()
+                    .ok_or(Denial::Signature(Reason::UnknownLeaf(*k)))?,
+            ),
         };
         let mut proof = q.check(&holder, tag)?;
         if let Issuer::Identity { id, .. } = &sig.body.signer {
@@ -462,10 +478,6 @@ impl<'a> Verifier<'a> {
         };
         Query::new(self, now).data_sig_status(sig, hash)
     }
-}
-
-fn leaf_cache_key(k: &LeafKey) -> Hash {
-    Hash::of_data(&k.to_sexp().encode())
 }
 
 /// Per-query state: the clock, counters, and memo tables.
@@ -568,6 +580,30 @@ impl<'v, 'a> Query<'v, 'a> {
         result
     }
 
+    /// Whether the leaf key `id`, found in the material, signed `signed`.
+    fn signed_by_leaf<T: Body>(
+        &mut self,
+        signed: &Signed<T>,
+        hash: &Hash,
+        id: &LeafId,
+    ) -> Result<(), Reason> {
+        if !self.v.policy.accepts(Suite::MlDsa65Ed25519) {
+            return Err(Reason::Suite(Suite::MlDsa65Ed25519));
+        }
+        let Some(key) = self.v.material.leaf_key(id) else {
+            return Err(Reason::UnknownLeaf(*id));
+        };
+        let ok = self
+            .v
+            .material
+            .sig_cached(*hash, Hash(id.0), &signed.sigs, || signed.verify_leaf(key));
+        if ok {
+            Ok(())
+        } else {
+            Err(Reason::BadSignature)
+        }
+    }
+
     /// A data signature's validity (SPEC §7): signed (or kept), not revoked,
     /// not issued in the future.
     fn data_sig_status(&mut self, sig: &Signed<DataSig>, hash: &Hash) -> Result<(), Reason> {
@@ -576,18 +612,7 @@ impl<'v, 'a> Query<'v, 'a> {
                 self.signed_by_identity(sig, hash, *id, *event, None)?;
                 self.check_revoked(*id, hash)?;
             }
-            Issuer::Leaf(k) => {
-                if !self.v.policy.accepts(Suite::MlDsa65Ed25519) {
-                    return Err(Reason::Suite(Suite::MlDsa65Ed25519));
-                }
-                let ok = self
-                    .v
-                    .material
-                    .sig_cached(*hash, leaf_cache_key(k), &sig.sigs, || sig.verify_leaf(k));
-                if !ok {
-                    return Err(Reason::BadSignature);
-                }
-            }
+            Issuer::Leaf(k) => self.signed_by_leaf(sig, hash, k)?,
         }
         if sig.body.issued > self.now.saturating_add(self.v.policy.skew) {
             return Err(Reason::NotYetValid(sig.body.issued));
@@ -608,18 +633,7 @@ impl<'v, 'a> Query<'v, 'a> {
                     self.check_revoked(*id, hash)?;
                 }
             }
-            Issuer::Leaf(k) => {
-                if !self.v.policy.accepts(Suite::MlDsa65Ed25519) {
-                    return Err(Reason::Suite(Suite::MlDsa65Ed25519));
-                }
-                let ok = self
-                    .v
-                    .material
-                    .sig_cached(*hash, leaf_cache_key(k), &st.sigs, || st.verify_leaf(k));
-                if !ok {
-                    return Err(Reason::BadSignature);
-                }
-            }
+            Issuer::Leaf(k) => self.signed_by_leaf(st, hash, k)?,
         }
         if body.issued > self.now.saturating_add(self.v.policy.skew) {
             return Err(Reason::NotYetValid(body.issued));

@@ -458,7 +458,7 @@ fn leaf_keys() {
         Some(10 + 3600),
     );
     let body = Statement {
-        issuer: Issuer::Leaf(leaf.0.clone()),
+        issuer: Issuer::Leaf(leaf.0.id()),
         issued: 20,
         expires: None,
         note: None,
@@ -531,7 +531,7 @@ fn leaf_keys() {
         grant(Subject::Id(a.id), "()", true),
     ] {
         let body = Statement {
-            issuer: Issuer::Leaf(leaf.0.clone()),
+            issuer: Issuer::Leaf(leaf.0.id()),
             issued: 20,
             expires: None,
             note: None,
@@ -569,7 +569,7 @@ fn data_signatures() {
     );
     let data = Hash::of_data(b"hello");
     let sig = sign_data_leaf(data, b"app/v1", 20, &leaf, &mut TestRng::new(0)).unwrap();
-    let w = World::new(&a, [st(al)]);
+    let w = World::new(&a, [st(al.clone())]);
     let v = Verifier::new(&w.roots, &w.material, &w.policy);
     let proof = v
         .verify(&sig, &data, b"app/v1", &tag("(release)"), 30)
@@ -589,12 +589,35 @@ fn data_signatures() {
         v.verify(&bad, &data, b"app/v1", &tag("(release)"), 30),
         Err(Denial::Signature(Reason::BadSignature))
     );
+    // The signature names its leaf by id; the key comes with the grant.
+    assert_eq!(sig.body.signer, Issuer::Leaf(leaf.0.id()));
+    let w = World::new(&a, [Item::Signature(sig.clone())]);
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    assert_eq!(
+        v.signature_status(&sig.body.hash(), 30),
+        Err(Reason::UnknownLeaf(leaf.0.id()))
+    );
+    assert_eq!(
+        v.verify(&sig, &data, b"app/v1", &tag("(release)"), 30),
+        Err(Denial::Signature(Reason::UnknownLeaf(leaf.0.id())))
+    );
+    // A key item supplies it too.
+    let w = World::new(
+        &a,
+        [
+            Item::Signature(sig.clone()),
+            Item::PublicKey(PublicKey::Leaf(leaf.0.clone())),
+        ],
+    );
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    assert_eq!(v.signature_status(&sig.body.hash(), 30), Ok(()));
     // The same check, for signatures in the material (what `rotate` keeps).
     let mut forged = sig.clone();
     forged.body.data = Hash::of_data(b"evil");
     let w = World::new(
         &a,
         [
+            st(al),
             Item::Signature(sig.clone()),
             Item::Signature(forged.clone()),
         ],

@@ -18,10 +18,10 @@ pub mod label {
     pub const STATEMENT: &str = "writ/v1/stmt";
     /// Data signatures: the signed body, hashed for `keep` and `revoke`.
     pub const SIGNATURE: &str = "writ/v1/sig";
-    /// Hash of signed data.
+    /// Hash of signed data (SHAKE256, so it can be computed incrementally).
     pub const DATA: &str = "writ/v1/data";
-    /// Short display fingerprints of leaf keys.
-    pub const FINGERPRINT: &str = "writ/v1/fingerprint";
+    /// Leaf key ids: how leaf-issued items name their issuer.
+    pub const LEAF_ID: &str = "writ/v1/leaf-id";
     /// Root-suite signing: SLH-DSA context string.
     pub const ROOT_SUITE: &str = "writ/v1/root/slh-dsa-shake-128s";
     /// Leaf-suite signing: prefix of the composite message and ML-DSA context.
@@ -32,7 +32,7 @@ pub mod label {
     pub const KEYGEN_LEAF: &str = "writ/v1/keygen/mldsa65-ed25519";
 }
 
-/// A SHA3-256 digest.
+/// A 32-byte digest: SHA3-256, except for data hashes (see [`DataHasher`]).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Hash(pub [u8; 32]);
 
@@ -42,9 +42,11 @@ impl Hash {
         Hash(libcrux_sha3::sha256(&labelled_message(label, data)))
     }
 
-    /// The hash of `data` as referenced by data signatures (label `writ/v1/data`).
+    /// The hash of `data` as referenced by data signatures.
     pub fn of_data(data: &[u8]) -> Hash {
-        Hash::labelled(label::DATA, data)
+        let mut h = DataHasher::new();
+        h.update(data);
+        h.finish()
     }
 
     /// Lower-case hex.
@@ -99,6 +101,66 @@ impl fmt::Display for Id {
 impl fmt::Debug for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Id({self})")
+    }
+}
+
+/// The hash of signed data, fed in pieces:
+/// `SHAKE256("writ/v1/data" ‖ 0x00 ‖ data, 32)`. SHAKE256 rather than
+/// SHA3-256 because libcrux absorbs it incrementally, so files of any size
+/// hash in constant memory.
+pub struct DataHasher(Shake256Xof);
+
+impl DataHasher {
+    /// A hasher with the label absorbed.
+    pub fn new() -> DataHasher {
+        let mut xof = Shake256Xof::new();
+        xof.absorb(label::DATA.as_bytes());
+        xof.absorb(&[0]);
+        DataHasher(xof)
+    }
+
+    /// Absorbs the next piece of data.
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.absorb(data);
+    }
+
+    /// The hash of everything absorbed.
+    pub fn finish(mut self) -> Hash {
+        let mut out = [0u8; 32];
+        self.0.absorb_final(&[]);
+        self.0.squeeze(&mut out);
+        Hash(out)
+    }
+}
+
+impl Default for DataHasher {
+    fn default() -> Self {
+        DataHasher::new()
+    }
+}
+
+/// A leaf key's id: `SHA3-256("writ/v1/leaf-id" ‖ 0x00 ‖ canonical(key))`.
+/// Leaf-issued items name their issuer by it; the key itself travels in the
+/// grant to the leaf.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LeafId(pub [u8; 32]);
+
+impl LeafId {
+    /// A short fingerprint for display: the first 8 bytes, in hex.
+    pub fn fingerprint(&self) -> String {
+        hex(self.0.get(..8).unwrap_or_default())
+    }
+}
+
+impl fmt::Display for LeafId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&hex(&self.0))
+    }
+}
+
+impl fmt::Debug for LeafId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LeafId({})", self.fingerprint())
     }
 }
 
@@ -162,7 +224,7 @@ mod tests {
             label::STATEMENT,
             label::SIGNATURE,
             label::DATA,
-            label::FINGERPRINT,
+            label::LEAF_ID,
             label::ROOT_SUITE,
             label::LEAF_SUITE,
             label::KEYGEN_ROOT,
@@ -187,6 +249,35 @@ mod tests {
             Hash::labelled("writ/v1/data", b"abc"),
             Hash(libcrux_sha3::sha256(b"writ/v1/data\0abc"))
         );
+    }
+
+    #[test]
+    fn data_hash_is_labelled_shake256() {
+        // SHAKE256("", 256) from FIPS 202.
+        let mut xof = Shake256Xof::new();
+        xof.absorb_final(b"");
+        let mut out = [0u8; 32];
+        xof.squeeze(&mut out);
+        assert_eq!(
+            hex(&out),
+            "46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f"
+        );
+        let mut expect = [0u8; 32];
+        shake256_labelled(label::DATA, b"abc", &mut expect);
+        assert_eq!(Hash::of_data(b"abc"), Hash(expect));
+    }
+
+    #[test]
+    fn data_hash_ignores_how_data_is_split() {
+        let data: Vec<u8> = (0..1000u32).map(|i| (i * 7) as u8).collect();
+        let whole = Hash::of_data(&data);
+        for size in [1, 5, 135, 136, 137, 999] {
+            let mut h = DataHasher::new();
+            for chunk in data.chunks(size) {
+                h.update(chunk);
+            }
+            assert_eq!(h.finish(), whole, "chunks of {size}");
+        }
     }
 
     #[test]

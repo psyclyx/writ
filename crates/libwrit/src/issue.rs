@@ -250,7 +250,7 @@ pub fn sign_data_leaf(
         return Err(IssueError::LeafSigner);
     };
     let body = DataSig {
-        signer: Issuer::Leaf(key),
+        signer: Issuer::Leaf(key.id()),
         issued,
         context: context.to_vec(),
         data,
@@ -273,7 +273,7 @@ fn sign_leaf<T: Body + LeafIssued>(
     let PublicKey::Leaf(key) = signer.public_key() else {
         return Err(IssueError::LeafSigner);
     };
-    if body.leaf_issuer() != Some(&key) {
+    if body.leaf_issuer() != Some(key.id()) {
         return Err(IssueError::WrongIssuer);
     }
     let bytes = signer.sign(&body.message(), rng)?;
@@ -284,22 +284,22 @@ fn sign_leaf<T: Body + LeafIssued>(
 }
 
 trait LeafIssued {
-    fn leaf_issuer(&self) -> Option<&crate::keys::LeafKey>;
+    fn leaf_issuer(&self) -> Option<crate::LeafId>;
 }
 
 impl LeafIssued for Statement {
-    fn leaf_issuer(&self) -> Option<&crate::keys::LeafKey> {
+    fn leaf_issuer(&self) -> Option<crate::LeafId> {
         match &self.issuer {
-            Issuer::Leaf(k) => Some(k),
+            Issuer::Leaf(k) => Some(*k),
             Issuer::Identity { .. } => None,
         }
     }
 }
 
 impl LeafIssued for DataSig {
-    fn leaf_issuer(&self) -> Option<&crate::keys::LeafKey> {
+    fn leaf_issuer(&self) -> Option<crate::LeafId> {
         match &self.signer {
-            Issuer::Leaf(k) => Some(k),
+            Issuer::Leaf(k) => Some(*k),
             Issuer::Identity { .. } => None,
         }
     }

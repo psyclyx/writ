@@ -103,11 +103,17 @@ pub fn init(parsed: &Parsed) -> Result<()> {
     let path = ident::create_dir(dir)?;
     let result = (|| {
         if !next_seeds.is_empty() {
-            fs::write_secret(next_out, &fs::seeds_text(&next_seeds))?;
+            fs::write_secret(
+                next_out,
+                &fs::seeds_text(&next_comment(id, &next_seeds), &next_seeds),
+            )?;
         }
         fs::write_secret(
             key_out,
-            &fs::seeds_text(std::slice::from_ref(&current_seed)),
+            &fs::seeds_text(
+                &format!("current key for {id} (event 0)"),
+                std::slice::from_ref(&current_seed),
+            ),
         )?;
         fs::replace(
             &path.join(NEXT),
@@ -373,9 +379,15 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     if let Some(p) = next_out
         && !next_seeds.is_empty()
     {
-        fs::write_secret(p, &fs::seeds_text(&next_seeds))?;
+        fs::write_secret(
+            p,
+            &fs::seeds_text(&next_comment(ident.id(), &next_seeds), &next_seeds),
+        )?;
     }
-    let current_text = fs::seeds_text(std::slice::from_ref(&current_seed));
+    let current_text = fs::seeds_text(
+        &format!("current key for {} (event {n})", ident.id()),
+        std::slice::from_ref(&current_seed),
+    );
     let key_shown = match &key_out {
         KeyOut::Path(p) => {
             fs::write_secret(p, &current_text)?;
@@ -523,7 +535,16 @@ pub fn keygen(parsed: &Parsed) -> Result<()> {
     let out = parsed.value("out").unwrap_or("-");
     let seed = Seed::generate(&mut OsRng);
     let public = seed.root().root_key();
-    fs::write_secret(out, &fs::seeds_text(std::slice::from_ref(&seed)))?;
+    fs::write_secret(
+        out,
+        &fs::seeds_text(
+            &format!(
+                "key, public key slh-dsa-shake-128s {}",
+                libwrit::Hash(public.0)
+            ),
+            std::slice::from_ref(&seed),
+        ),
+    )?;
     eprintln!(
         "public key: slh-dsa-shake-128s {}\nTo make a public key file for --next-pub, run 'writ pubkey' on the key file.",
         libwrit::Hash(public.0)
@@ -588,4 +609,10 @@ pub fn expiry(
         }
         (e, _) => Ok(e),
     }
+}
+
+/// The comment line of a next-key file.
+fn next_comment(id: libwrit::Id, seeds: &[Seed]) -> String {
+    let s = if seeds.len() == 1 { "" } else { "s" };
+    format!("next key{s} for {id}")
 }

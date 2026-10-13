@@ -26,7 +26,12 @@ Every hash and signature input in writ is labelled:
 ```
 msg(label, data)  = label ‖ 0x00 ‖ data
 H(label, data)    = SHA3-256(msg(label, data))
+D(data)           = SHAKE256(msg("writ/v1/data", data), 32)
 ```
+
+`D` hashes application data (§5.5). It uses SHAKE256 so that it can be computed
+incrementally over input of any size; its security matches SHA3-256 (128-bit
+collision and 256-bit preimage resistance).
 
 The labels are:
 
@@ -37,8 +42,8 @@ The labels are:
 | `writ/v1/authority`                 | authority hash (`next` commitments)                     |
 | `writ/v1/stmt`                      | statement hash; message signed for statements           |
 | `writ/v1/sig`                       | data-signature hash; message signed for data signatures |
-| `writ/v1/data`                      | hash of signed application data                         |
-| `writ/v1/fingerprint`               | display fingerprints of leaf keys (not normative)       |
+| `writ/v1/data`                      | hash of signed application data: `D(data)`              |
+| `writ/v1/leaf-id`                   | leaf key id: `H(·, canonical(leafkey))`                 |
 | `writ/v1/root/slh-dsa-shake-128s`   | root suite: SLH-DSA context string                      |
 | `writ/v1/leaf/mldsa65-ed25519`      | leaf suite: composite prefix and ML-DSA context string  |
 | `writ/v1/keygen/slh-dsa-shake-128s` | root key derivation                                     |
@@ -109,7 +114,8 @@ non-whitespace bytes are `-----BEGIN WRIT-----`.
 - **secret key files**: one line per seed, bech32m with human-readable part
   `writ-secret-key-` over the 32-byte seed, upper-cased:
   `WRIT-SECRET-KEY-1…`. Readers SHOULD ignore blank lines and lines starting
-  with `#`.
+  with `#`. The `writ` tool writes one such line first, saying what the keys
+  are, e.g. `# writ current key for writ1… (event 0)`.
 - **readable form**: for display and for what humans type (tags, name paths),
   writ uses tokens, `"quoted strings"`, `#hex#` and `|base64|` atoms, as in
   `(zuko home "a b")`. It is never hashed or signed.
@@ -157,7 +163,9 @@ sig = ML-DSA-65.Sign(sk_ml, M', ctx = "writ/v1/leaf/mldsa65-ed25519")   ; 3309 b
   (FIPS 204 Algorithm 6) and `e` is the Ed25519 secret key.
 
 Because the label names the suite, neither component signature is valid for
-any other writ purpose.
+any other writ purpose. Items name a leaf issuer by its id (§5.1), which
+commits to both component keys, so components of different leaf keys cannot
+be combined.
 
 ## 5. Items
 
@@ -183,6 +191,10 @@ leafkey = "(" "mldsa65-ed25519" mlpk edpk ")"       ; 1952 bytes, 32 bytes
 
 A **key item** `(writ/v1 rootkey)` or `(writ/v1 leafkey)` names a public key in
 a file.
+
+A leaf key's **id** is `H("writ/v1/leaf-id", canonical(leafkey))`. Items a leaf
+key issues name it by id; the key itself appears in statements about the leaf
+(a grant or name whose subject is the leaf key) or in a key item.
 
 ### 5.2 Authorities
 
@@ -221,7 +233,7 @@ rotation  = "(" "rotation" "(" "id" id ")" "(" "n" n ")" "(" "prev" hash ")"
 
 ```
 statement = name / grant / revoke
-issuer    = "(" "issuer" id event ")" / "(" "issuer" leafkey ")"
+issuer    = "(" "issuer" id event ")" / "(" "issuer" "(" "leaf" leafid ")" ")"
 common    = issuer "(" "issued" time ")" [ "(" "expires" time ")" ] [ "(" "note" text ")" ]
 name      = "(" "name"   common label subject ")"
 grant     = "(" "grant"  common subject tag [ "(" "delegate" ")" ] ")"
@@ -230,9 +242,10 @@ subject   = "(" "id" id ")" / leafkey / "(" "key" type keybytes ")" / "(" "name"
 tag       = "(" "tag" *32atom ")"
 ```
 
-- `label` and tag atoms: 1–255 bytes. `text`: UTF-8, at most 1024 bytes,
-  display-only. `type`: 1–64 bytes of readable-token characters (ASCII graphic
-  except `( ) " # | ' ; \ [ ] { }`). `keybytes`: 1–16384 bytes.
+- `leafid`: 32 bytes (§5.1). `label` and tag atoms: 1–255 bytes. `text`:
+  UTF-8, at most 1024 bytes, display-only. `type`: 1–64 bytes of
+  readable-token characters (ASCII graphic except `( ) " # | ' ; \ [ ] { }`).
+  `keybytes`: 1–16384 bytes.
 - The statement **hash** is `H("writ/v1/stmt", canonical(statement))`.
 
 A statement is **well-formed** when:
@@ -252,9 +265,8 @@ Ill-formed statements decode (so they can be displayed) but are never valid.
 signature = "(" "signature" issuer "(" "issued" time ")" "(" "context" context ")" "(" "data" hash ")" ")"
 ```
 
-`context` is 1–255 bytes chosen by the application. `data` is
-`H("writ/v1/data", data)`. The signature **hash** is
-`H("writ/v1/sig", canonical(signature))`.
+`context` is 1–255 bytes chosen by the application. `data` is `D(data)` (§2).
+The signature **hash** is `H("writ/v1/sig", canonical(signature))`.
 
 ## 6. Identity logs
 
@@ -295,8 +307,9 @@ A statement with hash `h` is **valid at time `now`** under policy `P` when:
    - if the statement is not a revocation: no valid revocation by `id` targets
      `h` (a revocation's own validity is checked by these rules, without
      this revocation step — revocations cannot be revoked).
-3. If the issuer is a leaf key: the leaf suite is accepted by `P`, and a
-   signature with index 0 verifies under the key.
+3. If the issuer is a leaf key: the leaf suite is accepted by `P`, the material
+   contains the leaf key with that id (§5.1), and a signature with index 0
+   verifies under it.
 4. `issued ≤ now + P.skew`.
 5. If `expires` is present: `now < expires`.
 6. If it is a name or grant whose subject is a leaf key:
@@ -358,8 +371,7 @@ The reference verifier finds a shortest chain by breadth-first search over
 paths.
 
 A data signature `σ` over data `d` in context `c` is **good for `T`** when
-`σ.context = c`, `σ.data = H("writ/v1/data", d)`, `σ` is valid (§7), and its
-signer holds `T`.
+`σ.context = c`, `σ.data = D(d)`, `σ` is valid (§7), and its signer holds `T`.
 
 ## 11. Policy
 
