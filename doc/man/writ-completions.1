@@ -9,7 +9,21 @@ writ\-completions \- print a shell completion script
 .ad
 .hy
 .SH DESCRIPTION
-Print a script that lets SHELL complete writ commands, options, and file names. To install it:
+Print a script that lets SHELL complete writ commands, options, and file names.
+.PP
+To load it, run the line for your shell, or add it to your shell's startup file (~/.bashrc, ~/.zshrc, or ~/.config/fish/config.fish):
+.PP
+.RS 4
+.nf
+bash:  source <(writ completions bash)
+zsh:   source <(writ completions zsh)        (after compinit)
+fish:  writ completions fish | source
+.fi
+.RE
+.PP
+eval "$(writ completions SHELL)" works too, but only with the double quotes: without them, the shell joins the script into one line, and it does nothing.
+.PP
+To install the script as a file instead, which makes the shell start faster:
 .PP
 .RS 4
 .nf
@@ -20,7 +34,7 @@ fish:  writ completions fish > ~/.config/fish/completions/writ.fish
 .fi
 .RE
 .PP
-Packages install these scripts for you.
+Packages install these files for you.
 .SH ARGUMENTS
 .TP
 \fISHELL\fR
@@ -39,5 +53,14 @@ the answer is no: the check, verification, proof or name lookup was denied
 .TP
 2
 an error: bad usage, unreadable input, or a failed operation
+.SH EXAMPLES
+Load completions in ~/.zshrc:
+.PP
+.RS 4
+.nf
+autoload \-Uz compinit && compinit
+source <(writ completions zsh)
+.fi
+.RE
 .SH SEE ALSO
 \fBwrit\fR(1)

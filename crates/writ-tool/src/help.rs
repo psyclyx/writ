@@ -201,7 +201,9 @@ pub fn command(spec: &'static Spec, long: bool) -> String {
                     s.push('\n');
                 }
                 s.push_str(&block(what, "  ", width));
-                s.push_str(&format!("    {cmd}\n"));
+                for line in cmd.lines() {
+                    s.push_str(&format!("    {line}\n"));
+                }
             }
         }
         if !spec.see_also.is_empty() {

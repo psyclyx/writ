@@ -763,14 +763,27 @@ pub static COMPLETIONS: Spec = Spec {
     opts: &[],
     description: &[
         "Print a script that lets SHELL complete writ commands, options, and \
-         file names. To install it:",
+         file names.",
+        "To load it, run the line for your shell, or add it to your shell's \
+         startup file (~/.bashrc, ~/.zshrc, or ~/.config/fish/config.fish):",
+        "    bash:  source <(writ completions bash)
+    zsh:   source <(writ completions zsh)        (after compinit)
+    fish:  writ completions fish | source",
+        "eval \"$(writ completions SHELL)\" works too, but only with the double \
+         quotes: without them, the shell joins the script into one line, and \
+         it does nothing.",
+        "To install the script as a file instead, which makes the shell start \
+         faster:",
         "    bash:  writ completions bash > ~/.local/share/bash-completion/completions/writ
     zsh:   writ completions zsh > ~/.zfunc/_writ
            (with fpath=(~/.zfunc $fpath) before compinit in ~/.zshrc)
     fish:  writ completions fish > ~/.config/fish/completions/writ.fish",
-        "Packages install these scripts for you.",
+        "Packages install these files for you.",
     ],
-    examples: &[],
+    examples: &[(
+        "Load completions in ~/.zshrc:",
+        "autoload -Uz compinit && compinit\nsource <(writ completions zsh)",
+    )],
     see_also: &[],
 };
 

@@ -182,3 +182,110 @@ fn zsh() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Loads the zsh script the way users do, in a real interactive zsh, and
+/// presses Tab after `writ gr`. Returns whether the line became `writ grant`.
+fn zsh_completes(dir: &Path, setup: &str) -> bool {
+    let driver = dir.join("drive.zsh");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"zmodload zsh/zpty
+zpty -b z 'zsh -f -i'
+zpty -w z 'PS1="%% "; unsetopt beep; PATH={bin}:$PATH; cd {dir}'
+zpty -w z '{setup}'
+zpty -w -n z $'writ gr\t'
+zpty -r -m z out '*writ grant*' && print COMPLETED
+"#,
+            bin = Path::new(env!("CARGO_BIN_EXE_writ"))
+                .parent()
+                .unwrap()
+                .display(),
+            dir = dir.display(),
+        ),
+    )
+    .unwrap();
+    let mut child = Command::new("zsh")
+        .arg("-f")
+        .arg(&driver)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stdout).contains("COMPLETED")
+}
+
+#[test]
+fn zsh_loads_every_documented_way() {
+    if !has("zsh", &["--version"]) || !has("zsh", &["-fc", "zmodload zsh/zpty"]) {
+        eprintln!("skipping: zsh with zpty not installed");
+        return;
+    }
+    let dir = sandbox("zshload");
+    let fpath = dir.join("zfunc");
+    std::fs::create_dir_all(&fpath).unwrap();
+    std::fs::write(fpath.join("_writ"), script("zsh")).unwrap();
+    let compinit = "autoload -Uz compinit; compinit -u -D";
+    for setup in [
+        format!("{compinit}; source <(writ completions zsh)"),
+        format!("{compinit}; eval \"$(writ completions zsh)\""),
+        format!("fpath=({} $fpath); {compinit}", fpath.display()),
+    ] {
+        assert!(zsh_completes(&dir, &setup), "zsh: {setup}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn bash_and_fish_load_from_a_pipe() {
+    let bin = Path::new(env!("CARGO_BIN_EXE_writ"))
+        .parent()
+        .unwrap()
+        .display()
+        .to_string();
+    let path = format!("{bin}:{}", std::env::var("PATH").unwrap_or_default());
+    if Command::new("bash")
+        .args(["-c", "type -t compgen"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "builtin")
+    {
+        for load in [
+            "source <(writ completions bash)",
+            "eval \"$(writ completions bash)\"",
+        ] {
+            let out = Command::new("bash")
+                .args(["--norc", "-c", &format!("{load}; complete -p writ")])
+                .env("PATH", &path)
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("-F _writ writ"),
+                "bash: {load}"
+            );
+        }
+    } else {
+        eprintln!("skipping bash: no interactive bash on PATH");
+    }
+    if has("fish", &["--version"]) {
+        let out = Command::new("fish")
+            .args([
+                "--no-config",
+                "-c",
+                "writ completions fish | source; complete -C 'writ gr'",
+            ])
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).starts_with("grant"));
+    } else {
+        eprintln!("skipping fish: not installed");
+    }
+}
