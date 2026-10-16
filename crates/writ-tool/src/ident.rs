@@ -193,6 +193,9 @@ impl IdentityDir {
 
     /// Appends items to the issuance log.
     pub fn record(&mut self, items: &[Item]) -> Result<()> {
+        // Issuers share DIR/.lock, so several can get here at once; the
+        // read, append and rename of issued.writ needs a lock of its own.
+        let _recording = fs::lock_file(&self.dir.join(".issued.lock"), true)?;
         fs::append_items(&self.dir.join(ISSUED), items)?;
         self.issued.extend(items.iter().cloned());
         Ok(())

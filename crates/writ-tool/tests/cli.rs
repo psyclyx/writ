@@ -1222,3 +1222,27 @@ fn same_next_keeps_the_recovery_keys() {
     );
     assert!(err.contains("nothing to write"), "{err}");
 }
+
+#[test]
+fn parallel_issuers_lose_no_records() {
+    let s = Sandbox::new("parallel");
+    s.init("me");
+    let alice = s.init("alice");
+    let n = 20;
+    std::thread::scope(|scope| {
+        for i in 0..n {
+            let (s, alice) = (&s, &alice);
+            scope.spawn(move || {
+                s.ok(&["grant", "-i", "me", alice, &format!("(t{i})"), "-q"]);
+            });
+        }
+    });
+    let shown = s.ok(&["show", "me/issued.writ"]);
+    for i in 0..n {
+        assert!(
+            shown.contains(&format!("(t{i})")),
+            "(t{i}) missing:\n{shown}"
+        );
+    }
+    assert_eq!(s.read("me/issued.writ").matches("-----BEGIN").count(), n);
+}

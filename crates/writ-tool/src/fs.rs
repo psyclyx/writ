@@ -228,12 +228,17 @@ pub fn append_items(path: &Path, items: &[Item]) -> Result<()> {
 /// Takes the lock file `DIR/.lock`, shared or exclusive, for as long as the
 /// returned handle lives.
 pub fn lock_dir(dir: &Path, exclusive: bool) -> Result<File> {
-    let path = dir.join(".lock");
+    lock_file(&dir.join(".lock"), exclusive)
+}
+
+/// Takes a lock file, creating it if needed, for as long as the returned
+/// handle lives.
+pub fn lock_file(path: &Path, exclusive: bool) -> Result<File> {
     let f = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(&path)
+        .open(path)
         .context(|| format!("opening {}", path.display()))?;
     if exclusive { f.lock() } else { f.lock_shared() }
         .context(|| format!("locking {}", path.display()))?;
