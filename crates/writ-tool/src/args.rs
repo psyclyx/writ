@@ -205,9 +205,30 @@ impl Spec {
                         self.usage_error(format!("--{} needs a value ({meta})", opt.long))
                     })?,
             };
-            out.values.entry(opt.long).or_default().push(value);
+            let values = out.values.entry(opt.long).or_default();
+            if opt.value.is_some() && !opt.many && !values.is_empty() {
+                return Err(self.usage_error(format!("--{} can be given only once", opt.long)));
+            }
+            values.push(value);
         }
         Ok(out)
+    }
+
+    /// Whether `arg`, in option position, is an option whose value is the
+    /// next argument (`--key PATH`, `-i DIR`), not inline (`--key=PATH`).
+    pub fn takes_next(&self, arg: &str) -> bool {
+        let opt = if let Some(long) = arg.strip_prefix("--") {
+            self.opts.iter().find(|o| o.long == long)
+        } else if let Some(short) = arg.strip_prefix('-') {
+            let mut chars = short.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => self.opts.iter().find(|o| o.short == Some(c)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        opt.is_some_and(|o| o.value.is_some())
     }
 
     pub fn usage_error(&'static self, message: String) -> Error {
@@ -372,7 +393,14 @@ mod tests {
 
     #[test]
     fn rejects() {
-        for bad in [&["--nope"][..], &["-x"], &["--key"], &["--delegate=yes"]] {
+        for bad in [
+            &["--nope"][..],
+            &["-x"],
+            &["--key"],
+            &["--delegate=yes"],
+            &["-i", "a", "-i", "b"],
+            &["-ia", "--identity=b"],
+        ] {
             assert!(matches!(parse(bad), Err(Error::Usage { .. })), "{bad:?}");
         }
         assert!(matches!(

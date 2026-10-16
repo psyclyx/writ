@@ -63,27 +63,32 @@ fn completions_cmd(parsed: &Parsed) -> Result<()> {
     }
 }
 
-/// Takes `--color WHEN` / `--color=WHEN` from anywhere before `--`.
+/// Takes `--color WHEN` / `--color=WHEN` from any option position before
+/// `--`: not where it is the value of another option (`--note --color`).
 fn take_color(argv: &mut Vec<OsString>) -> Result<()> {
+    let mut command: Option<Option<&'static Spec>> = None;
     let mut i = 0;
     while let Some(arg) = argv.get(i).and_then(|a| a.to_str()).map(str::to_owned) {
         if arg == "--" {
             break;
         }
-        let value = if arg == "--color" {
-            argv.remove(i);
-            if i < argv.len() {
-                Some(argv.remove(i))
+        if arg != "--color" && !arg.starts_with("--color=") {
+            if arg == "-" || !arg.starts_with('-') {
+                // The first word is the command; later ones are arguments.
+                command.get_or_insert_with(|| find(&arg));
+                i += 1;
+            } else if command.flatten().is_some_and(|s| s.takes_next(&arg)) {
+                i += 2;
             } else {
-                None
+                i += 1;
             }
-        } else if let Some(v) = arg.strip_prefix("--color=") {
-            let v = OsString::from(v);
-            argv.remove(i);
-            Some(v)
-        } else {
-            i += 1;
             continue;
+        }
+        argv.remove(i);
+        let value = match arg.strip_prefix("--color=") {
+            Some(v) => Some(OsString::from(v)),
+            None if i < argv.len() => Some(argv.remove(i)),
+            None => None,
         };
         let when = value
             .as_ref()

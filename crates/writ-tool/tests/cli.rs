@@ -1552,3 +1552,27 @@ fn endless_inputs_are_cut_off() {
     let err = s.fails(&["grant", "-i", "me", "--key", "/dev/zero", "me", "(x)"], 2);
     assert!(err.contains("the limit is 64 KiB"), "{err}");
 }
+
+#[test]
+fn options_are_parsed_strictly() {
+    let s = Sandbox::new("strictargs");
+    s.init("me");
+    let alice = s.init("alice");
+    let me_issued = s.read("me/issued.writ");
+    let alice_issued = s.read("alice/issued.writ");
+    // A single-value option given twice is a usage error, not the last one.
+    let err = s.fails(&["grant", "-i", "me", "-i", "alice", &alice, "(x)"], 2);
+    assert!(err.contains("--identity can be given only once"), "{err}");
+    let err = s.fails(&["grant", "-ime", "--identity=alice", &alice, "(x)"], 2);
+    assert!(err.contains("only once"), "{err}");
+    assert_eq!(s.read("me/issued.writ"), me_issued);
+    assert_eq!(s.read("alice/issued.writ"), alice_issued);
+    // --color as the value of another option is that value.
+    s.ok(&["grant", "-i", "me", &alice, "(x)", "--note", "--color"]);
+    s.ok(&[
+        "grant", "-i", "me", &alice, "(y)", "--note", "--color", "--color", "never",
+    ]);
+    let shown = s.ok(&["show", "me/issued.writ"]);
+    assert_eq!(shown.matches("--color").count(), 2, "{shown}");
+    s.ok(&["--color=never", "id", "me", "--color", "always"]);
+}
