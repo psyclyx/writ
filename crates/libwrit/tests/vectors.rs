@@ -494,6 +494,7 @@ fn reason_kind(r: &Reason) -> &'static str {
         Reason::LeafCeiling(_) => "leaf-ceiling",
         Reason::Covers(_) => "covers",
         Reason::OutsideIssuer { .. } => "outside-issuer",
+        Reason::Limit => "limit",
     }
 }
 

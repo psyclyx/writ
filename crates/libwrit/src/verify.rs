@@ -34,6 +34,8 @@ pub struct Policy {
     pub max_name_depth: usize,
     /// Most distinct statements examined per query.
     pub max_statements: usize,
+    /// Most signatures verified per query (cached results are free).
+    pub max_signatures: usize,
 }
 
 impl Default for Policy {
@@ -45,6 +47,7 @@ impl Default for Policy {
             max_chain: 16,
             max_name_depth: 8,
             max_statements: 10_000,
+            max_signatures: 10_000,
         }
     }
 }
@@ -133,6 +136,9 @@ pub enum Reason {
         /// What its issuer holds on this chain.
         held: Tag,
     },
+    /// Not decided: the query's resource limits ran out first. Treated as
+    /// invalid.
+    Limit,
 }
 
 impl fmt::Display for Reason {
@@ -175,6 +181,7 @@ impl fmt::Display for Reason {
                 f,
                 "grants {granted}, but its issuer holds only {held} on this chain"
             ),
+            Reason::Limit => write!(f, "not checked: the query hit its resource limits"),
         }
     }
 }
@@ -327,8 +334,10 @@ fn shippable<T: Body + Clone>(s: &Signed<T>, issuer: &Issuer, material: &Materia
             .unwrap_or_default(),
     };
     let sigs = if verified.is_empty() {
+        let mut all = s.sigs.clone();
+        all.sort_by_key(|s| s.index);
         let mut first: Vec<Sig> = Vec::new();
-        for sig in &s.sigs {
+        for sig in &all {
             if first.last().is_none_or(|l| l.index < sig.index) {
                 first.push(sig.clone());
             }
@@ -387,7 +396,8 @@ impl<'a> Verifier<'a> {
         }
         Ok(members
             .into_iter()
-            .map(|(holder, names)| {
+            .map(|(holder, derivation)| {
+                let names = derivation.hashes();
                 let mut proof = Proof {
                     root: path.base,
                     steps: Vec::new(),
@@ -423,7 +433,10 @@ impl<'a> Verifier<'a> {
         }
         let mut q = Query::new(self, now);
         let hash = sig.body.hash();
-        q.data_sig_status(sig, &hash).map_err(Denial::Signature)?;
+        q.data_sig_status(sig, &hash).map_err(|r| match r {
+            Reason::Log(LogError::Equivocation(e)) => Denial::Compromised(e),
+            r => Denial::Signature(r),
+        })?;
         let holder = match &sig.body.signer {
             Issuer::Identity { id, .. } => Holder::Id(*id),
             Issuer::Leaf(k) => Holder::Leaf(
@@ -487,12 +500,69 @@ struct Query<'v, 'a> {
     status: HashMap<Hash, Result<(), Reason>>,
     names: HashMap<(Id, Vec<u8>, usize), Rc<Members>>,
     steps: usize,
+    signatures: usize,
     rejected: Vec<Rejection>,
     evidence: Option<Box<Evidence>>,
 }
 
-/// Holders a name refers to, each with its derivation (name statements).
-type Members = BTreeMap<Holder, Vec<Hash>>;
+/// Holders a name refers to, each with its derivation.
+type Members = BTreeMap<Holder, Derivation>;
+
+/// The name statements that put a holder in a name. Derivations share
+/// their parts instead of copying them, so extending one costs O(1) however
+/// long its expansion: a path through repeated names would otherwise grow
+/// exponentially with depth. Flattened, each statement once, only for proofs.
+#[derive(Clone, Default)]
+struct Derivation(Option<Rc<Link>>);
+
+enum Link {
+    /// A name statement, then the derivation of its subject's members.
+    Statement(Hash, Derivation),
+    /// One derivation after another (successive labels of a name path).
+    Join(Derivation, Derivation),
+}
+
+impl Derivation {
+    fn statement(h: Hash, rest: Derivation) -> Derivation {
+        Derivation(Some(Rc::new(Link::Statement(h, rest))))
+    }
+
+    fn join(&self, other: &Derivation) -> Derivation {
+        match (&self.0, &other.0) {
+            (None, _) => other.clone(),
+            (_, None) => self.clone(),
+            _ => Derivation(Some(Rc::new(Link::Join(self.clone(), other.clone())))),
+        }
+    }
+
+    /// The statements in order, each once. Shared parts are walked once, so
+    /// this costs no more than building the derivation did.
+    fn hashes(&self) -> Vec<Hash> {
+        let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut walked = BTreeSet::new();
+        let mut stack = vec![self.clone()];
+        while let Some(d) = stack.pop() {
+            let Some(link) = d.0 else { continue };
+            if !walked.insert(Rc::as_ptr(&link).addr()) {
+                continue;
+            }
+            match &*link {
+                Link::Statement(h, rest) => {
+                    if seen.insert(*h) {
+                        out.push(*h);
+                    }
+                    stack.push(rest.clone());
+                }
+                Link::Join(a, b) => {
+                    stack.push(b.clone());
+                    stack.push(a.clone());
+                }
+            }
+        }
+        out
+    }
+}
 
 impl<'v, 'a> Query<'v, 'a> {
     fn new(v: &'v Verifier<'a>, now: Time) -> Self {
@@ -502,6 +572,7 @@ impl<'v, 'a> Query<'v, 'a> {
             status: HashMap::new(),
             names: HashMap::new(),
             steps: 0,
+            signatures: 0,
             rejected: Vec::new(),
             evidence: None,
         }
@@ -546,12 +617,9 @@ impl<'v, 'a> Query<'v, 'a> {
                 return Err(Reason::Suite(Suite::SlhDsaShake128s));
             }
             let authority = ev.authority();
-            let ok = self
-                .v
-                .material
-                .sig_cached(*hash, authority.hash(), &signed.sigs, || {
-                    signed.verify_threshold(authority)
-                });
+            let ok = self.sig_check(*hash, authority.hash(), &signed.sigs, || {
+                signed.verify_threshold(authority)
+            })?;
             if !ok {
                 return Err(Reason::BadSignature);
             }
@@ -580,6 +648,30 @@ impl<'v, 'a> Query<'v, 'a> {
         result
     }
 
+    /// A signature check, cached in the material by body, signer and
+    /// signatures. A check not in the cache is charged one unit of
+    /// [`Policy::max_signatures`] per signature it may verify before it
+    /// runs; past the limit it doesn't run (and isn't cached).
+    fn sig_check(
+        &mut self,
+        body: Hash,
+        signer: Hash,
+        sigs: &[Sig],
+        check: impl FnOnce() -> bool,
+    ) -> Result<bool, Reason> {
+        let key = Material::sig_key(body, signer, sigs);
+        if let Some(ok) = self.v.material.cached_sig(&key) {
+            return Ok(ok);
+        }
+        self.signatures = self.signatures.saturating_add(sigs.len());
+        if self.signatures > self.v.policy.max_signatures {
+            return Err(Reason::Limit);
+        }
+        let ok = check();
+        self.v.material.cache_sig(key, ok);
+        Ok(ok)
+    }
+
     /// Whether the leaf key `id`, found in the material, signed `signed`.
     fn signed_by_leaf<T: Body>(
         &mut self,
@@ -593,10 +685,7 @@ impl<'v, 'a> Query<'v, 'a> {
         let Some(key) = self.v.material.leaf_key(id) else {
             return Err(Reason::UnknownLeaf(*id));
         };
-        let ok = self
-            .v
-            .material
-            .sig_cached(*hash, Hash(id.0), &signed.sigs, || signed.verify_leaf(key));
+        let ok = self.sig_check(*hash, Hash(id.0), &signed.sigs, || signed.verify_leaf(key))?;
         if ok {
             Ok(())
         } else {
@@ -653,11 +742,19 @@ impl<'v, 'a> Query<'v, 'a> {
         Ok(())
     }
 
-    /// A valid revocation by `id` of `hash` (or of a data signature).
+    /// A valid revocation by `id` of `hash` (or of a data signature). Each
+    /// revocation examined counts against the budget; if the budget runs
+    /// out before a valid one is found, the answer is [`Reason::Limit`],
+    /// never "not revoked".
     fn check_revoked(&mut self, id: Id, hash: &Hash) -> Result<(), Reason> {
         for r in self.v.material.revocations(&id, hash).to_vec() {
-            if self.status(&r).is_ok() {
-                return Err(Reason::Revoked(r));
+            match self.status(&r) {
+                Ok(()) => return Err(Reason::Revoked(r)),
+                Err(Reason::Limit) => return Err(Reason::Limit),
+                Err(_) => {}
+            }
+            if self.over_budget() {
+                return Err(Reason::Limit);
             }
         }
         Ok(())
@@ -671,9 +768,16 @@ impl<'v, 'a> Query<'v, 'a> {
         }
     }
 
+    fn over_budget(&self) -> bool {
+        self.status.len() > self.v.policy.max_statements
+            || self.signatures > self.v.policy.max_signatures
+    }
+
     fn budget(&self) -> Result<(), Denial> {
         if self.status.len() > self.v.policy.max_statements {
             Err(Denial::Limit("statements examined"))
+        } else if self.signatures > self.v.policy.max_signatures {
+            Err(Denial::Limit("signatures checked"))
         } else {
             Ok(())
         }
@@ -700,7 +804,7 @@ impl<'v, 'a> Query<'v, 'a> {
     ) -> Result<Members, Denial> {
         // Level by level over a de-duplicated set of holders, so a path's
         // cost is (levels × holders), never (holders ^ levels).
-        let mut current = Members::from([(Holder::Id(*base), Vec::new())]);
+        let mut current = Members::from([(Holder::Id(*base), Derivation::default())]);
         for name in names {
             let mut next = Members::new();
             for (holder, derivation) in &current {
@@ -712,11 +816,7 @@ impl<'v, 'a> Query<'v, 'a> {
                     if self.steps > NAME_STEPS_PER_STATEMENT * self.v.policy.max_statements {
                         return Err(Denial::Limit("name resolution steps"));
                     }
-                    next.entry(m.clone()).or_insert_with(|| {
-                        let mut all = derivation.clone();
-                        all.extend(d.iter().copied());
-                        all
-                    });
+                    next.entry(m.clone()).or_insert_with(|| derivation.join(d));
                 }
             }
             current = next;
@@ -750,11 +850,8 @@ impl<'v, 'a> Query<'v, 'a> {
                 continue;
             };
             for (holder, d) in self.denote(&subject, depth - 1)? {
-                out.entry(holder).or_insert_with(|| {
-                    let mut all = vec![h];
-                    all.extend(d);
-                    all
-                });
+                out.entry(holder)
+                    .or_insert_with(|| Derivation::statement(h, d));
             }
         }
         let out = Rc::new(out);
@@ -765,9 +862,11 @@ impl<'v, 'a> Query<'v, 'a> {
     /// The holders a subject denotes.
     fn denote(&mut self, subject: &Subject, depth: usize) -> Result<Members, Denial> {
         Ok(match subject {
-            Subject::Id(id) => BTreeMap::from([(Holder::Id(*id), Vec::new())]),
-            Subject::Leaf(k) => BTreeMap::from([(Holder::Leaf(k.clone()), Vec::new())]),
-            Subject::Opaque(k) => BTreeMap::from([(Holder::Opaque(k.clone()), Vec::new())]),
+            Subject::Id(id) => BTreeMap::from([(Holder::Id(*id), Derivation::default())]),
+            Subject::Leaf(k) => BTreeMap::from([(Holder::Leaf(k.clone()), Derivation::default())]),
+            Subject::Opaque(k) => {
+                BTreeMap::from([(Holder::Opaque(k.clone()), Derivation::default())])
+            }
             Subject::Name(p) => self.resolve_path(&p.base, &p.names, depth)?,
         })
     }
@@ -820,13 +919,30 @@ impl<'v, 'a> Query<'v, 'a> {
             return Err(Denial::Compromised(e.clone()));
         }
         let max_depth = self.v.policy.max_name_depth;
-        // BFS over (holder, effective tag). Each node remembers how it was reached.
+        // BFS over (holder, effective tag). Each node remembers how it was
+        // reached; derivations are flattened only for the chain found.
+        struct Edge {
+            grant: Hash,
+            names: Derivation,
+            holder: Holder,
+            tag: Tag,
+        }
+        impl Edge {
+            fn step(&self) -> Step {
+                Step {
+                    grant: self.grant,
+                    names: self.names.hashes(),
+                    holder: self.holder.clone(),
+                    tag: self.tag.clone(),
+                }
+            }
+        }
         struct Node {
             principal: Principal,
             tag: Tag,
             root: Id,
             parent: Option<usize>,
-            step: Option<Step>,
+            step: Option<Edge>,
             depth: usize,
         }
         let mut nodes: Vec<Node> = Vec::new();
@@ -889,16 +1005,18 @@ impl<'v, 'a> Query<'v, 'a> {
                 else {
                     continue;
                 };
-                // Structural checks first: is this grant useful at all?
+                // Structural checks first: is this grant useful at all? Tags
+                // only lengthen along a chain, so once the effective tag is
+                // not a prefix of `tag` no extension can cover `tag`. This
+                // also bounds the search to (principal, prefix of `tag`).
                 let Some(eff) = node_tag.intersect(&gtag) else {
                     continue;
                 };
-                let can_finish = tag.is_within(&eff);
-                if !can_finish && !delegate {
+                if !tag.is_within(&eff) {
                     continue;
                 }
                 let members = self.denote(&gsubject, max_depth)?;
-                let finishes = can_finish && members.contains_key(&want);
+                let finishes = members.contains_key(&want);
                 let continues = delegate && members.keys().any(|m| m.principal().is_some());
                 if !finishes && !continues {
                     continue;
@@ -910,12 +1028,13 @@ impl<'v, 'a> Query<'v, 'a> {
                 if finishes && let Some(names) = members.get(&want) {
                     found = Some((
                         ni,
-                        Step {
+                        Edge {
                             grant: h,
                             names: names.clone(),
                             holder: want.clone(),
                             tag: eff.clone(),
-                        },
+                        }
+                        .step(),
                     ));
                     break 'search;
                 }
@@ -929,7 +1048,7 @@ impl<'v, 'a> Query<'v, 'a> {
                         tag: eff.clone(),
                         root: node_root,
                         parent: Some(ni),
-                        step: Some(Step {
+                        step: Some(Edge {
                             grant: h,
                             names,
                             holder: m,
@@ -968,8 +1087,8 @@ impl<'v, 'a> Query<'v, 'a> {
         let mut cursor = Some(last);
         while let Some(i) = cursor {
             let Some(node) = nodes.get(i) else { break };
-            if let Some(step) = &node.step {
-                steps.push(step.clone());
+            if let Some(edge) = &node.step {
+                steps.push(edge.step());
             }
             cursor = node.parent;
         }
@@ -985,6 +1104,11 @@ impl<'v, 'a> Query<'v, 'a> {
         };
         for h in proof.statements() {
             self.note_statement(&mut proof, &h);
+        }
+        // The subject's log too, so a proof checked alone still sees an
+        // equivocating subject (SPEC §10).
+        if let Holder::Id(id) = subject {
+            proof.ids.insert(*id);
         }
         Ok(proof)
     }

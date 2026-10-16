@@ -6,7 +6,7 @@ use crate::keys::{LeafKey, PublicKey};
 use crate::log::{Evidence, Log, LogError};
 use crate::model::{Body, Claim, DataSig, Event, Issuer, Item, Sig, Signed, Statement, Subject};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 /// Something that can issue statements.
@@ -31,8 +31,16 @@ pub struct Material {
     by_issuer: BTreeMap<Id, Vec<Hash>>,
     leaf_keys: BTreeMap<LeafId, LeafKey>,
     logs: RefCell<HashMap<Id, Rc<Result<Log, LogError>>>>,
-    sig_cache: RefCell<HashMap<(Hash, Hash, Hash), bool>>,
+    sig_cache: RefCell<HashMap<SigKey, bool>>,
+    /// Per body hash, the signatures merged so far as (index, digest of the
+    /// bytes). Built on a body's first merge, so merging stays linear
+    /// however many copies arrive.
+    merged: HashMap<Hash, HashSet<(u8, Hash)>>,
 }
+
+/// What a signature check is cached under: body hash, signer (authority
+/// hash or leaf id), and a digest of the signatures.
+pub(crate) type SigKey = (Hash, Hash, Hash);
 
 impl Material {
     /// Empty material.
@@ -61,7 +69,12 @@ impl Material {
                         let id = ev.body.id();
                         match self.inceptions.get_mut(&id) {
                             Some(existing) => {
-                                merge_sigs(&mut existing.sigs, ev.sigs);
+                                merge_sigs(
+                                    &mut self.merged,
+                                    ev.body.hash(),
+                                    &mut existing.sigs,
+                                    ev.sigs,
+                                );
                             }
                             None => {
                                 self.inceptions.insert(id, ev);
@@ -73,7 +86,7 @@ impl Material {
                         let h = ev.body.hash();
                         match slot.iter_mut().find(|e| e.body.hash() == h) {
                             Some(existing) => {
-                                merge_sigs(&mut existing.sigs, ev.sigs);
+                                merge_sigs(&mut self.merged, h, &mut existing.sigs, ev.sigs);
                             }
                             None => slot.push(ev),
                         }
@@ -83,7 +96,7 @@ impl Material {
             Item::Statement(st) => {
                 let h = st.body.hash();
                 if let Some(existing) = self.statements.get_mut(&h) {
-                    if merge_sigs(&mut existing.sigs, st.sigs) {
+                    if merge_sigs(&mut self.merged, h, &mut existing.sigs, st.sigs) {
                         self.sig_cache.get_mut().retain(|(b, _, _), _| *b != h);
                     }
                     return;
@@ -118,7 +131,7 @@ impl Material {
                 let h = sig.body.hash();
                 match self.signatures.get_mut(&h) {
                     Some(existing) => {
-                        if merge_sigs(&mut existing.sigs, sig.sigs) {
+                        if merge_sigs(&mut self.merged, h, &mut existing.sigs, sig.sigs) {
                             self.sig_cache.get_mut().retain(|(b, _, _), _| *b != h);
                         }
                     }
@@ -231,41 +244,50 @@ impl Material {
             .unwrap_or_default()
     }
 
-    /// Cached signature check: `check` runs at most once per
-    /// `(body hash, signer hash, signatures)`. The signatures are part of the
-    /// key: the same body may arrive with different signatures.
-    pub(crate) fn sig_cached(
-        &self,
-        body: Hash,
-        signer: Hash,
-        sigs: &[Sig],
-        check: impl FnOnce() -> bool,
-    ) -> bool {
+    /// The key a check of `sigs` over `body` by `signer` is cached under.
+    /// The signatures are part of the key: the same body may arrive with
+    /// different signatures.
+    pub(crate) fn sig_key(body: Hash, signer: Hash, sigs: &[Sig]) -> SigKey {
         let mut bytes = Vec::with_capacity(sigs.iter().map(|s| s.bytes.len() + 1).sum());
         for s in sigs {
             bytes.push(s.index);
             bytes.extend_from_slice(&s.bytes);
         }
-        let key = (body, signer, Hash::of_data(&bytes));
-        if let Some(ok) = self.sig_cache.borrow().get(&key) {
-            return *ok;
-        }
-        let ok = check();
+        (body, signer, Hash::of_data(&bytes))
+    }
+
+    /// A cached signature check result.
+    pub(crate) fn cached_sig(&self, key: &SigKey) -> Option<bool> {
+        self.sig_cache.borrow().get(key).copied()
+    }
+
+    /// Caches a signature check result.
+    pub(crate) fn cache_sig(&self, key: SigKey, ok: bool) {
         self.sig_cache.borrow_mut().insert(key, ok);
-        ok
     }
 }
 
-/// Adds signatures not already present (same index and bytes). Returns
-/// whether any were added.
-fn merge_sigs(into: &mut Vec<Sig>, from: Vec<Sig>) -> bool {
+/// Adds signatures not already present (same index and bytes) to the copy
+/// of `body` held in `into`. Returns whether any were added. Merged
+/// signatures are appended unsorted, possibly several per index; readers
+/// pick the valid ones ([`Signed::valid_sigs`]).
+fn merge_sigs(
+    merged: &mut HashMap<Hash, HashSet<(u8, Hash)>>,
+    body: Hash,
+    into: &mut Vec<Sig>,
+    from: Vec<Sig>,
+) -> bool {
+    let seen = merged.entry(body).or_insert_with(|| {
+        into.iter()
+            .map(|s| (s.index, Hash::of_data(&s.bytes)))
+            .collect()
+    });
     let before = into.len();
     for sig in from {
-        if !into.contains(&sig) {
+        if seen.insert((sig.index, Hash::of_data(&sig.bytes))) {
             into.push(sig);
         }
     }
-    into.sort_by_key(|s| s.index);
     into.len() != before
 }
 

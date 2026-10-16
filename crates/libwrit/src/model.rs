@@ -1008,7 +1008,9 @@ pub struct Sig {
 pub struct Signed<T> {
     /// What was signed.
     pub body: T,
-    /// Signatures, strictly increasing by index.
+    /// Signatures: strictly increasing by index when decoded; in any order,
+    /// possibly several per index, once [`Material`](crate::Material) has
+    /// merged copies.
     pub sigs: Vec<Sig>,
 }
 

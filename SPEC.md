@@ -363,12 +363,14 @@ leaf key, or an opaque key) **holds** tag `T` when:
 If `S` is an id whose log equivocates, the answer is no. A verifier SHOULD
 report equivocation it encountered when no chain exists.
 
-A **proof** is the logs of every identity involved, the grants of one chain,
-and the name statements that put each holder in each subject. Its effective
-tag is `E`; its effective expiry is the minimum `expires` of its statements.
-The reference verifier finds a shortest chain by breadth-first search over
-(holder, effective tag), checking signatures only for statements on candidate
-paths.
+A **proof** is the logs of every identity involved (the root, every issuer,
+and `S` if it is an id), the grants of one chain, and the name statements that
+put each holder in each subject. Its effective tag is `E`; its effective
+expiry is the minimum `expires` of its statements. The reference verifier
+finds a shortest chain by breadth-first search over (holder, effective tag),
+checking signatures only for statements on candidate paths. Because
+intersection only lengthens a tag, it never expands a node whose effective tag
+is not a prefix of `T`; so it visits at most `len(T) + 1` tags per holder.
 
 A data signature `σ` over data `d` in context `c` is **good for `T`** when
 `σ.context = c`, `σ.data = D(d)`, `σ` is valid (§7), and its signer holds `T`.
@@ -383,6 +385,18 @@ A data signature `σ` over data `d` in context `c` is **good for `T`** when
 | `max_chain`      | 16             | most grants in a chain                 |
 | `max_name_depth` | 8              | `D` in §8                              |
 | `max_statements` | 10000          | distinct statements examined per query |
+| `max_signatures` | 10000          | signatures verified per query          |
+
+Every revocation of a statement counts as a statement examined, and every
+signature attached to an item counts toward `max_signatures` when the item's
+signatures are checked (cached results are free). A statement that cannot be
+decided within these limits is not valid; in particular, running out while
+looking for a valid revocation never means "not revoked".
+
+Outside these limits, building identity logs costs one signature check per
+rotation candidate, so a verifier's work grows linearly with the size of its
+material. Verifiers that take material from untrusted parties SHOULD bound its
+size (libwrit's bundle limit is in §3.1).
 
 ## 12. Time
 

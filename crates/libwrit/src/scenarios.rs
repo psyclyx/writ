@@ -1226,3 +1226,88 @@ fn thresholds_must_be_a_majority() {
     ]);
     assert!(Item::decode(&weak.encode()).is_err());
 }
+
+/// Each name refers 16 times to the one below it. Derivations used to be
+/// copied in full, so their length multiplied by 16 per level and depth 8
+/// needed gigabytes; shared, the proof holds each statement once.
+#[test]
+fn repeated_names_stay_small() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    let mut items = vec![st(a.say(name("x0", Subject::Id(a.id)), 10, None))];
+    for j in 1..8 {
+        let below = format!("x{}", j - 1);
+        let labels = vec![below.as_str(); 16];
+        items.push(st(a.say(
+            name(&format!("x{j}"), path(a.id, &labels)),
+            10,
+            None,
+        )));
+    }
+    items.push(st(a.say(name("y", Subject::Id(b.id)), 10, None)));
+    let g = a.say(grant(path(a.id, &["x7", "y"]), "()", false), 10, None);
+    items.push(st(g));
+    let w = World::new(&a, items);
+    let proof = w.check(Holder::Id(b.id), "()", 50).unwrap();
+    assert_eq!(proof.steps.len(), 1);
+    assert_eq!(proof.steps[0].names.len(), 9);
+}
+
+/// Junk signatures merged onto a real statement are verified one by one;
+/// each counts against `max_signatures`, and running out denies rather than
+/// skipping the statement.
+#[test]
+fn junk_signatures_count_against_the_budget() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    let g = a.say(grant(Subject::Id(b.id), "()", false), 10, None);
+    let mut items: Vec<Item> = (0..20u8)
+        .map(|i| {
+            st(Signed {
+                body: g.body.clone(),
+                sigs: vec![Sig {
+                    index: 0,
+                    bytes: vec![i; crate::keys::ROOT_SIGNATURE_SIZE],
+                }],
+            })
+        })
+        .collect();
+    items.push(st(g));
+    assert!(
+        World::new(&a, items.clone())
+            .check(Holder::Id(b.id), "()", 50)
+            .is_ok()
+    );
+    // A fresh world: the first one cached the result.
+    let mut w = World::new(&a, items);
+    w.policy.max_signatures = 10;
+    assert!(w.check(Holder::Id(b.id), "()", 50).is_err());
+}
+
+/// Revocations of a statement are each examined; past the budget the
+/// statement counts as invalid ([`Reason::Limit`]), never as unrevoked.
+#[test]
+fn junk_revocations_count_against_the_budget() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    let g = a.say(grant(Subject::Id(b.id), "()", false), 10, None);
+    let mut items = vec![st(g.clone())];
+    for i in 0..20u8 {
+        let mut r = a.say(
+            Claim::Revoke {
+                target: g.body.hash(),
+            },
+            11 + u64::from(i),
+            None,
+        );
+        r.sigs[0].bytes = vec![i; crate::keys::ROOT_SIGNATURE_SIZE];
+        items.push(st(r));
+    }
+    let mut w = World::new(&a, items);
+    assert!(w.check(Holder::Id(b.id), "()", 50).is_ok());
+    w.policy.max_statements = 5;
+    let d = w.check(Holder::Id(b.id), "()", 50).unwrap_err();
+    assert!(
+        matches!(d, Denial::Limit(_)) || rejected_for(&d, g.body.hash()) == Some(Reason::Limit)
+    );
+}
