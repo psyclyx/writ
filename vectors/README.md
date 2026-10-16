@@ -7,10 +7,11 @@ signing randomness), so regenerating changes nothing unless the format did.
 
 ## External
 
-| directory            | source                                                                                      | checked by                         |
-| -------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------- |
-| `acvp/`              | NIST ACVP SLH-DSA-SHAKE-128s keyGen/sigGen/sigVer (see `acvp/README.md`)                    | `crates/writ-slhdsa/tests/acvp.rs` |
-| `ed25519-speccheck/` | `novifinancial/ed25519-speccheck` `cases.json` @ `65519336fda78a3d016e947df6d82848aca0c9da` | `libwrit` `keys::tests`            |
+| directory            | source                                                                                      | checked by                           |
+| -------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `acvp/`              | NIST ACVP SLH-DSA-SHAKE-128s keyGen/sigGen/sigVer (see `acvp/README.md`)                    | `crates/writ-slhdsa/tests/acvp.rs`   |
+| `acvp/`              | NIST ACVP ML-DSA-65 keyGen/sigGen/sigVer, a subset (see `acvp/README.md`)                   | `crates/libwrit/tests/acvp_mldsa.rs` |
+| `ed25519-speccheck/` | `novifinancial/ed25519-speccheck` `cases.json` @ `65519336fda78a3d016e947df6d82848aca0c9da` | `libwrit` `keys::tests`              |
 
 BIP-350 bech32m vectors are inline in `crates/libwrit/src/bech32.rs`.
 

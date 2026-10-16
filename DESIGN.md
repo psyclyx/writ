@@ -549,8 +549,8 @@ The tool stays `writ`. On crates.io, `writ` (a markdown editor) and
 were free as of 2026-10-11. `writ-slhdsa` deliberately implements one parameter
 set — a general SLH-DSA crate would invite all twelve.
 
-Testing: ACVP + differential for SLH-DSA; round-trip and canonical-form fuzzing
-for csexp; algebraic property tests for tags (commutative, associative,
+Testing: ACVP + differential for SLH-DSA; ACVP for ML-DSA-65; round-trip and
+canonical-form fuzzing for csexp; algebraic property tests for tags (commutative, associative,
 idempotent, consistent with ⊆); chain semantics checked against a brute-force
 reference implementation; published test vectors for every format.
 
@@ -682,6 +682,17 @@ Four findings where the draft's claims didn't hold; decided as follows.
 - **Log growth is documented, not redesigned.** Moving `keep` out of rotations
   would shrink the repeated lists but not the ~8 KB signature per rotation, at
   the cost of a new item kind. §4.3 gives the numbers and the advice instead.
+
+### Resolved after second review (2026-10-16)
+
+- **ML-DSA-65 is pinned by NIST ACVP vectors** (keyGen, sigGen, sigVer),
+  run against the libcrux-ml-dsa calls the leaf suite makes: key generation
+  from ξ, and external pure signing and verification with a context,
+  deterministic and hedged. The repository had none, though §3.3 and the
+  test-vector rule ask for them. A subset is vendored (27 cases, about 450
+  KB); internal, external-mu and pre-hash groups are left out because writ
+  doesn't use them. All pass, with and without libcrux's AVX2 code
+  (`vectors/acvp/README.md`).
 
 ## 17. Open questions
 
