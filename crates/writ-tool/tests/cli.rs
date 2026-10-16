@@ -1534,3 +1534,21 @@ fn concurrent_inits_of_one_directory() {
         "n.key",
     ]);
 }
+
+#[cfg(unix)]
+#[test]
+fn endless_inputs_are_cut_off() {
+    let s = Sandbox::new("endless");
+    s.init("me");
+    let err = s.fails(&["show", "/dev/zero"], 2);
+    assert!(err.contains("the limit is 256 MiB"), "{err}");
+    let err = s.fails(
+        &["check", "--as", "me", "me", "(x)", "--in", "/dev/zero"],
+        2,
+    );
+    assert!(err.contains("the limit is 256 MiB"), "{err}");
+    let err = s.fails(&["pubkey", "/dev/zero"], 2);
+    assert!(err.contains("the limit is 64 KiB"), "{err}");
+    let err = s.fails(&["grant", "-i", "me", "--key", "/dev/zero", "me", "(x)"], 2);
+    assert!(err.contains("the limit is 64 KiB"), "{err}");
+}

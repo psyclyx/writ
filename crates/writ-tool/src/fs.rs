@@ -77,19 +77,41 @@ pub fn hash_input(path: &str, purpose: &'static str) -> Result<libwrit::Hash> {
     Ok(hasher.finish())
 }
 
-/// Reads a whole input: `-` is stdin.
+/// The most read from a key file: one short line per key, plus comments.
+const MAX_KEY_FILE: usize = 64 << 10;
+
+/// Reads a whole input, at most a bundle's limit (SPEC §3.1): `-` is stdin.
 pub fn read_input(path: &str, purpose: &'static str) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
+    read_limited(path, purpose, libwrit::model::MAX_BUNDLE)
+}
+
+fn read_limited(path: &str, purpose: &'static str, limit: usize) -> Result<Vec<u8>> {
+    // Room for a whole key file up front, so reading one never reallocates
+    // and leaves copies of the key behind.
+    let mut buf = Vec::with_capacity(MAX_KEY_FILE + 1);
+    let take = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
     if path == "-" {
         claim_stdin(purpose)?;
         std::io::stdin()
             .lock()
+            .take(take)
             .read_to_end(&mut buf)
             .context(|| "reading stdin".into())?;
     } else {
         File::open(path)
-            .and_then(|mut f| f.read_to_end(&mut buf))
+            .and_then(|f| f.take(take).read_to_end(&mut buf))
             .context(|| format!("reading {path}"))?;
+    }
+    if buf.len() > limit {
+        let name = if path == "-" { "standard input" } else { path };
+        let size = if limit >= 1 << 20 {
+            format!("{} MiB", limit >> 20)
+        } else {
+            format!("{} KiB", limit >> 10)
+        };
+        return err(format!(
+            "{name} is too large for {purpose}: the limit is {size}"
+        ));
     }
     Ok(buf)
 }
@@ -97,7 +119,7 @@ pub fn read_input(path: &str, purpose: &'static str) -> Result<Vec<u8>> {
 /// Reads secret seeds: one `WRIT-SECRET-KEY-1…` per line; blank lines and
 /// `#` comments are ignored.
 pub fn read_seeds(path: &str) -> Result<Vec<Seed>> {
-    let bytes = Zeroizing::new(read_input(path, "a key")?);
+    let bytes = Zeroizing::new(read_limited(path, "a key", MAX_KEY_FILE)?);
     let text = std::str::from_utf8(&bytes)
         .ok()
         .map(|s| Zeroizing::new(s.to_owned()))
