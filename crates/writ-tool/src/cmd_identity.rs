@@ -171,7 +171,10 @@ pub fn id(parsed: &Parsed) -> Result<()> {
 /// What a rotation keeps: everything this identity issued that is still
 /// live. The cold keys endorse kept items by hash, so each one must verify
 /// here: DIR/issued.writ is not trusted.
-fn compute_keep(ident: &IdentityDir, now: libwrit::Time) -> (Vec<libwrit::Hash>, KeepStats) {
+fn compute_keep(
+    ident: &IdentityDir,
+    now: libwrit::Time,
+) -> Result<(Vec<libwrit::Hash>, KeepStats)> {
     let roots = [ident.id()];
     let material = ident.material();
     let policy = Policy::default();
@@ -204,10 +207,18 @@ fn compute_keep(ident: &IdentityDir, now: libwrit::Time) -> (Vec<libwrit::Hash>,
             }
             Err(libwrit::Reason::Expired(_)) => stats.expired += 1,
             Err(libwrit::Reason::Revoked(_)) => stats.revoked += 1,
+            // Undecided is not dead: dropping it would end a live statement.
+            Err(libwrit::Reason::Limit) => {
+                return err(format!(
+                    "{}/issued.writ: too many signatures or revocations attached to {} to check it; nothing was changed. Read the file before rotating: someone else may have written to it",
+                    ident.dir.display(),
+                    crate::display::short(&h)
+                ));
+            }
             Err(_) => stats.dead += 1,
         }
     }
-    (keep.into_iter().collect(), stats)
+    Ok((keep.into_iter().collect(), stats))
 }
 
 #[derive(Default)]
@@ -352,7 +363,7 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
         }
     };
     let now = wall_clock();
-    let (keep, stats) = compute_keep(&ident, now);
+    let (keep, stats) = compute_keep(&ident, now)?;
     let signer_refs: Vec<&dyn Signer> = signers.iter().map(|s| s as &dyn Signer).collect();
     let event = libwrit::rotate(
         &ident.log,

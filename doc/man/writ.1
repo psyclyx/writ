@@ -113,7 +113,7 @@ writ grant \-i me \-\-key <(age \-d me.key.age) alice '(ssh)'
 .fi
 .RE
 .SH SECURITY
-writ has no network protocol. Verifiers learn about rotations and revocations only from the bundles you give them. A verifier that never sees your rotation keeps trusting your old current key, including in the hands of a thief. \-\-max\-validity does not change that: a thief who has the key can keep making new statements. Give verifiers your newest bundle, and have them use \-\-state, so that once they see a rotation they never go back.
+writ has no network protocol. Verifiers learn about rotations and revocations only from the bundles you give them. A verifier that never sees your rotation keeps trusting your old current key, including in the hands of a thief. \-\-max\-validity does not change that: a thief who has the key can keep making new statements. Give verifiers your newest bundle, and have them use \-\-state, so that once they see a rotation or a revocation they never go back. The same goes for proofs: writ prove output holds only what its sender chose, so check it with \-\-state.
 .PP
 If two different rotations of one identity appear, writ refuses the identity: someone who holds its next keys signed both. writ keeps refusing it (with \-\-state) until you remove its file from the state directory.
 .SH EXIT STATUS
@@ -157,7 +157,7 @@ the current secret key, unless you keep it somewhere else
 with \-\-state: the clock floor, in seconds since 1970
 .TP
 \fBSTATE/logs/ID.writ\fR
-with \-\-state: the log of each identity a question involved
+with \-\-state: the log and revocations of each identity a question relied on
 .SH EXAMPLES
 Create two identities:
 .PP

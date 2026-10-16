@@ -126,8 +126,8 @@ const STATE: Opt = opt(
     "state",
     "DIR",
     Value::NewDir,
-    "keep state in DIR between runs: the identity logs seen, and the clock \
-     floor",
+    "keep state in DIR between runs: the identity logs and revocations \
+     seen, and the clock floor",
 );
 const LEAF_CEILING: Opt = opt(
     "leaf-ceiling",
@@ -425,8 +425,10 @@ pub static GRANT: Spec = Spec {
             "writ grant -i me 'me alice' '(ssh nas)' >> bundle.writ",
         ),
         (
-            "Let a build machine sign releases for 30 days:",
-            "writ grant -i me builder '(release)' --expires 30d >> bundle.writ",
+            "Let a build machine sign releases (its signatures verify for as long as \
+             this grant does, so give it no expiry, and revoke it if the machine \
+             is lost):",
+            "writ grant -i me builder '(release)' >> bundle.writ",
         ),
     ],
     see_also: &["name", "revoke", "check"],
@@ -934,7 +936,9 @@ pub static MANUAL: &[(&str, &[&str])] = &[
              including in the hands of a thief. --max-validity does not \
              change that: a thief who has the key can keep making new \
              statements. Give verifiers your newest bundle, and have them use \
-             --state, so that once they see a rotation they never go back.",
+             --state, so that once they see a rotation or a revocation they \
+             never go back. The same goes for proofs: writ prove output holds \
+             only what its sender chose, so check it with --state.",
             "If two different rotations of one identity appear, writ refuses \
              the identity: someone who holds its next keys signed both. writ \
              keeps refusing it (with --state) until you remove its file from \
@@ -966,7 +970,8 @@ pub static FILES: &[(&str, &str)] = &[
     ),
     (
         "STATE/logs/ID.writ",
-        "with --state: the log of each identity a question involved",
+        "with --state: the log and revocations of each identity a question \
+         relied on",
     ),
 ];
 

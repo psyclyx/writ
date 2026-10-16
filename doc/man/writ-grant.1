@@ -78,11 +78,11 @@ writ grant \-i me 'me alice' '(ssh nas)' >> bundle.writ
 .fi
 .RE
 .PP
-Let a build machine sign releases for 30 days:
+Let a build machine sign releases (its signatures verify for as long as this grant does, so give it no expiry, and revoke it if the machine is lost):
 .PP
 .RS 4
 .nf
-writ grant \-i me builder '(release)' \-\-expires 30d >> bundle.writ
+writ grant \-i me builder '(release)' >> bundle.writ
 .fi
 .RE
 .SH SEE ALSO
