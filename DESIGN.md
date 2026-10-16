@@ -100,8 +100,10 @@ is a silent total compromise; stateful signatures don't belong in a human tool).
 ### 3.3 Implementation sources
 
 - Imported (arithmetic, side channels): `libcrux-sha3`, `libcrux-ml-dsa`,
-  `libcrux-ed25519`. Formally verified in large part; pre-0.1 and not
-  independently audited for the PQ parts — pin exact versions.
+  `libcrux-ed25519`. Ed25519 is translated from verified HACL\*; ML-DSA's
+  arithmetic, NTT and serialization are verified, its other checks are not;
+  `libcrux-sha3` is not verified yet. All are pre-0.1 and not independently
+  audited — pin exact versions, and pin them with external vectors (§16).
 - Implemented here: SLH-DSA on top of `libcrux-sha3` (pure hashing, no field
   arithmetic), the composite construction, canonical encoding, bech32m.
 - Homework for what we implement: written spec with test vectors; NIST ACVP
@@ -344,7 +346,7 @@ release signing, file signing) one primitive instead of a bespoke one each.
 - **Now**: supplied by the caller (see §9.4).
 - **Policy**: accepted suites per role (default: both v1 suites), leaf ceiling,
   clock skew tolerance, resource limits (max chain length 16, max name depth 8,
-  max statements examined).
+  max statements examined, max signatures checked).
 
 ### 9.2 Queries
 
@@ -693,9 +695,62 @@ Four findings where the draft's claims didn't hold; decided as follows.
   KB); internal, external-mu and pre-hash groups are left out because writ
   doesn't use them. All pass, with and without libcrux's AVX2 code
   (`vectors/acvp/README.md`).
+- **libcrux stays; no libsodium.** libcrux-ml-dsa had several advisories in
+  2026, two of them high-severity bugs in its AVX2 code, which its build
+  script enables on every x86_64 build. All are fixed at or below the pinned
+  versions. libsodium has no ML-DSA, so libcrux would stay anyway; its
+  Ed25519 is as strict as ours already is, and it would bring C, FFI and
+  `unsafe`. **Decision:** keep the pins; guard them with the ACVP vectors
+  (run with `LIBCRUX_DISABLE_SIMD256=1` too, from a clean build directory)
+  and advisory checks on every bump.
+- **Correction:** libcrux-sha3 0.0.11 does have incremental SHA3-256
+  (`Sha3_256Hasher`), contrary to the 2026-10-13 entry. The SHAKE256 data
+  hash stays: it is as strong, already specified, and pinned by vectors.
+- **Verifier work is bounded by the policy, not by the material.** Three
+  shapes of hostile material cost far more than `max_statements`: names
+  that refer to each other repeatedly (derivations grew 16× per level;
+  nine statements aborted the process), many incomparable tags through one
+  holder (search nodes grew as tags × holders), and junk signatures or
+  revocations (each verified, without limit). **Decision:** derivations are
+  shared, not copied; the search drops nodes whose tag can no longer cover
+  the query, since tags only lengthen; a new `max_signatures` limit counts
+  signature checks, revocations count as statements, and a statement
+  undecided when the limits run out is invalid, never "not revoked" (SPEC
+  §11). Logs still cost one check per rotation candidate: work is linear in
+  the material, which applications bound by size.
+- **Leaf signatures verify only while the leaf's grant is live.** `verify`
+  asks whether the signer holds the tag now; a leaf grant lasts at most a
+  day. Checking "held it when signing" instead would need a time the signer
+  can't choose, which writ doesn't have. **Decision:** no mechanism change.
+  Leaf keys sign short-lived things (records re-signed as needed); releases
+  and files are signed by an identity, whose data signatures last until
+  revoked or dropped by a rotation. README and help say so.
+- **Verifier state remembers revocations, and only what a question relied
+  on.** Logs were persisted but revocations weren't, so a revocation seen
+  once was forgotten when a later bundle left it out; and `writ prove`
+  output is chosen by the prover, who can leave it out. Denials also saved
+  the logs of the subject asked about, so the 2026-10-11 claim that a bundle
+  can't grow the state didn't hold. **Decision:** state keeps each
+  remembered identity's valid revocations with its log; denials save only
+  issuers the search reached and equivocators; SPEC §10 says a proof is
+  checked together with the verifier's state, never alone.
+- **writ never signs what it can't read back.** A grant to an SSH key with
+  a non-token type, or a rotation whose `keep` exceeded 4 MiB, was signed,
+  then rejected by every reader, the tool included, which locked the
+  identity's own directory. **Decision:** issuing checks the body against
+  the decoder and the per-item limits before signing.
+- **Wiping is best effort.** Secrets are wiped where they are held, but
+  values Rust moves or spills to registers can't be reached without
+  `unsafe`; `writ-slhdsa` scrubs its stack after signing as a backstop.
+  Encrypt keys at rest (age) rather than rely on memory hygiene.
 
 ## 17. Open questions
 
 None blocking. Revisit after use: exact resource limits (§9.1) and the default
 skew. Whether applications need a freshness primitive that bounds a warm-key
 thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
+
+Awaiting a decision on dependencies (CLAUDE.md): `cargo-fuzz` targets for the
+decoders (§3.3 promises fuzzing; today there are only property tests), and
+RustCrypto `ml-dsa` as a dev-dependency for differential tests of the leaf
+suite, as `slh-dsa` is for the root suite.
