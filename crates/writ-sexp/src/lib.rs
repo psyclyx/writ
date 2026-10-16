@@ -19,7 +19,7 @@ pub mod base64;
 mod canonical;
 pub mod readable;
 
-pub use canonical::{DecodeError, Limits, decode, decode_many};
+pub use canonical::{DecodeError, Limits, decode, decode_prefix};
 
 use alloc::vec::Vec;
 

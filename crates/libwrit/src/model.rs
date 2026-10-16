@@ -1150,28 +1150,27 @@ impl Item {
                 .iter()
                 .map(|b| Item::decode(b))
                 .collect()
-        } else if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+        } else if bytes
+            .iter()
+            .all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+        {
             Ok(Vec::new())
         } else {
-            let limits = writ_sexp::Limits {
-                max_len: MAX_BUNDLE,
-                max_nodes: 1 << 24,
-                ..writ_sexp::Limits::default()
-            };
-            let sexps = writ_sexp::decode_many(bytes, &limits).map_err(DecodeError::Sexp)?;
-            sexps
-                .iter()
-                .map(|s| {
-                    if s.encoded_len() > writ_sexp::Limits::default().max_len {
-                        return Err(DecodeError::Sexp(writ_sexp::DecodeError::TooLarge));
-                    }
-                    let item = Item::from_sexp(s)?;
-                    if item.to_sexp() != *s {
-                        return Err(DecodeError::NonCanonical);
-                    }
-                    Ok(item)
-                })
-                .collect()
+            // One item at a time, each under the per-item limits, so the
+            // decoded trees in memory never exceed one item's.
+            let mut items = Vec::new();
+            let mut rest = bytes;
+            while !rest.is_empty() {
+                let (sexp, n) = writ_sexp::decode_prefix(rest, &writ_sexp::Limits::default())
+                    .map_err(DecodeError::Sexp)?;
+                let item = Item::from_sexp(&sexp)?;
+                if item.to_sexp() != sexp {
+                    return Err(DecodeError::NonCanonical);
+                }
+                items.push(item);
+                rest = rest.get(n..).unwrap_or_default();
+            }
+            Ok(items)
         }
     }
 

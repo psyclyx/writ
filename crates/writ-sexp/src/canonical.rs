@@ -81,15 +81,24 @@ pub fn decode(input: &[u8], limits: &Limits) -> Result<Sexp, DecodeError> {
     Ok(sexp)
 }
 
-/// Decodes a concatenation of canonical expressions (a binary bundle).
-/// Limits apply to the whole input.
-pub fn decode_many(input: &[u8], limits: &Limits) -> Result<Vec<Sexp>, DecodeError> {
-    let mut parser = Parser::new(input, limits)?;
-    let mut out = Vec::new();
-    while parser.pos < input.len() {
-        out.push(parser.sexp(0)?);
+/// Decodes the canonical expression at the start of `input`, returning it
+/// and the number of bytes it occupies. The limits apply to that expression
+/// alone, so a concatenation (a binary bundle) can be decoded one expression
+/// at a time, each turned into something smaller before the next is read.
+pub fn decode_prefix(input: &[u8], limits: &Limits) -> Result<(Sexp, usize), DecodeError> {
+    let window = input.get(..limits.max_len).unwrap_or(input);
+    let mut parser = Parser {
+        input: window,
+        pos: 0,
+        nodes: 0,
+        limits,
+    };
+    match parser.sexp(0) {
+        Ok(sexp) => Ok((sexp, parser.pos)),
+        // It ran past `max_len` bytes.
+        Err(DecodeError::Truncated) if window.len() < input.len() => Err(DecodeError::TooLarge),
+        Err(e) => Err(e),
     }
-    Ok(out)
 }
 
 struct Parser<'a> {
@@ -240,11 +249,31 @@ mod tests {
     }
 
     #[test]
-    fn many() {
+    fn prefix() {
+        let l = Limits::default();
         assert_eq!(
-            decode_many(b"(1:a)1:b", &Limits::default()),
-            Ok(vec![Sexp::list(vec![Sexp::atom("a")]), Sexp::atom("b")])
+            decode_prefix(b"(1:a)1:b", &l),
+            Ok((Sexp::list(vec![Sexp::atom("a")]), 5))
         );
-        assert_eq!(decode_many(b"", &Limits::default()), Ok(vec![]));
+        assert_eq!(decode_prefix(b"1:b", &l), Ok((Sexp::atom("b"), 3)));
+        assert_eq!(decode_prefix(b"", &l), Err(DecodeError::Truncated));
+        assert_eq!(decode_prefix(b"(1:a", &l), Err(DecodeError::Truncated));
+        // Limits apply per expression, not to what follows it.
+        let small = Limits {
+            max_len: 5,
+            max_nodes: 2,
+            ..l
+        };
+        assert_eq!(
+            decode_prefix(b"(1:a)(1:a)(1:a)", &small),
+            Ok((Sexp::list(vec![Sexp::atom("a")]), 5))
+        );
+        assert_eq!(decode_prefix(b"(1:ab)", &small), Err(DecodeError::TooLarge));
+        assert_eq!(decode_prefix(b"9:a", &small), Err(DecodeError::Truncated));
+        assert_eq!(
+            decode_prefix(b"9:abcdefghi", &small),
+            Err(DecodeError::TooLarge)
+        );
+        assert_eq!(decode_prefix(b"(0:0:)", &small), Err(DecodeError::TooLarge));
     }
 }

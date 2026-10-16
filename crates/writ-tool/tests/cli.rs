@@ -841,6 +841,19 @@ fn ssh_keys_and_max_validity() {
     let out = s.ok(&["check", "--as", "me", "id_ed25519.pub", "(ssh nas)"]);
     assert!(out.contains("ssh-ed25519"), "{out}");
     s.fails(&["check", "--as", "me", &line, "(ssh other)"], 1);
+
+    // A key type the format can't hold is refused up front, and printed
+    // escaped; the identity stays usable.
+    let kind = "ssh-\x1b[31mX";
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&(kind.len() as u32).to_be_bytes());
+    blob.extend_from_slice(kind.as_bytes());
+    let line = format!("{kind} {}", base64(&blob));
+    let err = s.fails(&["grant", "-i", "me", &line, "(e)", "--expires", "1d"], 2);
+    assert!(err.contains("not a usable key type"), "{err}");
+    assert!(!err.contains('\x1b'), "{err:?}");
+    s.ok(&["id", "me"]);
+    s.ok(&["export", "-i", "me"]);
 }
 
 fn base64(data: &[u8]) -> String {

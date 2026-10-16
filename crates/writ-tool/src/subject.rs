@@ -177,6 +177,12 @@ fn ssh_key(line: &str) -> Result<OpaqueKey> {
     let (Some(kind), Some(b64)) = (parts.next(), parts.next()) else {
         return err("expected an OpenSSH public key: TYPE BASE64 [COMMENT]");
     };
+    // Checked first, so that the messages below can print it.
+    if kind.is_empty() || kind.len() > 64 || !kind.bytes().all(writ_sexp::readable::is_token_byte) {
+        return err(format!(
+            "{kind:?} is not a usable key type: it must be 1 to 64 letters, digits or punctuation"
+        ));
+    }
     let blob = writ_sexp::base64::decode(b64.as_bytes())
         .ok_or_else(|| Error::Msg(format!("{kind} key: bad base64")))?;
     // The blob starts with the length-prefixed key type.
@@ -190,8 +196,13 @@ fn ssh_key(line: &str) -> Result<OpaqueKey> {
             "{kind} key: the key data is for a different key type"
         ));
     }
-    Ok(OpaqueKey {
+    let key = OpaqueKey {
         kind: kind.as_bytes().to_vec(),
         bytes: blob,
-    })
+    };
+    // Whatever else the decoder requires (the key's size), so a grant to
+    // this key can always be read back.
+    Subject::from_sexp(&Subject::Opaque(key.clone()).to_sexp())
+        .map_err(|e| Error::Msg(format!("{kind} key: {e}")))?;
+    Ok(key)
 }

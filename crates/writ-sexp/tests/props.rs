@@ -9,7 +9,7 @@
 )]
 
 use proptest::prelude::*;
-use writ_sexp::{Limits, Sexp, armor, base64, decode, decode_many, readable};
+use writ_sexp::{Limits, Sexp, armor, base64, decode, decode_prefix, readable};
 
 fn arb_sexp() -> impl Strategy<Value = Sexp> {
     let atom = prop_oneof![
@@ -129,9 +129,16 @@ proptest! {
     }
 
     #[test]
-    fn many_round_trip(items in proptest::collection::vec(arb_sexp(), 0..4)) {
+    fn prefix_round_trip(items in proptest::collection::vec(arb_sexp(), 0..4)) {
         let bytes: Vec<u8> = items.iter().flat_map(Sexp::encode).collect();
-        prop_assert_eq!(decode_many(&bytes, &Limits::default()), Ok(items));
+        let mut rest = bytes.as_slice();
+        let mut back = Vec::new();
+        while !rest.is_empty() {
+            let (s, n) = decode_prefix(rest, &Limits::default()).unwrap();
+            back.push(s);
+            rest = &rest[n..];
+        }
+        prop_assert_eq!(back, items);
     }
 
     #[test]

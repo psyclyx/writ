@@ -35,6 +35,9 @@ pub enum IssueError {
     LeafSigner,
     /// The signer failed.
     Sign(SignError),
+    /// The item would not decode (SPEC §3.1, §5): writ never signs what it
+    /// can't read back.
+    Encoding(crate::DecodeError),
 }
 
 impl fmt::Display for IssueError {
@@ -61,6 +64,7 @@ impl fmt::Display for IssueError {
             ),
             IssueError::LeafSigner => write!(f, "a leaf statement needs exactly one leaf key"),
             IssueError::Sign(e) => write!(f, "{e}"),
+            IssueError::Encoding(e) => write!(f, "can't be encoded: {e}"),
         }
     }
 }
@@ -73,14 +77,38 @@ impl From<SignError> for IssueError {
     }
 }
 
+/// Checks, before anything is signed, that the item will decode: its body
+/// parses back to itself, and with up to 16 signatures attached it stays
+/// within the per-item limits (SPEC §3.1). The CLI otherwise could sign a
+/// subject or a `keep` list that every reader, itself included, rejects.
+fn check_decodable<T: Body + PartialEq>(body: &T) -> Result<(), IssueError> {
+    // "(" "7:writ/v1" body *("(" "3:sig" index bytes ")") ")"
+    const SIGS: usize = 16 * (crate::keys::ROOT_SIGNATURE_SIZE + 16) + 16;
+    let limits = writ_sexp::Limits::default();
+    let bytes = body.encode();
+    let within = writ_sexp::Limits {
+        max_len: limits.max_len - SIGS,
+        max_nodes: limits.max_nodes - 2 - 4 * 16,
+        max_depth: limits.max_depth - 1,
+    };
+    let sexp = writ_sexp::decode(&bytes, &within)
+        .map_err(|e| IssueError::Encoding(crate::DecodeError::Sexp(e)))?;
+    match T::from_sexp(&sexp) {
+        Ok(back) if back == *body => Ok(()),
+        Ok(_) => Err(IssueError::Encoding(crate::DecodeError::NonCanonical)),
+        Err(e) => Err(IssueError::Encoding(e)),
+    }
+}
+
 /// Signs `body` with `signers`, all of whose keys must be in `authority`,
 /// at least `k` of them distinct.
-pub fn sign_with_authority<T: Body>(
+pub fn sign_with_authority<T: Body + PartialEq>(
     body: T,
     authority: &Authority,
     signers: &[&dyn Signer],
     rng: &mut dyn Rng,
 ) -> Result<Signed<T>, IssueError> {
+    check_decodable(&body)?;
     let msg = body.message();
     let mut sigs: Vec<Sig> = Vec::new();
     for signer in signers {
@@ -265,11 +293,12 @@ fn check_context(context: &[u8]) -> Result<(), IssueError> {
     Ok(())
 }
 
-fn sign_leaf<T: Body + LeafIssued>(
+fn sign_leaf<T: Body + LeafIssued + PartialEq>(
     body: T,
     signer: &dyn Signer,
     rng: &mut dyn Rng,
 ) -> Result<Signed<T>, IssueError> {
+    check_decodable(&body)?;
     let PublicKey::Leaf(key) = signer.public_key() else {
         return Err(IssueError::LeafSigner);
     };

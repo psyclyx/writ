@@ -997,6 +997,16 @@ fn encoding_round_trips() {
     assert_eq!(Item::decode_bundle(bundle.as_bytes()).unwrap(), items);
     let binary: Vec<u8> = items.iter().flat_map(Item::encode).collect();
     assert_eq!(Item::decode_bundle(&binary).unwrap(), items);
+    // Binary bundles get the per-item limits, item by item: one item over
+    // 2^18 nodes is rejected, even in a bundle well under the bundle limit.
+    let wide = [b"(".as_slice(), &b"0:".repeat(1 << 18), b")"].concat();
+    assert_eq!(
+        Item::decode_bundle(&[binary.as_slice(), &wide].concat()),
+        Err(DecodeError::Sexp(writ_sexp::DecodeError::TooLarge))
+    );
+    // Only the four armor whitespace bytes count as empty.
+    assert_eq!(Item::decode_bundle(b" \t\r\n"), Ok(vec![]));
+    assert!(Item::decode_bundle(b"\x0c").is_err());
 }
 
 #[test]
@@ -1309,5 +1319,51 @@ fn junk_revocations_count_against_the_budget() {
     let d = w.check(Holder::Id(b.id), "()", 50).unwrap_err();
     assert!(
         matches!(d, Denial::Limit(_)) || rejected_for(&d, g.body.hash()) == Some(Reason::Limit)
+    );
+}
+
+/// writ never signs an item its own decoder would reject: here a key type
+/// that isn't a token, and a rotation whose `keep` makes it too large.
+#[test]
+fn undecodable_items_are_not_signed() {
+    let mut a = Ident::new(1);
+    let bad = OpaqueKey {
+        kind: b"ssh-\x1b[31mX".to_vec(),
+        bytes: vec![1],
+    };
+    let body = Statement {
+        issuer: a.issuer(),
+        issued: 10,
+        expires: None,
+        note: None,
+        claim: grant(Subject::Opaque(bad), "()", false),
+    };
+    assert!(matches!(
+        issue(body, &a.log(), &[&a.keys[0]], &mut TestRng::new(0)),
+        Err(IssueError::Encoding(DecodeError::Malformed(_)))
+    ));
+    let revealed = a.next[0];
+    let keep: Vec<Hash> = (0..130_000u32)
+        .map(|i| Hash::labelled("writ/test", &i.to_be_bytes()))
+        .collect();
+    let plan = RotationPlan {
+        revealed: Authority::single(revealed.0),
+        authority: Authority::single(FakeRoot::new(40).0),
+        next: Authority::single(FakeRoot::new(41).0),
+        max_validity: None,
+        keep,
+    };
+    assert_eq!(
+        rotate(&a.log(), plan, &[&revealed], &mut TestRng::new(0)),
+        Err(IssueError::Encoding(DecodeError::Sexp(
+            writ_sexp::DecodeError::TooLarge
+        )))
+    );
+    // A large but readable keep list is fine.
+    a.rotate(
+        (0..1000u32)
+            .map(|i| Hash::labelled("writ/test", &i.to_be_bytes()))
+            .collect(),
+        None,
     );
 }
