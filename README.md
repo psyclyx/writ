@@ -66,11 +66,16 @@ writ sign   --leaf ci.key --context example/status/v1 status.json > status.json.
 writ verify --as me --tag '(status)' --context example/status/v1 status.json status.json.sig < bundle.writ
 ```
 
-Rotation, with the next key kept offline (and age-encrypted):
+Rotation, with the next key kept offline (and age-encrypted). The next key
+can serve again, so a routine rotation only makes a fresh current key:
 
 ```sh
-writ rotate -i me --next-key <(age -d me-next.key.age) --next-out - | age -p > me-next2.key.age
+writ rotate -i me --next-key <(age -d me-next.key.age) --same-next
 ```
+
+To replace the next key too, encrypt the new one to an age recipient
+(`--next-out - | age -r age1… > me-next2.key.age`), so that only one age
+asks for a passphrase at a time.
 
 Rotation keeps every live statement automatically; anything a thief signs
 with your old key is dead to every verifier that sees the rotation. Use
