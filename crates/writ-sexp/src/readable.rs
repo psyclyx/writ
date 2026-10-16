@@ -277,12 +277,37 @@ fn write_sexp(out: &mut String, sexp: &Sexp) {
     }
 }
 
+/// Characters that print as nothing, or that change how the text around
+/// them is laid out (direction overrides, line separators): a quoted atom
+/// holding one could display as something else, so it prints as hex.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{34f}'
+            | '\u{61c}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff0}'..='\u{fffb}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}'
+    )
+}
+
 fn write_atom(out: &mut String, atom: &[u8]) {
     if !atom.is_empty() && atom.iter().all(|&b| is_token_byte(b)) {
         out.extend(atom.iter().map(|&b| char::from(b)));
     } else if let Ok(s) = core::str::from_utf8(atom)
         && s.chars()
-            .all(|c| !c.is_control() || matches!(c, '\n' | '\t' | '\r'))
+            .all(|c| (!c.is_control() || matches!(c, '\n' | '\t' | '\r')) && !is_invisible(c))
     {
         out.push('"');
         for c in s.chars() {
@@ -373,6 +398,18 @@ mod tests {
             "(zuko \"a b\" \"\" #ff00# |/////////////////////////////////////////////////////w==| \"tab\\there \\\"q\\\"\")"
         );
         assert_eq!(parse(&text), Ok(s));
+    }
+
+    /// Direction overrides and invisible characters would let an atom look
+    /// like something else, or rearrange what follows it: they print as hex.
+    #[test]
+    fn invisible_characters_print_as_hex() {
+        for s in ["alice\u{202e}gnp", "a\u{200b}b", "x\u{2066}", "\u{feff}y"] {
+            let text = print_atom(s.as_bytes());
+            assert!(text.starts_with('#'), "{text}");
+            assert_eq!(parse(&text), Ok(a(s)));
+        }
+        assert_eq!(print_atom("café".as_bytes()), "\"café\"");
     }
 
     #[test]
