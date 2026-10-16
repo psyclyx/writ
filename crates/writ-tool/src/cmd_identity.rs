@@ -417,6 +417,7 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     if matches!(key_out, KeyOut::Replace) {
         std::fs::rename(&staged, &current_path)
             .context(|| format!("replacing {current_path_str}"))?;
+        fs::sync_parent(&current_path)?;
     }
 
     let mut lines = vec![format!("rotated {} to event {n}", ident.id())];

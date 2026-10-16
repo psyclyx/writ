@@ -261,7 +261,7 @@ impl Output {
                         .context(|| format!("writing {path}"))?;
                 }
                 *slot = None;
-                Ok(())
+                sync_parent(Path::new(path))
             }
         }
     }
@@ -286,20 +286,59 @@ pub fn seeds_text(comment: &str, seeds: &[Seed]) -> Zeroizing<String> {
     s
 }
 
-/// Replaces a public file atomically (write a temporary file, then rename).
+/// Replaces a public file atomically and durably: write a new temporary
+/// file beside it, rename it into place, then sync the directory.
 pub fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = tmp_path(path);
-    let mut f = File::create(&tmp).context(|| format!("creating {}", tmp.display()))?;
-    f.write_all(bytes)
+    let (tmp, mut f) = create_tmp(path)?;
+    let replaced = f
+        .write_all(bytes)
         .and_then(|()| f.sync_all())
-        .context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).context(|| format!("replacing {}", path.display()))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if let Err(e) = replaced {
+        let _ = std::fs::remove_file(&tmp);
+        return err(format!("replacing {}: {e}", path.display()));
+    }
+    sync_parent(path)
 }
 
-fn tmp_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".tmp{}", std::process::id()));
-    path.with_file_name(name)
+/// Creates a temporary file beside `path`, named after it, the process id
+/// and a counter. Never opens an existing file or follows a symlink.
+fn create_tmp(path: &Path) -> Result<(PathBuf, File)> {
+    let name = path.file_name().unwrap_or_default();
+    for n in 0..1000 {
+        let mut tmp = name.to_os_string();
+        tmp.push(format!(".tmp{}.{n}", std::process::id()));
+        let tmp = path.with_file_name(tmp);
+        match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(f) => return Ok((tmp, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return err(format!("creating {}: {e}", tmp.display())),
+        }
+    }
+    err(format!(
+        "creating a temporary file beside {}: too many already exist",
+        path.display()
+    ))
+}
+
+/// Syncs the directory holding `path`, so that a file created or renamed
+/// there survives a crash.
+pub fn sync_parent(path: &Path) -> Result<()> {
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    #[cfg(unix)]
+    {
+        File::open(dir)
+            .and_then(|d| d.sync_all())
+            .context(|| format!("syncing {}", dir.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
 }
 
 /// Appends armored items to a public file. Atomic: the file is rewritten
@@ -371,4 +410,36 @@ pub fn emit(item: &Item, recorded_in: Option<&Path>) -> Result<()> {
         return Ok(());
     }
     print(&item.armor())
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replace_never_reuses_a_planted_temporary_file() {
+        let dir = std::env::temp_dir().join(format!("writ-fs-replace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("issued.writ");
+        let pid = std::process::id();
+        // Where earlier versions put the temporary file, and the first two
+        // names this one tries.
+        let elsewhere = dir.join("elsewhere");
+        for name in [
+            format!("issued.writ.tmp{pid}"),
+            format!("issued.writ.tmp{pid}.0"),
+        ] {
+            std::os::unix::fs::symlink(&elsewhere, dir.join(name)).unwrap();
+        }
+        std::fs::write(dir.join(format!("issued.writ.tmp{pid}.1")), "planted").unwrap();
+        replace(&file, b"new").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"new");
+        assert!(!elsewhere.exists());
+        let planted = std::fs::read(dir.join(format!("issued.writ.tmp{pid}.1"))).unwrap();
+        assert_eq!(planted, b"planted");
+        assert!(!dir.join(format!("issued.writ.tmp{pid}.2")).exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

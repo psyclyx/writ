@@ -303,6 +303,7 @@ fn finish_key_install(dir: &Path, log: &Log) -> Result<()> {
     if committed {
         std::fs::rename(&staged, dir.join(CURRENT_KEY))
             .context(|| format!("installing {staged_str}"))?;
+        fs::sync_parent(&staged)?;
         crate::note(format!(
             "finished an interrupted rotation: {} now holds the current key",
             dir.join(CURRENT_KEY).display()
