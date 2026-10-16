@@ -16,6 +16,7 @@ rustPlatform.buildRustPackage {
     fileset = lib.fileset.unions [
       (root + "/Cargo.toml")
       (root + "/Cargo.lock")
+      (root + "/README.md") # read by the tour test
       (root + "/crates")
       (root + "/doc")
       (root + "/vectors")

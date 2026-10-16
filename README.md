@@ -35,18 +35,35 @@ writ check --as me alice '(ssh nas)' < bundle.writ
 Delegate, narrow, expire, revoke:
 
 ```sh
-writ grant  -i me 'me alice' '(zuko)' --delegate --expires 90d >> bundle.writ
+writ init bob --next-out bob-next.key
+writ grant  -i me 'me alice' '(zuko)' --delegate --expires 90d | tee zuko.writ >> bundle.writ
 writ grant  -i alice bob '(zuko home)' >> bundle.writ   # alice passes on part of it
-writ revoke -i me 9d1e5a                                # by hash prefix
+writ export -i alice >> bundle.writ                     # alice's log, so her grant can be checked
+writ check  --as me bob '(zuko home)' < bundle.writ     # allowed
+
+writ revoke -i me zuko.writ >> bundle.writ              # or by the hash prefix grant printed
+writ check  --as me bob '(zuko home)' < bundle.writ     # denied: revoked
 writ export -i me > me.writ                             # my log, live statements, revocations
 ```
 
-Leaf keys and signatures:
+Signatures, by an identity that may sign releases:
 
 ```sh
-writ leaf   -i me '(release)' --out build.key >> bundle.writ    # 24 h, fast to verify
-writ sign   --leaf build.key --context example/release/v1 app.tar > app.tar.sig
+writ init release --next-out release-next.key
+writ grant  -i me release '(release)' >> bundle.writ
+writ export -i release >> bundle.writ
+writ sign   -i release --context example/release/v1 app.tar > app.tar.sig
 writ verify --as me --tag '(release)' --context example/release/v1 app.tar app.tar.sig < bundle.writ
+```
+
+Leaf keys are fast and last at most 24 hours. A signature by a leaf key
+verifies only while the leaf key's grant is live, so use them for things that
+are signed again often, like a status file:
+
+```sh
+writ leaf   -i me '(status)' --out ci.key >> bundle.writ
+writ sign   --leaf ci.key --context example/status/v1 status.json > status.json.sig
+writ verify --as me --tag '(status)' --context example/status/v1 status.json status.json.sig < bundle.writ
 ```
 
 Rotation, with the next key kept offline (and age-encrypted):

@@ -13,6 +13,8 @@ Rotate the identity in DIR: replace its current keys, and keep its id.
 .PP
 The next keys (\-\-next\-key) sign the rotation, and nothing else. writ makes a new current key and writes it to \-\-key\-out, or in place of DIR/current.key. Then it makes new next keys and writes them to \-\-next\-out, or, with \-\-same\-next, keeps the next keys you have. Keeping them suits next keys held by friends or kept in a safe.
 .PP
+After rotating, destroy the next keys you gave with \-\-next\-key, unless you used \-\-same\-next: they can still sign a rotation that conflicts with this one.
+.PP
 A rotation lists the statements that stay valid. writ keeps every statement and signature in DIR/issued.writ that is still valid: correctly signed, not revoked, not expired, and not a name or grant for a leaf key. Anything else signed with the old current key becomes invalid for every verifier that sees the rotation. Use this to recover from a stolen current key. If whoever stole it could also write to DIR/issued.writ, read it first (writ show < DIR/issued.writ) and revoke anything you did not sign.
 .PP
 With \-\-key\-pub, the current keys include other people's keys, and \-\-key\-k of them must sign each statement. Use this for an identity that a group shares.

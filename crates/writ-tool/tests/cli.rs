@@ -1576,3 +1576,48 @@ fn options_are_parsed_strictly() {
     assert_eq!(shown.matches("--color").count(), 2, "{shown}");
     s.ok(&["--color=never", "id", "me", "--color", "always"]);
 }
+
+/// Every command in the README's tour works as written, with `cat` standing
+/// in for age.
+#[cfg(unix)]
+#[test]
+fn readme_tour_runs() {
+    let s = Sandbox::new("readme");
+    std::fs::write(s.path("app.tar"), b"app").unwrap();
+    std::fs::write(s.path("status.json"), b"{}").unwrap();
+    let bin = Path::new(env!("CARGO_BIN_EXE_writ")).parent().unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let readme = include_str!("../../../README.md");
+    let mut in_block = false;
+    let mut ran = 0;
+    for line in readme.lines() {
+        match line {
+            "```sh" => in_block = true,
+            "```" => in_block = false,
+            _ if !in_block || line.is_empty() || line.starts_with('#') => {}
+            _ => {
+                let command = line.replace("age -p", "cat").replace("age -d", "cat");
+                let out = Command::new("bash")
+                    .args(["-c", &command])
+                    .env("PATH", &path)
+                    .current_dir(&s.dir)
+                    .stdin(Stdio::null())
+                    .output()
+                    .unwrap();
+                let expected = if line.contains("# denied") { 1 } else { 0 };
+                assert_eq!(
+                    out.status.code(),
+                    Some(expected),
+                    "{line}\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                ran += 1;
+            }
+        }
+    }
+    assert!(ran > 15, "{ran}");
+}

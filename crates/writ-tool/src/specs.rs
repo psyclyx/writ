@@ -298,6 +298,9 @@ pub static ROTATE: Spec = Spec {
          DIR/current.key. Then it makes new next keys and writes them to \
          --next-out, or, with --same-next, keeps the next keys you have. \
          Keeping them suits next keys held by friends or kept in a safe.",
+        "After rotating, destroy the next keys you gave with --next-key, \
+         unless you used --same-next: they can still sign a rotation that \
+         conflicts with this one.",
         "A rotation lists the statements that stay valid. writ keeps every \
          statement and signature in DIR/issued.writ that is still valid: \
          correctly signed, not revoked, not expired, and not a name or grant \
@@ -496,10 +499,13 @@ pub static LEAF: Spec = Spec {
          pubkey --leaf KEY` prints it), or make a new one.",
         "A leaf key can sign data. With --delegate it can also issue grants, \
          but those grants can't be delegated further.",
+        "A signature by a leaf key verifies only while the leaf key's grant \
+         is live, so use leaf keys for things that are signed again often, \
+         not for releases.",
     ],
     examples: &[(
-        "Make a key for a build machine:",
-        "writ leaf -i me '(release)' --out build.key >> bundle.writ",
+        "Make a key for a machine that signs a status file every hour:",
+        "writ leaf -i me '(status)' --out ci.key >> bundle.writ",
     )],
     see_also: &["sign", "grant", "pubkey"],
 };
@@ -521,7 +527,8 @@ pub static SIGN: Spec = Spec {
             "leaf",
             "KEY",
             Value::File,
-            "sign with this secret leaf key instead",
+            "sign with this secret leaf key instead; the signature verifies \
+             only while the leaf key's grant is live",
         ),
         opt(
             "context",
@@ -544,13 +551,21 @@ pub static SIGN: Spec = Spec {
          signature is for. A verifier must ask for the same context, so a \
          signature made for one purpose can't be used for another.",
         "Signatures by an identity are added to DIR/issued.writ, so that a \
-         later rotation keeps them. A signature by a leaf key is valid while \
-         the leaf key's grant is.",
+         later rotation keeps them. A signature by a leaf key verifies only \
+         while the leaf key's grant is live, at most 24 hours unless the \
+         grant is renewed, so sign releases and other lasting things as an \
+         identity.",
     ],
-    examples: &[(
-        "Sign a release with a leaf key:",
-        "writ sign --leaf build.key -c example/release/v1 app.tar > app.tar.sig",
-    )],
+    examples: &[
+        (
+            "Sign a release:",
+            "writ sign -i release -c example/release/v1 app.tar > app.tar.sig",
+        ),
+        (
+            "Sign a status file with a leaf key:",
+            "writ sign --leaf ci.key -c example/status/v1 status.json > status.json.sig",
+        ),
+    ],
     see_also: &["verify", "leaf"],
 };
 
@@ -754,7 +769,7 @@ pub static PUBKEY: Spec = Spec {
     ],
     examples: &[(
         "Renew a leaf key for another day:",
-        "writ pubkey --leaf build.key > build.pub && writ grant -i me build.pub '(release)' --expires 24h",
+        "writ pubkey --leaf ci.key > ci.pub && writ grant -i me ci.pub '(status)' --expires 24h",
     )],
     see_also: &["keygen", "leaf"],
 };
@@ -876,7 +891,9 @@ pub static MANUAL: &[(&str, &[&str])] = &[
             "A leaf key is a key without a log. It uses ML-DSA-65 and Ed25519 \
              together, and both signatures must be valid. Leaf keys sign and \
              verify quickly, and every grant to a leaf key, or name for one, \
-             expires within 24 hours. Use them for machines that sign often.",
+             expires within 24 hours. Use them for machines that sign often. \
+             A signature by a leaf key verifies only while the leaf key's \
+             grant is live.",
         ],
     ),
     (

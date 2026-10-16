@@ -14,6 +14,8 @@ Make a leaf key and grant TAG to it. Leaf keys use ML\-DSA\-65 and Ed25519. They
 To keep using a leaf key, grant to its public key again (\fBwrit pubkey \-\-leaf KEY\fR prints it), or make a new one.
 .PP
 A leaf key can sign data. With \-\-delegate it can also issue grants, but those grants can't be delegated further.
+.PP
+A signature by a leaf key verifies only while the leaf key's grant is live, so use leaf keys for things that are signed again often, not for releases.
 .SH ARGUMENTS
 .TP
 \fITAG\fR
@@ -57,11 +59,11 @@ the answer is no: the check, verification, proof or name lookup was denied
 2
 an error: bad usage, unreadable input, or a failed operation
 .SH EXAMPLES
-Make a key for a build machine:
+Make a key for a machine that signs a status file every hour:
 .PP
 .RS 4
 .nf
-writ leaf \-i me '(release)' \-\-out build.key >> bundle.writ
+writ leaf \-i me '(status)' \-\-out ci.key >> bundle.writ
 .fi
 .RE
 .SH SEE ALSO

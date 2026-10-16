@@ -500,7 +500,7 @@ An identity is a directory of **public state**: the log and the issuance log.
 Secret keys are separate one-line files; `--key` defaults to `DIR/current.key`.
 
 ```
-writ init DIR --next-out PATH [--k K --n N]
+writ init DIR --next-out PATH [--next-k K --next-n N]
                                      create identity; prints id. Current key → DIR/current.key;
                                      next (cold) key(s) → PATH, which must be chosen explicitly
 writ id DIR                          print id
@@ -508,7 +508,7 @@ writ name   -i DIR NAME SUBJECT      [--expires DUR] [--note TEXT]
 writ grant  -i DIR SUBJECT TAG       [--delegate] [--expires DUR] [--note TEXT]
 writ revoke -i DIR HASH
 writ leaf   -i DIR TAG --expires DUR create a leaf key + its grant
-writ rotate -i DIR --next-key PATH... --next-out PATH
+writ rotate -i DIR --next-key PATH... --next-out PATH [--key-out PATH]
                                      reveal the cold key(s); keep list computed from issuance log
 writ sign   -i DIR --context C FILE  > FILE.sig
 writ verify --as ID --tag TAG --context C FILE FILE.sig  < bundle
@@ -523,15 +523,21 @@ writ show                             < bundle             readable form
 - Key paths accept `-` (stdin) and any readable path, including `/dev/fd/N`;
   writ never requires a regular file or memory-maps keys.
 - Commands that emit secrets (`init --next-out -`, `leaf`, `rotate --next-out -`)
-  can write them to stdout, so they never touch disk in plaintext.
-- Plaintext key files writ creates get mode 0600; writ never overwrites a key.
+  can write them to stdout or `/dev/fd/N` (opened for appending), so they never
+  touch disk in plaintext.
+- Plaintext key files writ creates get mode 0600; writ never overwrites a key,
+  or any other file it writes.
 
 ```
 writ init me --next-out - | age -p > me-next.key.age      # cold key: encrypted from birth
 age -e -r age1pq1… me/current.key > me/current.key.age && rm me/current.key
 writ grant -i me --key <(age -d me/current.key.age) 'me friends' '(zuko home)'
-writ rotate -i me --next-key <(age -d me-next.key.age) --next-out - | age -p > me-next2.key.age
+writ rotate -i me --next-key <(age -d me-next.key.age) --next-out - \
+    --key-out >(age -e -r age1pq1… > me/current2.key.age) | age -p > me-next2.key.age
 ```
+
+Once `me/current.key` is gone, `rotate` needs `--key-out` for the new current
+key; here it goes to age through a second descriptor.
 
 With age's hybrid post-quantum recipients, keys at rest match writ's PQ posture.
 
@@ -743,6 +749,18 @@ Four findings where the draft's claims didn't hold; decided as follows.
   values Rust moves or spills to registers can't be reached without
   `unsafe`; `writ-slhdsa` scrubs its stack after signing as a backstop.
   Encrypt keys at rest (age) rather than rely on memory hygiene.
+- **One rule for output paths.** `-`, `/dev/stdout` and `/dev/fd/1` are the
+  inherited stdout; other `/dev/fd/N` are opened again for appending (writ
+  can't duplicate a descriptor without `unsafe`, so a shared offset is not
+  kept); any other path must not exist and is created with `O_EXCL`, which
+  also refuses symlinks. Outputs are opened before anything is signed or
+  recorded, and a created output that was never written is removed.
+- **Keys never go inside an identity directory**, except the current key to
+  `DIR/current.key`: a key there could replace, or be replaced by, the
+  identity's own files. `init` locks DIR while it works.
+- **`issued.writ` is updated under its own exclusive lock**; issuers still
+  share `DIR/.lock`, which `rotate` takes exclusively.
+- **A single-value option given twice is a usage error.**
 
 ## 17. Open questions
 
