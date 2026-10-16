@@ -286,9 +286,10 @@ An identity's log is valid when:
    - Exactly one, with `prev` equal to the hash of event `n − 1`: it is event
      `n`. With any other `prev`: the log is **broken** and unusable.
 
-The **head** is the last event. A verifier SHOULD persist the logs it accepts
-and add them to future material, so it never accepts an older head (and
-equivocation, once seen, stays seen).
+The **head** is the last event. A verifier SHOULD persist the logs it accepts,
+and the valid revocations by those identities, and add them to future
+material, so it never accepts an older head (equivocation, once seen, stays
+seen) and never forgets a revocation.
 
 ## 7. Validity of a statement
 
@@ -372,6 +373,11 @@ checking signatures only for statements on candidate paths. Because
 intersection only lengthens a tag, it never expands a node whose effective tag
 is not a prefix of `T`; so it visits at most `len(T) + 1` tags per holder.
 
+A proof shows only that a chain exists in the material it carries. Its
+holder chose that material, and can leave out a revocation or the rotation
+that retired a statement. A verifier SHOULD therefore check a proof together
+with the logs and revocations it has accepted before (§6), never alone.
+
 A data signature `σ` over data `d` in context `c` is **good for `T`** when
 `σ.context = c`, `σ.data = D(d)`, `σ` is valid (§7), and its signer holds `T`.
 
@@ -423,8 +429,9 @@ and verifier state (`--state DIR`) as:
 
 ```
 DIR/floor           the clock floor, decimal seconds
-DIR/logs/ID.writ    the log of each identity a question involved (roots, chain issuers,
-                    subjects, failed candidates' issuers, equivocators)
+DIR/logs/ID.writ    the log and valid revocations of each identity a question relied
+                    on (roots, chain issuers, subjects of allowed questions, failed
+                    candidates' issuers, equivocators)
 ```
 
 On rotation, the tool's `keep` is every statement and data signature in

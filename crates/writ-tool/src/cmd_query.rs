@@ -8,7 +8,7 @@ use crate::state::State;
 use crate::style::{self, Stream};
 use crate::{display, fs, subject, wall_clock};
 use libwrit::time::parse_duration;
-use libwrit::{Body, Denial, Floor, Id, Item, Material, Policy, Time, Verifier};
+use libwrit::{Body, Denial, Floor, Id, Item, LogError, Material, Policy, Time, Verifier};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -32,7 +32,12 @@ impl Query {
         let mut material = Material::new();
         let mut roots = Vec::new();
         for who in parsed.values("as") {
-            if ident::is_identity_dir(Path::new(who)) {
+            // An id is taken as written, before any directory of that name:
+            // otherwise whoever can write to the working directory could
+            // answer for `--as writ1…`.
+            if let Some(id) = Id::parse(who) {
+                roots.push(id);
+            } else if ident::is_identity_dir(Path::new(who)) {
                 let dir = IdentityDir::open(who)?;
                 roots.push(dir.id());
                 for item in dir.log.items().chain(dir.issued.iter().cloned()) {
@@ -110,12 +115,29 @@ impl Query {
             }
             Some(floor.value())
         };
-        // Remember the logs of every identity this question involved (not every
-        // identity in the input: that would let anyone grow the state without
-        // bound). DESIGN.md §4.4.
+        // Remember the identities this question relied on (not every identity
+        // in the input, nor subjects it was asked about: that would let
+        // anyone grow the state without bound). DESIGN.md §4.4.
         let mut all: BTreeSet<Id> = ids.into_iter().collect();
         all.extend(self.roots.iter().copied());
-        state.save(floor, &self.material, all)
+        let verifier = self.verifier();
+        let remembered = all.into_iter().filter_map(|id| {
+            let mut items = match &*self.material.log(&id) {
+                Ok(log) => log.items().collect::<Vec<_>>(),
+                Err(LogError::Equivocation(e)) => e.items(),
+                Err(_) => return None,
+            };
+            // And its revocations, so that one seen once stays seen even
+            // when a later bundle (or a proof) leaves it out.
+            items.extend(self.material.issued_by(&id).iter().filter_map(|h| {
+                let st = self.material.statement(h)?;
+                let revoke = matches!(st.body.claim, libwrit::Claim::Revoke { .. });
+                (revoke && verifier.statement_status(h, self.now).is_ok())
+                    .then(|| self.material.shippable(h))?
+            }));
+            Some((id, items))
+        });
+        state.save(floor, remembered)
     }
 
     fn deny(&self, parsed: &Parsed, headline: String, d: &Denial) -> Error {
@@ -143,13 +165,6 @@ fn denial_ids(d: &Denial, material: &Material) -> Vec<Id> {
     }
 }
 
-fn subject_id(h: &libwrit::Holder) -> Option<Id> {
-    match h {
-        libwrit::Holder::Id(id) => Some(*id),
-        _ => None,
-    }
-}
-
 pub fn check(parsed: &Parsed) -> Result<()> {
     let [subject_text, tag_text] = parsed.exact(&CHECK, ["SUBJECT", "TAG"])?;
     require_as(parsed, &CHECK)?;
@@ -159,7 +174,7 @@ pub fn check(parsed: &Parsed) -> Result<()> {
     let result = q.verifier().check(&holder, &tag, q.now);
     match result {
         Ok(proof) => {
-            q.persist(proof.ids.iter().copied().chain(subject_id(&holder)))?;
+            q.persist(proof.ids.iter().copied())?;
             if !parsed.flag("quiet") {
                 fs::print(&format!(
                     "{} {} holds {tag}\n{}",
@@ -171,11 +186,7 @@ pub fn check(parsed: &Parsed) -> Result<()> {
             Ok(())
         }
         Err(d) => {
-            q.persist(
-                denial_ids(&d, &q.material)
-                    .into_iter()
-                    .chain(subject_id(&holder)),
-            )?;
+            q.persist(denial_ids(&d, &q.material))?;
             Err(q.deny(
                 parsed,
                 format!("{} does not hold {tag}", display::holder(&holder)),
@@ -193,7 +204,7 @@ pub fn prove(parsed: &Parsed) -> Result<()> {
     let q = Query::setup(parsed, &PROVE, true)?;
     match q.verifier().check(&holder, &tag, q.now) {
         Ok(proof) => {
-            q.persist(proof.ids.iter().copied().chain(subject_id(&holder)))?;
+            q.persist(proof.ids.iter().copied())?;
             let items = proof.items(&q.material);
             fs::print(&items.iter().map(Item::armor).collect::<String>())?;
             if !parsed.flag("quiet") {
@@ -208,11 +219,7 @@ pub fn prove(parsed: &Parsed) -> Result<()> {
             Ok(())
         }
         Err(d) => {
-            q.persist(
-                denial_ids(&d, &q.material)
-                    .into_iter()
-                    .chain(subject_id(&holder)),
-            )?;
+            q.persist(denial_ids(&d, &q.material))?;
             Err(q.deny(
                 parsed,
                 format!("{} does not hold {tag}", display::holder(&holder)),
@@ -249,7 +256,7 @@ pub fn resolve(parsed: &Parsed) -> Result<()> {
             fs::print(&out)
         }
         Err(d) => {
-            q.persist(denial_ids(&d, &q.material).into_iter().chain([path.base]))?;
+            q.persist(denial_ids(&d, &q.material))?;
             Err(q.deny(
                 parsed,
                 format!("{} refers to no one", display::name_path(&path)),
@@ -302,11 +309,7 @@ pub fn verify(parsed: &Parsed) -> Result<()> {
             Ok(())
         }
         Err(d) => {
-            q.persist(
-                denial_ids(&d, &q.material)
-                    .into_iter()
-                    .chain(sig.body.signer.id()),
-            )?;
+            q.persist(denial_ids(&d, &q.material))?;
             let headline = match &d {
                 Denial::NotFound { .. }
                 | Denial::Compromised(_)

@@ -296,11 +296,11 @@ impl Proof {
                 items.extend(log.items());
             }
         }
-        for h in self.statements() {
-            if let Some(st) = material.statement(&h) {
-                items.push(Item::Statement(shippable(st, &st.body.issuer, material)));
-            }
-        }
+        items.extend(
+            self.statements()
+                .iter()
+                .filter_map(|h| material.shippable(h)),
+        );
         if let Some(st) = self.signature.and_then(|h| material.signature(&h)) {
             items.push(Item::Signature(shippable(st, &st.body.signer, material)));
         }
@@ -312,6 +312,15 @@ impl Proof {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+    }
+}
+
+impl Material {
+    /// The statement `hash` as it should travel: only signatures that
+    /// verify, one per index, so junk merged alongside is left behind.
+    pub fn shippable(&self, hash: &Hash) -> Option<Item> {
+        let st = self.statement(hash)?;
+        Some(Item::Statement(shippable(st, &st.body.issuer, self)))
     }
 }
 

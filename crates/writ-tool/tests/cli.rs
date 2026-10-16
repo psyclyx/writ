@@ -1034,6 +1034,69 @@ fn state_remembers_only_what_was_involved() {
         logs.iter().any(|l| l.starts_with(&alice)) || logs.len() == 1,
         "{logs:?}"
     );
+    // Asking about someone, and being told no, doesn't remember them either:
+    // a server checking ids its clients send would otherwise store one log
+    // per request.
+    s.fails(
+        &[
+            "check", "--as", "me", &stranger, "(x)", "--in", "b.writ", "--state", "st",
+        ],
+        1,
+    );
+    let logs: Vec<String> = std::fs::read_dir(s.path("st/logs"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(!logs.iter().any(|l| l.starts_with(&stranger)), "{logs:?}");
+}
+
+#[test]
+fn state_remembers_revocations() {
+    let s = Sandbox::new("revstate");
+    let me = s.init("me");
+    let alice = s.init("alice");
+    let grant = s.read("me/log.writ") + &s.ok(&["grant", "-i", "me", &alice, "(x)"]);
+    std::fs::write(s.path("old.writ"), &grant).unwrap();
+    let check = |bundle: &str| {
+        s.run(&[
+            "check", "--as", &me, &alice, "(x)", "--in", bundle, "--state", "st",
+        ])
+        .0
+    };
+    assert_eq!(check("old.writ"), 0);
+    let hash = s
+        .ok(&["show", "me/issued.writ"])
+        .lines()
+        .find_map(|l| l.strip_prefix("grant "))
+        .unwrap()
+        .to_owned();
+    std::fs::write(
+        s.path("new.writ"),
+        grant + &s.ok(&["revoke", "-i", "me", &hash[..10]]),
+    )
+    .unwrap();
+    assert_eq!(check("new.writ"), 1);
+    // A bundle without the revocation doesn't bring the grant back.
+    assert_eq!(check("old.writ"), 1);
+}
+
+#[test]
+fn as_id_is_never_a_directory() {
+    let s = Sandbox::new("asid");
+    let me = s.init("me");
+    let alice = s.init("alice");
+    s.init("evil");
+    std::fs::write(
+        s.path("b.writ"),
+        s.ok(&["grant", "-i", "evil", &alice, "(admin)"]),
+    )
+    .unwrap();
+    // A directory named after my id, holding someone else's identity.
+    std::fs::rename(s.path("evil"), s.path(&me)).unwrap();
+    s.fails(
+        &["check", "--as", &me, &alice, "(admin)", "--in", "b.writ"],
+        1,
+    );
 }
 
 #[test]

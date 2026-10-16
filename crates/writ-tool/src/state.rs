@@ -1,19 +1,20 @@
-//! Verifier state (`--state DIR`): the clock floor and the identity logs
-//! this verifier has accepted (DESIGN.md §4.4, §9.4).
+//! Verifier state (`--state DIR`): the clock floor, and the identity logs
+//! and revocations this verifier has accepted (DESIGN.md §4.4, §9.4).
 //!
 //! ```text
 //! DIR/floor             the clock floor, decimal seconds since the epoch
-//! DIR/logs/<id>.writ    the log of each identity a question involved
+//! DIR/logs/<id>.writ    the log and revocations of each identity a question
+//!                       relied on
 //! ```
 //!
-//! Persisted logs are added to every query's material, so a verifier never
-//! goes back to an older log head (a stale bundle can't undo a rotation),
-//! and two conflicting events, once seen, stay seen: the identity remains
-//! refused until you delete its file.
+//! Persisted items are added to every query's material, so a verifier never
+//! goes back to an older log head (a stale bundle can't undo a rotation), a
+//! revocation once seen stays seen, and two conflicting events, once seen,
+//! stay seen: the identity remains refused until you delete its file.
 
 use crate::error::{Context, Result, err};
 use crate::fs;
-use libwrit::{Id, Item, LogError, Material, Time};
+use libwrit::{Id, Item, Time};
 use std::path::PathBuf;
 
 pub struct State {
@@ -55,24 +56,19 @@ impl State {
         })
     }
 
-    /// Persists the floor and the logs of `ids` as found in `material`.
+    /// Persists the floor, and for each id what to remember about it: its
+    /// log (or equivocation evidence) and its revocations.
     pub fn save(
         &self,
         floor: Option<Time>,
-        material: &Material,
-        ids: impl IntoIterator<Item = Id>,
+        remembered: impl IntoIterator<Item = (Id, Vec<Item>)>,
     ) -> Result<()> {
         if let Some(floor) = floor
             && Some(floor) != self.floor
         {
             fs::replace(&self.dir.join("floor"), format!("{floor}\n").as_bytes())?;
         }
-        for id in ids {
-            let items: Vec<Item> = match &*material.log(&id) {
-                Ok(log) => log.items().collect(),
-                Err(LogError::Equivocation(e)) => e.items(),
-                Err(_) => continue,
-            };
+        for (id, items) in remembered {
             let text: String = items.iter().map(Item::armor).collect();
             let path = self.dir.join("logs").join(format!("{id}.writ"));
             let unchanged = std::fs::read(&path).is_ok_and(|old| old == text.as_bytes());
