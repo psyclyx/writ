@@ -124,63 +124,133 @@ pub fn read_seeds(path: &str) -> Result<Vec<Seed>> {
     Ok(seeds)
 }
 
-/// Whether `path` names a descriptor the caller handed us (`/dev/fd/N`,
-/// e.g. from process substitution, or `/dev/stdout`).
+/// Whether `path` names standard output.
+pub fn is_stdout(path: &str) -> bool {
+    matches!(path, "-" | "/dev/stdout" | "/dev/fd/1" | "/proc/self/fd/1")
+}
+
+/// Whether two output paths name the same destination.
+pub fn same_output(a: &str, b: &str) -> bool {
+    a == b || (is_stdout(a) && is_stdout(b))
+}
+
+/// Whether `path` names a descriptor the caller handed us, other than
+/// stdout (`/dev/fd/N`, e.g. from process substitution).
 fn is_descriptor(path: &str) -> bool {
-    path.starts_with("/dev/fd/")
-        || path.starts_with("/proc/self/fd/")
-        || matches!(path, "/dev/stdout" | "/dev/stderr")
+    path.starts_with("/dev/fd/") || path.starts_with("/proc/self/fd/") || path == "/dev/stderr"
 }
 
 /// Fails early, before any signing, if `write_secret(path, …)` would refuse.
 pub fn check_secret_target(path: &str) -> Result<()> {
-    if path == "-" || is_descriptor(path) {
+    if is_stdout(path) || is_descriptor(path) {
         return Ok(());
     }
     match std::fs::symlink_metadata(path) {
-        Ok(_) => err(format!(
-            "{path} already exists, and writ never overwrites a key file; choose another path, or '-' for standard output"
-        )),
+        Ok(_) => exists_error(path, true),
         Err(_) => Ok(()),
     }
 }
 
-/// Writes secret key text. `-` is stdout and `/dev/fd/N` is a descriptor
-/// the caller opened; anything else must not exist yet, and is created
-/// with mode 0600. Existing files, FIFOs and symlinks are refused, so a key
-/// can't be steered into something an attacker prepared.
+fn exists_error<T>(path: &str, secret: bool) -> Result<T> {
+    let what = if secret { "a key file" } else { "a file" };
+    err(format!(
+        "{path} already exists, and writ never overwrites {what}; choose another path, or '-' for standard output"
+    ))
+}
+
+/// Writes secret key text to a new [`Output`] with mode 0600.
 pub fn write_secret(path: &str, text: &str) -> Result<()> {
-    if path == "-" {
-        let mut out = std::io::stdout().lock();
-        return out
-            .write_all(text.as_bytes())
-            .and_then(|()| out.flush())
-            .context(|| "writing to stdout".into());
-    }
-    let mut file = if is_descriptor(path) {
-        OpenOptions::new()
-            .write(true)
-            .open(path)
-            .context(|| format!("opening {path}"))?
-    } else {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                return check_secret_target(path);
+    Output::open(path, true)?.write(text)
+}
+
+/// A destination for one write. `-` and `/dev/stdout` are standard output.
+/// `/dev/fd/N` is a descriptor the caller opened; writ opens it again for
+/// appending, so output given to `>>` or a pipe lands after what is already
+/// there. Anything else must not exist yet and is created: existing files,
+/// FIFOs and symlinks are refused, so output can't be steered into
+/// something an attacker prepared.
+///
+/// Open outputs before doing anything that can't be undone: a file that was
+/// created but never written is removed again.
+pub struct Output {
+    path: String,
+    dest: Dest,
+}
+
+enum Dest {
+    Stdout,
+    Descriptor(File),
+    /// A file this command created; `None` once written.
+    Created(Option<File>),
+}
+
+impl Output {
+    /// Opens `path`; a created file gets mode 0600 if `secret`.
+    pub fn open(path: &str, secret: bool) -> Result<Output> {
+        let dest = if is_stdout(path) {
+            Dest::Stdout
+        } else if is_descriptor(path) {
+            let f = OpenOptions::new()
+                .append(true)
+                .open(path)
+                .context(|| format!("opening {path}"))?;
+            Dest::Descriptor(f)
+        } else {
+            let mut options = OpenOptions::new();
+            // O_CREAT|O_EXCL: this also refuses a symlink, even a dangling
+            // one, as the last component.
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            if secret {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
             }
-            Err(e) => return err(format!("creating {path}: {e}")),
+            match options.open(path) {
+                Ok(f) => Dest::Created(Some(f)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return exists_error(path, secret);
+                }
+                Err(e) => return err(format!("creating {path}: {e}")),
+            }
+        };
+        Ok(Output {
+            path: path.to_owned(),
+            dest,
+        })
+    }
+
+    /// Writes all of `text` and closes the output.
+    pub fn write(mut self, text: &str) -> Result<()> {
+        let path = &self.path;
+        match &mut self.dest {
+            Dest::Stdout => {
+                let mut out = std::io::stdout().lock();
+                out.write_all(text.as_bytes())
+                    .and_then(|()| out.flush())
+                    .context(|| "writing to stdout".into())
+            }
+            Dest::Descriptor(f) => f
+                .write_all(text.as_bytes())
+                .context(|| format!("writing {path}")),
+            Dest::Created(slot) => {
+                if let Some(f) = slot {
+                    f.write_all(text.as_bytes())
+                        .and_then(|()| f.sync_all())
+                        .context(|| format!("writing {path}"))?;
+                }
+                *slot = None;
+                Ok(())
+            }
         }
-    };
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all().or(Ok(())))
-        .context(|| format!("writing {path}"))
+    }
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        if let Dest::Created(Some(_)) = self.dest {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 /// Seeds as key-file text: a `# writ …` line saying what they are, then one

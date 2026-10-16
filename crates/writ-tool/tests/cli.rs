@@ -1246,3 +1246,169 @@ fn parallel_issuers_lose_no_records() {
     }
     assert_eq!(s.read("me/issued.writ").matches("-----BEGIN").count(), n);
 }
+
+#[cfg(unix)]
+#[test]
+fn outputs_never_overwrite_and_failures_record_nothing() {
+    let s = Sandbox::new("outputs");
+    s.init("me");
+    let issued = s.read("me/issued.writ");
+    std::fs::write(s.path("data"), b"hello").unwrap();
+    s.ok(&["keygen", "--out", "precious.key"]);
+    let precious = s.read("precious.key");
+    std::os::unix::fs::symlink(s.path("elsewhere"), s.path("dangling")).unwrap();
+
+    // An existing file or a symlink, even a dangling one, is refused, before
+    // anything is signed, written or recorded.
+    for target in ["precious.key", "dangling"] {
+        let err = s.fails(
+            &[
+                "leaf",
+                "-i",
+                "me",
+                "(x)",
+                "--out",
+                "l.key",
+                "--grant-out",
+                target,
+            ],
+            2,
+        );
+        assert!(err.contains("never overwrites"), "{err}");
+        assert!(!s.path("l.key").exists());
+        let err = s.fails(
+            &["sign", "-i", "me", "-c", "app/v1", "data", "--out", target],
+            2,
+        );
+        assert!(err.contains("never overwrites"), "{err}");
+    }
+    assert_eq!(s.read("precious.key"), precious);
+    assert!(!s.path("elsewhere").exists());
+    assert_eq!(s.read("me/issued.writ"), issued);
+
+    // A failure after the output was opened removes it again.
+    let err = s.fails(
+        &[
+            "sign", "-i", "me", "-c", "app/v1", "missing", "--out", "x.sig",
+        ],
+        2,
+    );
+    assert!(err.contains("missing"), "{err}");
+    assert!(!s.path("x.sig").exists());
+    let err = s.fails(
+        &[
+            "leaf",
+            "-i",
+            "me",
+            "(x)",
+            "--out",
+            "precious.key",
+            "--grant-out",
+            "g.writ",
+        ],
+        2,
+    );
+    assert!(err.contains("never overwrites"), "{err}");
+    assert!(!s.path("g.writ").exists());
+    assert_eq!(s.read("me/issued.writ"), issued);
+
+    // Both outputs can't share a destination.
+    let err = s.fails(
+        &[
+            "leaf",
+            "-i",
+            "me",
+            "(x)",
+            "--out",
+            "-",
+            "--grant-out",
+            "/dev/stdout",
+        ],
+        2,
+    );
+    assert!(err.contains("must differ"), "{err}");
+
+    s.ok(&[
+        "sign", "-i", "me", "-c", "app/v1", "data", "--out", "data.sig",
+    ]);
+    s.ok(&[
+        "leaf",
+        "-i",
+        "me",
+        "(x)",
+        "--out",
+        "l.key",
+        "--grant-out",
+        "g.writ",
+    ]);
+    s.ok(&[
+        "verify", "--as", "me", "-t", "()", "-c", "app/v1", "data", "data.sig",
+    ]);
+    assert!(s.ok(&["show", "g.writ"]).starts_with("grant "));
+}
+
+#[cfg(unix)]
+#[test]
+fn descriptor_outputs_append() {
+    let s = Sandbox::new("descriptors");
+    std::fs::write(s.path("keys.txt"), "# kept\n").unwrap();
+    // `writ keygen --out /dev/stdout >> keys.txt`
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(s.path("keys.txt"))
+        .unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_writ"))
+        .args(["keygen", "--out", "/dev/stdout"])
+        .current_dir(&s.dir)
+        .stdout(file)
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    // `writ keygen --out /dev/fd/3 3>> keys.txt`, and to a pipe.
+    let sh = |script: &str| {
+        Command::new("sh")
+            .args(["-c", script, env!("CARGO_BIN_EXE_writ")])
+            .current_dir(&s.dir)
+            .stderr(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    assert!(
+        sh(r#""$0" keygen --out /dev/fd/3 3>> keys.txt"#)
+            .status
+            .success()
+    );
+    let piped = sh(r#""$0" keygen --out /dev/fd/3 3>&1 > /dev/null"#);
+    assert!(piped.status.success());
+    assert!(String::from_utf8_lossy(&piped.stdout).contains("WRIT-SECRET-KEY-1"));
+    let keys = s.read("keys.txt");
+    assert!(keys.starts_with("# kept\n"), "{keys}");
+    assert_eq!(keys.matches("WRIT-SECRET-KEY-1").count(), 2, "{keys}");
+
+    // Two secrets never share standard output, however it is named.
+    for (key_out, next_out) in [("/dev/stdout", "-"), ("-", "/dev/fd/1")] {
+        let err = s.fails(
+            &["init", "me", "--key-out", key_out, "--next-out", next_out],
+            2,
+        );
+        assert!(err.contains("must differ"), "{err}");
+        assert!(!s.path("me").exists());
+    }
+    s.init("me");
+    let err = s.fails(
+        &[
+            "rotate",
+            "-i",
+            "me",
+            "--next-key",
+            "me-next.key",
+            "--next-out",
+            "-",
+            "--key-out",
+            "/dev/stdout",
+        ],
+        2,
+    );
+    assert!(err.contains("must differ"), "{err}");
+}

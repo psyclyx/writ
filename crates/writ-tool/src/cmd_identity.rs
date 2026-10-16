@@ -81,8 +81,8 @@ pub fn init(parsed: &Parsed) -> Result<()> {
     })?;
     let key_out_default = format!("{}/{CURRENT_KEY}", dir.trim_end_matches('/'));
     let key_out = parsed.value("key-out").unwrap_or(&key_out_default);
-    if next_out == "-" && key_out == "-" {
-        return err("--next-out and --key-out can't both be stdout");
+    if fs::same_output(next_out, key_out) {
+        return err("--next-out and --key-out must differ: each gets its own secret key");
     }
     let max_validity = duration_arg(parsed, "max-validity")?;
     for p in [next_out, key_out] {
@@ -132,7 +132,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
         return Err(e);
     }
 
-    let stdout_taken = next_out == "-" || key_out == "-";
+    let stdout_taken = fs::is_stdout(next_out) || fs::is_stdout(key_out);
     if !stdout_taken {
         fs::print(&format!("{id}\n"))?;
     }
@@ -308,8 +308,8 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     }
     let key_out = match parsed.value("key-out") {
         Some(p) => {
-            if Some(p) == next_out && p == "-" {
-                return err("--next-out and --key-out can't both be standard output");
+            if next_out.is_some_and(|n| fs::same_output(n, p)) {
+                return err("--next-out and --key-out must differ: each gets its own secret key");
             }
             fs::check_secret_target(p)?;
             KeyOut::Path(p.to_owned())
@@ -464,7 +464,7 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
         }
         _ => lines.push("  next keys    unchanged".to_owned()),
     }
-    if next_out != Some("-") || !parsed.flag("quiet") {
+    if !next_out.is_some_and(fs::is_stdout) || !parsed.flag("quiet") {
         say(parsed, lines.join("\n"));
     }
     Ok(())

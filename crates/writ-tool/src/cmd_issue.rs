@@ -33,7 +33,6 @@ fn issue(
     parsed: &Parsed,
     ident: &mut IdentityDir,
     statement: Statement,
-    out: Option<&str>,
 ) -> Result<libwrit::Signed<Statement>> {
     let signers = ident.signers(parsed.values("key"))?;
     let refs: Vec<&dyn Signer> = signers.iter().map(|s| s as &dyn Signer).collect();
@@ -41,11 +40,7 @@ fn issue(
         .map_err(|e| Error::Msg(e.to_string()))?;
     let item = Item::Statement(signed.clone());
     ident.record(std::slice::from_ref(&item))?;
-    match out {
-        Some(path) => std::fs::write(path, item.armor())
-            .map_err(|e| Error::Msg(format!("writing {path}: {e}")))?,
-        None => fs::emit(&item, Some(&ident.dir.join(crate::ident::ISSUED)))?,
-    }
+    fs::emit(&item, Some(&ident.dir.join(crate::ident::ISSUED)))?;
     Ok(signed)
 }
 
@@ -100,7 +95,6 @@ pub fn name(parsed: &Parsed) -> Result<()> {
                 subject: subj.clone(),
             },
         },
-        None,
     )?;
     say(
         parsed,
@@ -152,7 +146,6 @@ pub fn grant(parsed: &Parsed) -> Result<()> {
                 delegate,
             },
         },
-        None,
     )?;
     say(
         parsed,
@@ -262,7 +255,6 @@ pub fn revoke(parsed: &Parsed) -> Result<()> {
             note: note(parsed)?,
             claim: Claim::Revoke { target },
         },
-        None,
     )?;
     say(
         parsed,
@@ -283,6 +275,15 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
     let mut ident = identity(parsed, &LEAF)?;
     let tag = subject::tag(tag_text)?;
     fs::check_secret_target(out)?;
+    let grant_out = match parsed.value("grant-out") {
+        Some(p) if fs::same_output(p, out) => {
+            return err(
+                "--out and --grant-out must differ: one gets the secret key, the other the grant",
+            );
+        }
+        Some(p) => Some(fs::Output::open(p, false)?),
+        None => None,
+    };
     let (issuer, issued) = base(&ident, wall_clock());
     let expires = expiry(parsed, issued, None, Some(LEAF_CEILING))?;
     let Some(expires) = expires else {
@@ -338,10 +339,9 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
     )?;
     let item = Item::Statement(signed.clone());
     ident.record(std::slice::from_ref(&item))?;
-    match parsed.value("grant-out") {
-        Some(path) => std::fs::write(path, item.armor())
-            .map_err(|e| Error::Msg(format!("writing {path}: {e}")))?,
-        None if out == "-" => {
+    match grant_out {
+        Some(o) => o.write(&item.armor())?,
+        None if fs::is_stdout(out) => {
             crate::note(format!(
                 "the key went to standard output, so the grant was not printed. It is in {}/issued.writ, and 'writ export -i {}' prints it",
                 ident.name(),
@@ -371,6 +371,11 @@ pub fn sign(parsed: &Parsed) -> Result<()> {
     let context = parsed.value("context").ok_or_else(|| {
         SIGN.usage_error("--context CONTEXT is required, e.g. --context example/release/v1".into())
     })?;
+    // Opened first: if it can't be created, nothing is signed or recorded.
+    let out = parsed
+        .value("out")
+        .map(|p| fs::Output::open(p, false))
+        .transpose()?;
     let hash = fs::hash_input(file, "the data to sign")?;
     let issued = wall_clock();
     let (item, by, ident) = match (parsed.value("identity"), parsed.value("leaf")) {
@@ -415,14 +420,8 @@ pub fn sign(parsed: &Parsed) -> Result<()> {
     if let Some(mut ident) = ident {
         ident.record(std::slice::from_ref(&item))?;
     }
-    match parsed.value("out") {
-        Some(path) => {
-            if std::path::Path::new(path).exists() {
-                return err(format!("{path} already exists"));
-            }
-            std::fs::write(path, item.armor())
-                .map_err(|e| Error::Msg(format!("writing {path}: {e}")))?;
-        }
+    match out {
+        Some(o) => o.write(&item.armor())?,
         None => fs::print(&item.armor())?,
     }
     let Item::Signature(s) = &item else {

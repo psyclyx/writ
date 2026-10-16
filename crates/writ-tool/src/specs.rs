@@ -473,7 +473,7 @@ pub static LEAF: Spec = Spec {
             "grant-out",
             "PATH",
             Value::OutFile,
-            "where to write the grant (default: standard output)",
+            "where to write the grant, a new file (default: standard output)",
         ),
         opt(
             "expires",
@@ -535,7 +535,7 @@ pub static SIGN: Spec = Spec {
             "out",
             "PATH",
             Value::OutFile,
-            "write the signature to PATH instead of standard output",
+            "write the signature to PATH, a new file, instead of standard output",
         ),
         flag("quiet", "print only the signature").short('q'),
     ],
@@ -900,9 +900,11 @@ pub static MANUAL: &[(&str, &[&str])] = &[
              the key is and which identity it belongs to. The file is not \
              encrypted. writ creates key \
              files that only their owner can read, and never overwrites a \
-             file. Commands that read keys accept - (standard input) and \
-             /dev/fd/N, and commands that write keys accept -, so keys can \
-             stay encrypted with age(1):",
+             file: a path to write to must not exist yet. Commands that read \
+             keys accept - (standard input) and /dev/fd/N. Commands that \
+             write keys or other files accept - (standard output) and \
+             /dev/fd/N, which writ opens for appending, so keys can stay \
+             encrypted with age(1):",
             "    writ grant -i me --key <(age -d me.key.age) alice '(ssh)'",
         ],
     ),
