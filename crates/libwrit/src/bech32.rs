@@ -1,8 +1,43 @@
 //! Bech32m (BIP-350) for byte payloads, with BIP-173's length and case rules.
+//!
+//! Secret key files are bech32m, so the payload is handled without
+//! data-dependent branches or table indexing: characters are mapped by
+//! scanning the whole alphabet with masks, and the checksum uses masks
+//! instead of branches. Only validity (a yes/no about the whole string) and
+//! lengths, which are public, decide control flow.
+
+use zeroize::Zeroizing;
 
 const CHARSET: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const BECH32M_CONST: u32 = 0x2bc8_30a3;
 const MAX_LEN: usize = 90;
+
+/// 0xff if `a == b`, else 0, without branching.
+fn eq_mask(a: u8, b: u8) -> u8 {
+    let x = u16::from(a ^ b);
+    (x.wrapping_sub(1) >> 8) as u8
+}
+
+/// The character for a 5-bit value.
+fn to_char(v: u8) -> u8 {
+    let mut c = 0;
+    for (i, &ch) in (0u8..).zip(CHARSET) {
+        c |= ch & eq_mask(i, v);
+    }
+    c
+}
+
+/// The 5-bit value of a (lower-case) character, and 0xff if it is in the
+/// alphabet (else 0).
+fn from_char(c: u8) -> (u8, u8) {
+    let (mut v, mut found) = (0, 0);
+    for (i, &ch) in (0u8..).zip(CHARSET) {
+        let m = eq_mask(ch, c);
+        v |= i & m;
+        found |= m;
+    }
+    (v, found)
+}
 
 fn polymod(values: impl IntoIterator<Item = u8>) -> u32 {
     const GEN: [u32; 5] = [
@@ -17,9 +52,7 @@ fn polymod(values: impl IntoIterator<Item = u8>) -> u32 {
         let top = chk >> 25;
         chk = (chk & 0x01ff_ffff) << 5 ^ u32::from(v);
         for (i, g) in GEN.iter().enumerate() {
-            if (top >> i) & 1 == 1 {
-                chk ^= g;
-            }
+            chk ^= g & 0u32.wrapping_sub((top >> i) & 1);
         }
     }
     chk
@@ -61,7 +94,7 @@ fn convert_bits(data: &[u8], from: u32, to: u32, pad: bool) -> Option<Vec<u8>> {
 /// Encodes `data` under `hrp` (which must be lower-case ASCII). Lower-case output.
 pub fn encode(hrp: &str, data: &[u8]) -> String {
     let hrp_bytes = hrp.as_bytes();
-    let five = convert_bits(data, 8, 5, true).unwrap_or_default();
+    let five = Zeroizing::new(convert_bits(data, 8, 5, true).unwrap_or_default());
     let chk = polymod(
         hrp_expand(hrp_bytes)
             .chain(five.iter().copied())
@@ -72,9 +105,7 @@ pub fn encode(hrp: &str, data: &[u8]) -> String {
     s.push('1');
     let checksum = (0..6).map(|i| ((chk >> (5 * (5 - i))) & 31) as u8);
     for v in five.iter().copied().chain(checksum) {
-        s.push(char::from(
-            CHARSET.get(usize::from(v)).copied().unwrap_or(b'q'),
-        ));
+        s.push(char::from(to_char(v)));
     }
     s
 }
@@ -92,18 +123,25 @@ pub fn decode(text: &str) -> Option<(String, Vec<u8>)> {
     if has_lower && has_upper {
         return None;
     }
-    let lower = text.to_ascii_lowercase();
+    let lower = Zeroizing::new(text.to_ascii_lowercase());
+    // '1' is not in the alphabet: the separator is the last '1', found
+    // after scanning every character.
     let sep = lower.rfind('1')?;
     let (hrp, rest) = lower.split_at(sep);
     let data_part = rest.get(1..)?;
     if hrp.is_empty() || data_part.len() < 6 {
         return None;
     }
-    let values: Vec<u8> = data_part
-        .bytes()
-        .map(|c| CHARSET.iter().position(|&x| x == c).map(|p| p as u8))
-        .collect::<Option<_>>()?;
-    if polymod(hrp_expand(hrp.as_bytes()).chain(values.iter().copied())) != BECH32M_CONST {
+    let mut values = Zeroizing::new(Vec::with_capacity(data_part.len()));
+    let mut all_found = 0xff;
+    for c in data_part.bytes() {
+        let (v, found) = from_char(c);
+        values.push(v);
+        all_found &= found;
+    }
+    if all_found != 0xff
+        || polymod(hrp_expand(hrp.as_bytes()).chain(values.iter().copied())) != BECH32M_CONST
+    {
         return None;
     }
     let payload = values.get(..values.len() - 6)?;
@@ -216,6 +254,21 @@ mod tests {
             program.map(|p| crate::hash::hex(&p)),
             Some("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into())
         );
+    }
+
+    /// The branch-free maps agree with the alphabet, both ways.
+    #[test]
+    fn character_maps() {
+        for c in 0..=255u8 {
+            let (v, found) = from_char(c);
+            match CHARSET.iter().position(|&x| x == c) {
+                Some(p) => {
+                    assert_eq!((v, found), (p as u8, 0xff), "{c}");
+                    assert_eq!(to_char(v), c);
+                }
+                None => assert_eq!(found, 0, "{c}"),
+            }
+        }
     }
 
     #[test]

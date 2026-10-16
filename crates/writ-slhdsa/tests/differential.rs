@@ -76,7 +76,7 @@ fn sign_internal_matches() {
             rng.array()
         };
 
-        let sig = sign_internal(&sk, &msg, &addrnd);
+        let sig = sign_internal(&sk, &msg, &addrnd).unwrap();
         let their = theirs.slh_sign_internal(&[&msg], Some(&addrnd));
         assert_eq!(sig.as_slice(), their.to_bytes().as_slice());
         if deterministic {

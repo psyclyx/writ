@@ -82,7 +82,7 @@ fn siggen(interface: &str, deterministic: &str) {
         let expected = c.hex("signature");
         let sig = match c.str("interface") {
             "internal" => {
-                let sig = sign_internal(&sk, &msg, &rnd);
+                let sig = sign_internal(&sk, &msg, &rnd).unwrap();
                 assert!(verify_internal(&pk, &msg, &sig), "{}", c.id());
                 sig
             }

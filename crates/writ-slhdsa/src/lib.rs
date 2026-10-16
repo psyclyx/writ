@@ -281,16 +281,26 @@ fn verify_pieces(pk: &VerifyingKey, msg: &Pieces<'_>, sig: &[u8]) -> bool {
 }
 
 /// FIPS 205 Alg. 19 `slh_sign_internal`. `addrnd` is `opt_rand`; pass
-/// PK.seed for the deterministic variant.
+/// PK.seed for the deterministic variant. For test vectors: writ signs with
+/// [`sign`]. Like [`sign`], it verifies the signature before returning it.
 ///
-/// **This skips self-verification.** It exists for test vectors and for
-/// composition by callers that do their own checks; otherwise use [`sign`].
+/// # Errors
+///
+/// [`Error::SelfVerificationFailed`] if the signature does not verify.
 #[doc(hidden)]
-#[must_use]
-pub fn sign_internal(sk: &SigningKey, msg: &[u8], addrnd: &[u8; N]) -> [u8; SIGNATURE_SIZE] {
+pub fn sign_internal(
+    sk: &SigningKey,
+    msg: &[u8],
+    addrnd: &[u8; N],
+) -> Result<[u8; SIGNATURE_SIZE], Error> {
     let sig = sign_pieces(sk, &[msg], addrnd).to_bytes();
+    let ok = verify_pieces(&sk.verifying_key(), &[msg], &sig);
     scrub_stack();
-    sig
+    if ok {
+        Ok(sig)
+    } else {
+        Err(Error::SelfVerificationFailed)
+    }
 }
 
 /// FIPS 205 Alg. 20 `slh_verify_internal`. Total: a signature of the wrong

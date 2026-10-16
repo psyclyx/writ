@@ -89,7 +89,7 @@ fn main() {
             "sign_internal",
             median(
                 || {
-                    black_box(writ_slhdsa::sign_internal(&sk, black_box(&msg), &addrnd));
+                    let _ = black_box(writ_slhdsa::sign_internal(&sk, black_box(&msg), &addrnd));
                 },
                 runs,
             ),

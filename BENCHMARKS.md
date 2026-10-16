@@ -13,7 +13,8 @@ Measured 2026-10-11.
 
 `sign` includes writ's self-verification of the signature before release
 (< 0.1% of the cost); RustCrypto's `try_sign_with_context` does not
-self-verify. Both produce byte-identical signatures (checked by the bench).
+self-verify. The `sign_internal` row was measured before it also
+self-verified (2026-10-16); add about 0.56 ms. Both produce byte-identical signatures (checked by the bench).
 
 **Method.** `cargo run --release -p writ-slhdsa --example bench 21`
 (`crates/writ-slhdsa/examples/bench.rs`). Default release profile
