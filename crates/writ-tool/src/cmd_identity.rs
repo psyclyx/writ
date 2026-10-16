@@ -100,8 +100,11 @@ pub fn init(parsed: &Parsed) -> Result<()> {
     )
     .map_err(|e| Error::Msg(e.to_string()))?;
 
-    let path = ident::create_dir(dir)?;
+    let new_dir = ident::NewDir::create(dir)?;
+    let path = &new_dir.path;
     let result = (|| {
+        ident::check_key_path(path, next_out, false)?;
+        ident::check_key_path(path, key_out, true)?;
         if !next_seeds.is_empty() {
             fs::write_secret(
                 next_out,
@@ -123,12 +126,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
         fs::replace(&path.join(LOG), Item::Event(inception).armor().as_bytes())
     })();
     if let Err(e) = result {
-        // Leave nothing half-made behind (the key files we created stay:
-        // never delete a key).
-        for f in [LOG, ISSUED, NEXT] {
-            let _ = std::fs::remove_file(path.join(f));
-        }
-        let _ = std::fs::remove_dir(&path);
+        new_dir.abandon();
         return Err(e);
     }
 
@@ -262,6 +260,12 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     // Serialise rotations of this identity: two concurrent rotations would
     // sign two different events with the same number.
     let ident = IdentityDir::open_locked(dir, true)?;
+    if let Some(p) = next_out {
+        ident::check_key_path(&ident.dir, p, false)?;
+    }
+    if let Some(p) = parsed.value("key-out") {
+        ident::check_key_path(&ident.dir, p, true)?;
+    }
     let revealed = ident.next_authority()?;
     let old_authority = ident.log.head().authority().clone();
 

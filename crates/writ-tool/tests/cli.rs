@@ -1412,3 +1412,125 @@ fn descriptor_outputs_append() {
     );
     assert!(err.contains("must differ"), "{err}");
 }
+
+#[test]
+fn keys_never_go_where_writ_keeps_state() {
+    let s = Sandbox::new("keypaths");
+    for f in [
+        "issued.writ",
+        "log.writ",
+        "next.writ",
+        "current.key",
+        ".lock",
+    ] {
+        let next_out = format!("me/{f}");
+        let err = s.fails(
+            &["init", "me", "--next-out", &next_out, "--key-out", "k.key"],
+            2,
+        );
+        assert!(err.contains("inside me"), "{f}: {err}");
+        assert!(!s.path("me").exists(), "{f}");
+    }
+    let err = s.fails(
+        &[
+            "init",
+            "me",
+            "--next-out",
+            "n.key",
+            "--key-out",
+            "me/log.writ",
+        ],
+        2,
+    );
+    assert!(err.contains("inside me"), "{err}");
+    assert!(!s.path("n.key").exists() && !s.path("k.key").exists());
+    // An empty directory that was already there is left in place.
+    std::fs::create_dir(s.path("empty")).unwrap();
+    s.fails(&["init", "empty", "--next-out", "empty/next.writ"], 2);
+    assert!(s.path("empty").is_dir());
+    s.ok(&["init", "empty", "--next-out", "empty-next.key", "-q"]);
+
+    let id = s.ok(&[
+        "init",
+        "me",
+        "--next-out",
+        "me-next.key",
+        "--key-out",
+        "me/current.key",
+    ]);
+    assert_eq!(s.ok(&["id", "me"]), id);
+    for out in ["me/current.key.new", "me/x.key", "./me/../me/new.key"] {
+        let err = s.fails(
+            &[
+                "rotate",
+                "-i",
+                "me",
+                "--next-key",
+                "me-next.key",
+                "--next-out",
+                out,
+            ],
+            2,
+        );
+        assert!(err.contains("inside me"), "{out}: {err}");
+        let err = s.fails(
+            &[
+                "rotate",
+                "-i",
+                "me",
+                "--next-key",
+                "me-next.key",
+                "--next-out",
+                "n.key",
+                "--key-out",
+                out,
+            ],
+            2,
+        );
+        assert!(err.contains("inside me"), "{out}: {err}");
+    }
+    assert!(!s.path("n.key").exists());
+    s.ok(&[
+        "rotate",
+        "-i",
+        "me",
+        "--next-key",
+        "me-next.key",
+        "--next-out",
+        "n.key",
+    ]);
+}
+
+#[test]
+fn concurrent_inits_of_one_directory() {
+    let s = Sandbox::new("initrace");
+    let n = 6;
+    let results: Vec<(i32, String)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                let s = &s;
+                scope.spawn(move || {
+                    let next = format!("next{i}.key");
+                    let (code, out, _) = s.run(&["init", "me", "--next-out", &next, "-q"]);
+                    (code, out)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let winners: Vec<usize> = (0..n).filter(|i| results[*i].0 == 0).collect();
+    assert_eq!(winners.len(), 1, "{results:?}");
+    let w = winners[0];
+    assert_eq!(s.ok(&["id", "me"]), results[w].1);
+    let alice = s.init("alice");
+    s.ok(&["grant", "-i", "me", &alice, "(x)"]);
+    s.ok(&[
+        "rotate",
+        "-i",
+        "me",
+        "--next-key",
+        &format!("next{w}.key"),
+        "--next-out",
+        "n.key",
+    ]);
+}

@@ -136,7 +136,7 @@ pub fn same_output(a: &str, b: &str) -> bool {
 
 /// Whether `path` names a descriptor the caller handed us, other than
 /// stdout (`/dev/fd/N`, e.g. from process substitution).
-fn is_descriptor(path: &str) -> bool {
+pub fn is_descriptor(path: &str) -> bool {
     path.starts_with("/dev/fd/") || path.starts_with("/proc/self/fd/") || path == "/dev/stderr"
 }
 

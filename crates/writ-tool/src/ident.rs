@@ -202,21 +202,85 @@ impl IdentityDir {
     }
 }
 
-/// Creates the directory for a new identity: must not exist or be empty.
-pub fn create_dir(dir: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(dir);
-    match std::fs::read_dir(&path) {
-        Ok(mut entries) => {
-            if entries.next().is_some() {
-                return err(format!("{dir} already exists and is not empty"));
-            }
+/// The directory of an identity that `writ init` is making: it did not
+/// exist or was empty, and it stays locked, so a concurrent init of the
+/// same directory waits and then finds it taken.
+pub struct NewDir {
+    pub path: PathBuf,
+    /// Whether this process created the directory.
+    created: bool,
+    _lock: std::fs::File,
+}
+
+impl NewDir {
+    pub fn create(dir: &str) -> Result<NewDir> {
+        let path = PathBuf::from(dir);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).context(|| format!("creating {dir}"))?;
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(&path).context(|| format!("creating {dir}"))?;
+        let created = match std::fs::create_dir(&path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(e) => return err(format!("creating {dir}: {e}")),
+        };
+        let lock = fs::lock_dir(&path, true);
+        let empty = std::fs::read_dir(&path).map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .all(|e| e.file_name() == ".lock")
+        });
+        match (lock, empty) {
+            (Ok(lock), Ok(true)) => Ok(NewDir {
+                path,
+                created,
+                _lock: lock,
+            }),
+            (Err(e), _) => Err(e),
+            (_, Ok(false)) => err(format!("{dir} already exists and is not empty")),
+            (_, Err(e)) => err(format!("{dir}: {e}")),
         }
-        Err(e) => return err(format!("{dir}: {e}")),
     }
-    Ok(path)
+
+    /// Removes what init wrote, after a failure. Key files stay: writ never
+    /// deletes a key.
+    pub fn abandon(self) {
+        for f in [LOG, ISSUED, NEXT] {
+            let _ = std::fs::remove_file(self.path.join(f));
+        }
+        if self.created {
+            let _ = std::fs::remove_file(self.path.join(".lock"));
+            let _ = std::fs::remove_dir(&self.path);
+        }
+    }
+}
+
+/// Refuses a path for a secret key inside identity directory `dir`, where
+/// writ keeps its own files, except `DIR/current.key` if `current`. Checked
+/// before anything is written: a key written there could be replaced by,
+/// or replace, the identity's state.
+pub fn check_key_path(dir: &Path, path: &str, current: bool) -> Result<()> {
+    if fs::is_stdout(path) || fs::is_descriptor(path) {
+        return Ok(());
+    }
+    let p = Path::new(path);
+    let parent = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent = parent
+        .canonicalize()
+        .context(|| format!("{path}: directory {}", parent.display()))?;
+    let Ok(dir_real) = dir.canonicalize() else {
+        return Ok(());
+    };
+    if parent == dir_real && !(current && p.file_name() == Some(CURRENT_KEY.as_ref())) {
+        return err(format!(
+            "{path} is inside {}, where writ keeps the identity's own files; \
+             choose a path outside it",
+            dir.display()
+        ));
+    }
+    Ok(())
 }
 
 /// `writ rotate` writes the new current key to `DIR/current.key.new` before

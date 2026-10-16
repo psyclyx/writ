@@ -162,7 +162,7 @@ pub static INIT: Spec = Spec {
             "next-out",
             "PATH",
             Value::OutFile,
-            "where to write the next key; '-' means standard output",
+            "where to write the next key, outside DIR; '-' means standard output",
         )
         .required(),
         NEXT_N,
@@ -249,7 +249,7 @@ pub static ROTATE: Spec = Spec {
             "next-out",
             "PATH",
             Value::OutFile,
-            "where to write the new next key; '-' means standard output",
+            "where to write the new next key, outside DIR; '-' means standard output",
         ),
         flag(
             "same-next",
