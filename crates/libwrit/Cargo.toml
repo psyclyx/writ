@@ -19,3 +19,4 @@ zeroize.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+ml-dsa.workspace = true

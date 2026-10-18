@@ -25,6 +25,7 @@ zeroize = "1.8"
 
 # dev-only
 slh-dsa = "=0.2.0-rc.5"
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc"] }
 proptest = "1.12"
 
 [workspace.lints.rust]
@@ -47,6 +48,10 @@ opt-level = 3
 [profile.dev.package.libcrux-ed25519]
 opt-level = 3
 [profile.dev.package.slh-dsa]
+opt-level = 3
+[profile.dev.package.ml-dsa]
+opt-level = 3
+[profile.dev.package.module-lattice]
 opt-level = 3
 [profile.dev.package.sha3]
 opt-level = 3

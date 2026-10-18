@@ -34,8 +34,8 @@ Runtime dependencies are limited to this list. Ask before adding anything else.
 | `getrandom`       | writ-tool only       | the OS RNG                                                                                                                               |
 
 - Pin libcrux crates to exact versions (`=x.y.z`). They are pre-0.1.
-- Allowed dev-dependencies: `proptest`, and RustCrypto `slh-dsa` for
-  differential testing only. Ask before adding others.
+- Allowed dev-dependencies: `proptest`, and RustCrypto `slh-dsa` and `ml-dsa`
+  for differential testing only. Ask before adding others.
 - Implement these ourselves: csexp, armor, bech32m, SLH-DSA, the composite
   construction, CLI argument parsing (keep it small and hand-written).
 
