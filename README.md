@@ -142,6 +142,7 @@ crates/writ-sexp     canonical s-expressions, readable form, armor
 crates/writ-slhdsa   SLH-DSA-SHAKE-128s (FIPS 205)
 crates/libwrit       the library: encoding, keys, logs, issuing, verification
 crates/writ-tool     the writ command
+xtask/               development tasks (cargo xtask vectors, cargo xtask man)
 fuzz/                fuzz targets for the decoders
 ```
 
@@ -152,12 +153,13 @@ treefmt, clippy and `cargo audit`. Without direnv, use `nix-shell -A shell`
 and `git config core.hooksPath hooks`.
 
 ```
-cargo nextest run --workspace                                    # tests
-treefmt                                                          # format
-WRIT_REGENERATE_VECTORS=1 cargo test -p libwrit --test vectors   # vectors/
-WRIT_REGENERATE_MAN=1 cargo test -p writ-tool man                # doc/man/
+cargo nextest run --workspace   # tests
+treefmt                         # format
+cargo xtask vectors             # write vectors/ (generated part)
+cargo xtask man                 # write doc/man/
 ```
 
 The man pages, `--help` and the completion scripts are all generated from
-`crates/writ-tool/src/specs.rs`. Fuzzing is described in
+`crates/writ-tool/src/specs.rs`. A test fails if a committed vector or man
+page differs from what its task writes. Fuzzing is described in
 [fuzz/README.md](fuzz/README.md).

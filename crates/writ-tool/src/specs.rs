@@ -824,11 +824,9 @@ pub fn all() -> impl Iterator<Item = &'static Spec> {
 }
 
 /// The date on the man pages; bump with each release.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const MAN_DATE: &str = "2026-10-12";
 
 /// Sections of writ(1) after DESCRIPTION.
-#[cfg_attr(not(test), allow(dead_code))]
 pub static MANUAL: &[(&str, &[&str])] = &[
     (
         "IDENTITIES AND KEYS",
@@ -948,7 +946,6 @@ pub static MANUAL: &[(&str, &[&str])] = &[
 ];
 
 /// FILES in writ(1).
-#[cfg_attr(not(test), allow(dead_code))]
 pub static FILES: &[(&str, &str)] = &[
     ("DIR/log.writ", "the identity log"),
     (
@@ -976,7 +973,6 @@ pub static FILES: &[(&str, &str)] = &[
 ];
 
 /// ENVIRONMENT in writ(1).
-#[cfg_attr(not(test), allow(dead_code))]
 pub static ENVIRONMENT: &[(&str, &str)] = &[
     (
         "NO_COLOR",
@@ -991,7 +987,6 @@ pub static ENVIRONMENT: &[(&str, &str)] = &[
 ];
 
 /// EXIT STATUS, for every page.
-#[cfg_attr(not(test), allow(dead_code))]
 pub static EXIT_STATUS: &[(&str, &str)] = &[
     ("0", "success; for questions, the answer is yes"),
     (
@@ -1006,7 +1001,6 @@ pub static EXIT_STATUS: &[(&str, &str)] = &[
 ];
 
 /// EXAMPLES in writ(1).
-#[cfg_attr(not(test), allow(dead_code))]
 pub static TOUR: &[(&str, &str)] = &[
     (
         "Create two identities:",
@@ -1023,7 +1017,6 @@ pub static TOUR: &[(&str, &str)] = &[
 ];
 
 /// STANDARDS in writ(1).
-#[cfg_attr(not(test), allow(dead_code))]
 pub const STANDARDS: &str = "SLH-DSA (FIPS 205), ML-DSA (FIPS 204), Ed25519 (RFC 8032), SHA-3 and \
      SHAKE (FIPS 202), bech32m (BIP 350). The exact formats are in SPEC.md in \
      the writ source.";

@@ -1,8 +1,9 @@
 # Test vectors
 
-Everything here is checked by `cargo test`. Files we generate are regenerated
-with `WRIT_REGENERATE_VECTORS=1 cargo test -p libwrit --test vectors`;
-generation is deterministic (a fixed, non-cryptographic RNG stands in for
+Everything here is checked by `cargo test`. `cargo xtask vectors` writes the
+files we generate (the generator is `xtask/src/vectors.rs`), and a test
+fails if a committed file differs from what it writes. Generation is
+deterministic (a fixed, non-cryptographic RNG stands in for
 signing randomness), so regenerating changes nothing unless the format did.
 
 ## External
@@ -39,4 +40,5 @@ lines are comments. Hex is lower case.
 Reason kinds: `malformed`, `log`, `unknown-event`, `not-kept`,
 `unknown-leaf` (the leaf key is not in the material), `bad-signature`, `suite`, `revoked`, `not-yet-valid`, `expired`,
 `max-validity`, `leaf-ceiling`, `covers` (reaches the subject with too narrow
-a tag), `outside-issuer` (grants outside what its issuer holds).
+a tag), `outside-issuer` (grants outside what its issuer holds), `limit` (not
+decided within the query's resource limits; SPEC §11).

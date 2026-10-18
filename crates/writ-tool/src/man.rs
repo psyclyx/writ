@@ -1,8 +1,7 @@
-//! Man pages in roff, generated from [`crate::specs`]: writ(1) and one
-//! writ-COMMAND(1) per command. They are committed under `doc/man/`; a test
-//! checks they are current (regenerate with `WRIT_REGENERATE_MAN=1 cargo
-//! test -p writ-tool man`) and lints them with mandoc when it is installed.
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+//! Man pages in roff, generated from the command specs: writ(1) and one
+//! writ-COMMAND(1) per command. They are committed under `doc/man/`;
+//! `cargo xtask man` writes them, and a test in `xtask` checks they are
+//! current.
 
 use crate::args::{Opt, Spec, Word};
 use crate::specs::{self, GROUPS};
@@ -244,32 +243,13 @@ pub fn pages() -> Vec<(String, String)> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
 
     fn dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../doc/man")
-    }
-
-    #[test]
-    fn man_pages_are_current() {
-        let regenerate = std::env::var_os("WRIT_REGENERATE_MAN").is_some();
-        if regenerate {
-            std::fs::create_dir_all(dir()).unwrap();
-        }
-        for (name, page) in pages() {
-            let path = dir().join(&name);
-            if regenerate {
-                std::fs::write(&path, &page).unwrap();
-            } else {
-                let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
-                assert!(
-                    on_disk == page,
-                    "doc/man/{name} is stale; run WRIT_REGENERATE_MAN=1 cargo test -p writ-tool man"
-                );
-            }
-        }
     }
 
     #[test]

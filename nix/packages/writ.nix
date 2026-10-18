@@ -18,6 +18,7 @@ rustPlatform.buildRustPackage {
       (root + "/Cargo.lock")
       (root + "/README.md") # read by the tour test
       (root + "/crates")
+      (root + "/xtask") # a workspace member; its tests check vectors/ and doc/man/
       (root + "/doc")
       (root + "/vectors")
     ];

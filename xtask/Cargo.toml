@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+description = "Development tasks: cargo xtask vectors, cargo xtask man"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+libwrit.workspace = true
+writ-sexp.workspace = true
+writ-tool = { path = "../crates/writ-tool" }
+
+[lints]
+workspace = true

@@ -1,5 +1,7 @@
-//! Published test vectors (vectors/README.md): checked on every test run,
-//! regenerated with `WRIT_REGENERATE_VECTORS=1 cargo test -p libwrit --test vectors`.
+//! The published test vectors (vectors/README.md), as `cargo xtask vectors`
+//! writes them. Generating them also checks what they record (decoding the
+//! world bundle reproduces it, each rejection is rejected), so a generator
+//! that disagrees with libwrit fails instead of publishing.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -12,34 +14,20 @@ use libwrit::keys::RootSigner;
 use libwrit::*;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
 
-fn vectors_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vectors")
+use crate::Files;
+
+/// Every vector file: (path from the repository root, contents).
+pub fn generate() -> Files {
+    let mut files = Files::new();
+    keys(&mut files);
+    items_and_chains(&mut files);
+    rejections(&mut files);
+    files
 }
 
-fn regenerate() -> bool {
-    std::env::var_os("WRIT_REGENERATE_VECTORS").is_some()
-}
-
-/// Compares generated text with the published file (or rewrites it).
-fn check_file(rel: &str, generated: &str) {
-    let path = vectors_dir().join(rel);
-    if regenerate() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, generated).unwrap();
-        return;
-    }
-    let published = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e} (regenerate with WRIT_REGENERATE_VECTORS=1)",
-            path.display()
-        )
-    });
-    assert!(
-        published == generated,
-        "{rel} differs from what this build generates"
-    );
+fn put(files: &mut Files, rel: &str, text: &str) {
+    files.push((format!("vectors/{rel}"), text.to_owned()));
 }
 
 fn hex(b: &[u8]) -> String {
@@ -62,8 +50,7 @@ fn seed(n: u8) -> Seed {
     Seed::from_bytes(Hash::labelled("writ/v1/test-vectors/seed", &[n]).0)
 }
 
-#[test]
-fn keys() {
+fn keys(files: &mut Files) {
     let mut out = String::from(
         "# writ key derivation (SPEC.md §4). One block per seed.\n\
          # root = SLH-DSA-SHAKE-128s public key; leaf-mldsa = ML-DSA-65 verification key;\n\
@@ -87,7 +74,7 @@ fn keys() {
             leaf.leaf_key().id(),
         );
     }
-    check_file("keys/derivation.txt", &out);
+    put(files, "keys/derivation.txt", &out);
 }
 
 const T0: Time = 1_800_000_000;
@@ -498,12 +485,11 @@ fn reason_kind(r: &Reason) -> &'static str {
     }
 }
 
-#[test]
-fn items_and_chains() {
+fn items_and_chains(files: &mut Files) {
     let w = world();
     // The world bundle, and every item's identifiers.
     let bundle: String = w.items.iter().map(Item::armor).collect();
-    check_file("chains/world.writ", &bundle);
+    put(files, "chains/world.writ", &bundle);
     let mut idx = String::from(
         "# Every item in chains/world.writ, in order: kind, body hash (or id for\n\
          # inceptions), and the canonical encoding's length. SPEC.md §6.\n",
@@ -527,7 +513,7 @@ fn items_and_chains() {
             item.encode().len()
         );
     }
-    check_file("chains/items.txt", &idx);
+    put(files, "chains/items.txt", &idx);
 
     // Decoding the published bundle reproduces the world.
     let decoded = Item::decode_bundle(bundle.as_bytes()).unwrap();
@@ -632,7 +618,7 @@ fn items_and_chains() {
             Err(d) => panic!("{name}: {d:?}"),
         }
     }
-    check_file("chains/cases.txt", &out);
+    put(files, "chains/cases.txt", &out);
 
     // A data signature by the leaf.
     let sig = &w.signature;
@@ -673,13 +659,12 @@ fn items_and_chains() {
         T0 + 3600,
         if late.is_ok() { "good" } else { "bad" }
     );
-    check_file("chains/signature.txt", &s);
-    check_file("chains/signature.writ", &item.armor());
+    put(files, "chains/signature.txt", &s);
+    put(files, "chains/signature.writ", &item.armor());
 }
 
 /// Encodings every implementation must reject (SPEC.md §5).
-#[test]
-fn rejections() {
+fn rejections(files: &mut Files) {
     use writ_sexp::Sexp;
     let mut rng = VectorRng(Hash([9; 32]));
     let mut m = Material::new();
@@ -788,5 +773,5 @@ fn rejections() {
             hex(bytes)
         );
     }
-    check_file("items/rejections.txt", &out);
+    put(files, "items/rejections.txt", &out);
 }
