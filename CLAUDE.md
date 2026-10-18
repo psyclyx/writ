@@ -36,6 +36,8 @@ Runtime dependencies are limited to this list. Ask before adding anything else.
 - Pin libcrux crates to exact versions (`=x.y.z`). They are pre-0.1.
 - Allowed dev-dependencies: `proptest`, and RustCrypto `slh-dsa` and `ml-dsa`
   for differential testing only. Ask before adding others.
+- The `fuzz/` crate (outside the workspace) may use `libfuzzer-sys`, pinned
+  exactly.
 - Implement these ourselves: csexp, armor, bech32m, SLH-DSA, the composite
   construction, CLI argument parsing (keep it small and hand-written).
 
@@ -108,6 +110,8 @@ clean, and a commit.
 - Dev shell: `direnv allow` (or `nix-shell -A shell`).
 - Test: `cargo nextest run --workspace`. Lint: `cargo clippy --workspace
 --all-targets -- -D warnings`. Format: `treefmt`.
+- Fuzz: see `fuzz/README.md` (`cargo fuzz run -s none TARGET`). Fuzz the
+  decoders after changing them.
 - The pre-commit hook runs treefmt and clippy. Don't bypass it.
 - Commit at milestone boundaries (or smaller), with messages that say what
   and why.

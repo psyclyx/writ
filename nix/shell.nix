@@ -2,6 +2,7 @@
   mkShell,
   cargo,
   cargo-nextest,
+  cargo-fuzz,
   clippy,
   marksman,
   nixd,
@@ -30,6 +31,7 @@ mkShell {
     rustfmt
     rust-analyzer
     cargo-nextest
+    cargo-fuzz # fuzz/README.md
 
     # testing the completion scripts and man pages
     bashInteractive

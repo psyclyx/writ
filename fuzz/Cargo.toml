@@ -1,0 +1,54 @@
+# Fuzz targets for writ's decoders of untrusted input (DESIGN.md §3.3).
+# Not a workspace member: cargo-fuzz builds it with its own flags.
+# See fuzz/README.md.
+[package]
+name = "writ-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+libwrit = { path = "../crates/libwrit" }
+writ-sexp = { path = "../crates/writ-sexp" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "csexp"
+path = "fuzz_targets/csexp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "armor"
+path = "fuzz_targets/armor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "readable"
+path = "fuzz_targets/readable.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle"
+path = "fuzz_targets/bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_keys"
+path = "fuzz_targets/text_keys.rs"
+test = false
+doc = false
+bench = false
