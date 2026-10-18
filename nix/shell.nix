@@ -3,6 +3,7 @@
   cargo,
   cargo-nextest,
   cargo-fuzz,
+  cargo-audit,
   clippy,
   marksman,
   nixd,
@@ -32,6 +33,7 @@ mkShell {
     rust-analyzer
     cargo-nextest
     cargo-fuzz # fuzz/README.md
+    cargo-audit # hooks/pre-commit
 
     # testing the completion scripts and man pages
     bashInteractive

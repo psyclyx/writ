@@ -108,7 +108,9 @@ is a silent total compromise; stateful signatures don't belong in a human tool).
   arithmetic), the composite construction, canonical encoding, bech32m.
 - Homework for what we implement: written spec with test vectors; NIST ACVP
   vectors for SLH-DSA; differential tests against RustCrypto `slh-dsa`
-  (dev-dependency only); fuzzing; property tests.
+  (dev-dependency only); fuzzing (`fuzz/`); property tests. For what we
+  import: ACVP vectors for ML-DSA-65, differential tests of it against
+  RustCrypto `ml-dsa`, and advisory checks (`cargo audit`).
 
 ---
 
@@ -761,14 +763,19 @@ Four findings where the draft's claims didn't hold; decided as follows.
 - **`issued.writ` is updated under its own exclusive lock**; issuers still
   share `DIR/.lock`, which `rotate` takes exclusively.
 - **A single-value option given twice is a usage error.**
+- **Imported crypto is checked three ways** (approved 2026-10-18): ACVP
+  vectors, differential tests of libcrux-ml-dsa against RustCrypto `ml-dsa`
+  (dev-dependency only, as `slh-dsa` is for the root suite), and
+  `cargo audit` in the pre-commit hook, offline against the local advisory
+  database. The one accepted advisory (an unmaintained build-time
+  proc-macro under libcrux) is in `.cargo/audit.toml` with its reason.
+- **Decoders are fuzzed** with cargo-fuzz targets in `fuzz/`, outside the
+  workspace, each checking a round-trip property. They run on stable Rust
+  with the sanitizer off: the code has no `unsafe`, so AddressSanitizer
+  would add little, and it needs nightly.
 
 ## 17. Open questions
 
 None blocking. Revisit after use: exact resource limits (§9.1) and the default
 skew. Whether applications need a freshness primitive that bounds a warm-key
 thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
-
-Awaiting a decision on dependencies (CLAUDE.md): `cargo-fuzz` targets for the
-decoders (§3.3 promises fuzzing; today there are only property tests), and
-RustCrypto `ml-dsa` as a dev-dependency for differential tests of the leaf
-suite, as `slh-dsa` is for the root suite.

@@ -2,3 +2,14 @@
 set -eu
 treefmt --fail-on-change
 cargo clippy --workspace --all-targets --quiet -- -D warnings
+
+# Known advisories (vulnerable or unsound crates), checked against the local
+# copy of the RustSec database, without the network. `cargo audit` on its own
+# fetches the latest; run it before changing dependencies.
+if command -v cargo-audit >/dev/null && [ -d "${CARGO_HOME:-$HOME/.cargo}/advisory-db" ]; then
+  for lock in Cargo.lock fuzz/Cargo.lock; do
+    cargo audit --no-fetch --stale --no-yanked --quiet --deny unsound --file "$lock"
+  done
+else
+  echo "pre-commit: skipping cargo audit: run 'cargo audit' once to fetch its database" >&2
+fi

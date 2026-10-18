@@ -112,7 +112,10 @@ clean, and a commit.
 --all-targets -- -D warnings`. Format: `treefmt`.
 - Fuzz: see `fuzz/README.md` (`cargo fuzz run -s none TARGET`). Fuzz the
   decoders after changing them.
-- The pre-commit hook runs treefmt and clippy. Don't bypass it.
+- The pre-commit hook runs treefmt, clippy and `cargo audit` (offline, against
+  the local advisory database). Don't bypass it. Run `cargo audit` (which
+  fetches the latest advisories) before adding or bumping a dependency; an
+  advisory you accept goes in `.cargo/audit.toml` with the reason.
 - Commit at milestone boundaries (or smaller), with messages that say what
   and why.
 

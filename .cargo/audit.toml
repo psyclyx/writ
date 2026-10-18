@@ -1,0 +1,9 @@
+# cargo audit settings (the pre-commit hook runs it; see hooks/pre-commit).
+
+[advisories]
+ignore = [
+  # proc-macro-error2 is unmaintained: a build-time proc-macro that libcrux
+  # pulls in through hax-lib-macros. Nothing of it runs in writ. Revisit
+  # when libcrux is bumped.
+  "RUSTSEC-2026-0173",
+]
