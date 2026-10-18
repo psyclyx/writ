@@ -1,52 +1,81 @@
 # writ
 
-Signed statements about keys: _who is who_ (names) and _who may do what_
-(grants), with delegation that can only narrow, optional expiry, revocation, and
-key rotation that keeps your identity.
+writ makes and checks signed statements about keys: names (who is who) and
+grants (who may do what). A grant can be passed on, and each step can only
+narrow what the one before it allowed. Statements can expire and can be
+revoked. An identity can replace its keys without changing its id.
 
-What age is to PGP, writ aims to be to X.509: one post-quantum suite, no
-negotiation, plain files, a pure library, and a CLI that composes with pipes
-(and with age, for keys at rest).
+writ uses one fixed set of algorithms, with no options. It works on plain
+files, and its commands read and write standard input and output, so they
+combine with pipes and with age(1) for encrypting keys. The library, libwrit,
+does no I/O: the caller passes in the time and the randomness.
 
-- Identities are SLH-DSA-SHAKE-128s (hash-based) key logs with pre-rotation:
-  the id never changes, the keys can.
-- Leaf keys (ML-DSA-65 + Ed25519, both must verify) are the fast path, always
-  time-bounded.
-- Names are local (SPKI/SDSI): `me alice` is whoever _you_ said alice is.
-- Tags are paths: holding `(ssh)` covers `(ssh nas)`.
+## Concepts
 
-## A tour
+- **Identity**: a short signed log of keys, with an id (`writ1…`) that never
+  changes. The current key signs statements. The next key, kept offline,
+  signs rotations, which replace the keys. Identity keys are
+  SLH-DSA-SHAKE-128s (FIPS 205), whose security rests only on hash functions.
+- **Statement**: a name, grant or revocation, signed by an identity. A leaf
+  key can also sign grants.
+- **Tag**: what a grant allows, a list of words from general to specific.
+  Holding `(ssh)` includes `(ssh nas)`.
+- **Name**: local to the identity that issues it. `me alice` is whoever `me`
+  has named alice.
+- **Leaf key**: a key without a log, for fast signing. It is ML-DSA-65 and
+  Ed25519 together, and both signatures must verify. A grant to a leaf key
+  lasts at most 24 hours.
+- **Bundle**: a file of logs, statements and signatures, in any order.
+  `cat a.writ b.writ > c.writ` makes a bundle.
+
+To answer a question, writ starts from the identities you trust (`--as`,
+usually your own) and looks for a chain of valid grants to the subject.
+
+Secret keys are plaintext files with mode 0600, and writ never overwrites
+them. Any key path can be `-` or `/dev/fd/N`, so keys can be encrypted with
+age and never stored in plaintext.
+
+## Tour
+
+Create two identities. The next key goes to the path given with
+`--next-out`; here `-` sends it to age:
 
 ```sh
-writ init me --next-out - | age -p > me-next.key.age   # cold key encrypted from birth
+writ init me --next-out - | age -p > me-next.key.age
 writ init alice --next-out alice-next.key
+```
 
-writ name  -i me alice alice >> bundle.writ             # "my alice is that id"
-writ grant -i me 'me alice' '(ssh nas)' >> bundle.writ  # alice, as I name her, may ssh to nas
+Name an identity and grant a tag to the name:
 
+```sh
+writ name  -i me alice alice >> bundle.writ             # my name "alice" is the identity in ./alice
+writ grant -i me 'me alice' '(ssh nas)' >> bundle.writ  # whoever I call alice may use (ssh nas)
 writ check --as me alice '(ssh nas)' < bundle.writ
 # allowed: alice holds (ssh nas)
 #   root     me (writ1…)
-#   name     3fa2c1d0e8a1b2c3  me's alice is alice
-#   grant    9d1e5a07c3f4b21e  me → alice (ssh nas)
+#   name     1d2e1395d51373a6  me's alice is alice
+#   grant    3b3d7b4875586d6c  me → alice (ssh nas)
 #   until    no expiry
 ```
 
-Delegate, narrow, expire, revoke:
+Pass on part of a grant, then revoke it:
 
 ```sh
 writ init bob --next-out bob-next.key
 writ grant  -i me 'me alice' '(zuko)' --delegate --expires 90d | tee zuko.writ >> bundle.writ
-writ grant  -i alice bob '(zuko home)' >> bundle.writ   # alice passes on part of it
-writ export -i alice >> bundle.writ                     # alice's log, so her grant can be checked
-writ check  --as me bob '(zuko home)' < bundle.writ     # allowed
-
-writ revoke -i me zuko.writ >> bundle.writ              # or by the hash prefix grant printed
+writ grant  -i alice bob '(zuko home)' >> bundle.writ   # alice passes on part of (zuko)
+writ export -i alice >> bundle.writ                     # alice's log, to check what alice signs
+writ check  --as me bob '(zuko home)' < bundle.writ
+writ revoke -i me zuko.writ >> bundle.writ              # or the first digits of its hash
 writ check  --as me bob '(zuko home)' < bundle.writ     # denied: revoked
-writ export -i me > me.writ                             # my log, live statements, revocations
 ```
 
-Signatures, by an identity that may sign releases:
+`writ export -i me` prints an identity's log and valid statements, to give
+to others.
+
+Sign files with an identity. A signature stays valid while its signer holds
+the tag. The context is a label for one kind of signature, so a signature
+made for one purpose is not valid for another:
 
 ```sh
 writ init release --next-out release-next.key
@@ -56,9 +85,9 @@ writ sign   -i release --context example/release/v1 app.tar > app.tar.sig
 writ verify --as me --tag '(release)' --context example/release/v1 app.tar app.tar.sig < bundle.writ
 ```
 
-Leaf keys are fast and last at most 24 hours. A signature by a leaf key
-verifies only while the leaf key's grant is live, so use them for things that
-are signed again often, like a status file:
+A leaf key signs much faster than an identity key, and its signatures are
+less than half the size. Its signatures verify only while its grant is valid, at most
+24 hours, so use leaf keys for things that are signed again often:
 
 ```sh
 writ leaf   -i me '(status)' --out ci.key >> bundle.writ
@@ -66,50 +95,69 @@ writ sign   --leaf ci.key --context example/status/v1 status.json > status.json.
 writ verify --as me --tag '(status)' --context example/status/v1 status.json status.json.sig < bundle.writ
 ```
 
-Rotation, with the next key kept offline (and age-encrypted). The next key
-can serve again, so a routine rotation only makes a fresh current key:
+Rotation makes a new current key and keeps the id. It needs the next key,
+which can stay the same (`--same-next`):
 
 ```sh
 writ rotate -i me --next-key <(age -d me-next.key.age) --same-next
 ```
 
-To replace the next key too, encrypt the new one to an age recipient
-(`--next-out - | age -r age1… > me-next2.key.age`), so that only one age
-asks for a passphrase at a time.
+The rotation keeps the identity's statements and signatures that are still
+valid, as listed in `me/issued.writ`. Statements signed with the old key and not kept stop
+verifying wherever the rotation is seen; this is how you recover from a
+stolen current key. To replace the next key as well, use `--next-out` instead
+of `--same-next`, and encrypt the new key to an age recipient (`age -r`) so
+that only one age command asks for a passphrase.
 
-Rotation keeps every live statement automatically; anything a thief signs
-with your old key is dead to every verifier that sees the rotation. Use
-`--state DIR` on verifying commands to remember rotations and the clock floor
-between runs, and `writ prove` to hand a verifier only the statements it needs.
+Verifiers learn about rotations and revocations only from the bundles they
+are given. With `--state DIR`, `check`, `verify`, `resolve` and `prove`
+remember the logs and revocations they have seen, so an older bundle cannot
+undo a rotation or a revocation. They also never use a time earlier than the
+newest statement seen from the identities they trust, so setting the clock
+back does not make expired grants valid again. `writ prove` prints
+only the statements needed for one answer, to give to a verifier instead of
+a whole bundle.
 
-Every command has `-h` (short) and `--help` (long) help and a man page
-(`man writ`, `man writ-grant`, ...); exit status is 0 for yes, 1 for no, 2 for
-errors. `writ completions bash|zsh|fish` prints a completion script; the nix
-package installs the man pages and completions for you. Color follows
-`--color`, `NO_COLOR` and `CLICOLOR_FORCE`.
+## Usage
+
+Every command has short help (`-h`), long help (`--help`) and a man page
+(`man writ`, `man writ-grant`, …). The exit status is 0 for success or yes, 1
+for no, and 2 for errors. `writ completions bash|zsh|fish` prints a
+completion script; the nix package installs the man pages and completions.
+Color follows `--color`, `NO_COLOR` and `CLICOLOR_FORCE`.
 
 ## Documents
 
-- [DESIGN.md](DESIGN.md) — what writ is and why; §16 records the decisions made
-  during implementation.
-- [SPEC.md](SPEC.md) — the byte-level specification.
-- [vectors/](vectors/README.md) — test vectors (NIST ACVP, Ed25519 edge cases,
-  writ's own).
-- [BENCHMARKS.md](BENCHMARKS.md) — SLH-DSA timings.
+- [DESIGN.md](DESIGN.md): what writ does and why. §16 lists the decisions
+  made during implementation.
+- [SPEC.md](SPEC.md): the byte-level specification.
+- [vectors/](vectors/README.md): test vectors (NIST ACVP for SLH-DSA and
+  ML-DSA, Ed25519 edge cases, and writ's own).
+- [BENCHMARKS.md](BENCHMARKS.md): signing and verification timings.
 
 ## Layout
 
 ```
-crates/writ-sexp     canonical s-expressions, readable form, strict armor
-crates/writ-slhdsa   SLH-DSA-SHAKE-128s (FIPS 205), on libcrux-sha3
-crates/libwrit       the library: model, suites, logs, verification, issuing
-crates/writ-tool     the `writ` binary
+crates/writ-sexp     canonical s-expressions, readable form, armor
+crates/writ-slhdsa   SLH-DSA-SHAKE-128s (FIPS 205)
+crates/libwrit       the library: encoding, keys, logs, issuing, verification
+crates/writ-tool     the writ command
+fuzz/                fuzz targets for the decoders
 ```
 
 ## Development
 
-`direnv allow` (or `nix-shell -A shell`), then `cargo nextest run --workspace`,
-`treefmt`. Vectors regenerate with
-`WRIT_REGENERATE_VECTORS=1 cargo test -p libwrit --test vectors`, and the man
-pages (generated from `crates/writ-tool/src/specs.rs`, like `--help` and the
-completions) with `WRIT_REGENERATE_MAN=1 cargo test -p writ-tool man`.
+`direnv allow` sets up the dev shell and the pre-commit hook, which runs
+treefmt, clippy and `cargo audit`. Without direnv, use `nix-shell -A shell`
+and `git config core.hooksPath hooks`.
+
+```
+cargo nextest run --workspace                                    # tests
+treefmt                                                          # format
+WRIT_REGENERATE_VECTORS=1 cargo test -p libwrit --test vectors   # vectors/
+WRIT_REGENERATE_MAN=1 cargo test -p writ-tool man                # doc/man/
+```
+
+The man pages, `--help` and the completion scripts are all generated from
+`crates/writ-tool/src/specs.rs`. Fuzzing is described in
+[fuzz/README.md](fuzz/README.md).
