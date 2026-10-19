@@ -797,7 +797,15 @@ Details in §18. In short:
   using a small vetted HTTP crate.
 - **Networking at the edge only:** `--fetch` in writ-tool links libcurl,
   limited to http and https and to issuers on a candidate chain. libwrit stays
-  pure.
+  pure. It does not depend on TLS certificates: on a certificate
+  error it retries unverified, with a warning, since records are checked by
+  their signatures.
+- **Records under one head are combined:** freshness from the newest, revoked
+  if any lists it, so a later record cannot un-revoke.
+- **Losing a host or domain is an outage, never a forgery.** Recovery: other
+  URLs, records handed over directly, restoring the host within D, or a
+  rotation to new URLs (the next key, deliberately). `init` and `rotate` warn
+  when every URL is on one host.
 - **Names:** `record` for the item (it reads naturally: sign, staple, a fresh
   record), `publish` for the field, `max-age` for D (what it means to a
   verifier, and HTTP's word for it).
@@ -895,13 +903,18 @@ record = "(" "record" issuer "(" "issued" time ")" "(" "head" hash ")" "(" "revo
 now + skew`.
 - Every hash a valid record lists is revoked, as if by a revocation statement.
   Revocation statements still work on their own; a record collects them.
+- Records under the same head are combined, never ranked: freshness counts
+  from the newest one, and a hash is revoked if any of them lists it. So a
+  newer record that leaves something out (signed by a thief with the current
+  key, or by a buggy job) cannot un-revoke what an older one listed.
 - A record reveals only hashes: nothing about what was said, or to whom.
 - `rotate` never keeps records: they belong to one event.
 
 A thief with the current key can sign records too: records that leave out
-the owner's later revocations, or that revoke good statements. Both stop
-counting at the owner's rotation, for every verifier that sees it, as with
-every other theft of the current key (§10).
+the owner's later revocations, or that revoke good statements. The first only
+works on verifiers that never see the owner's records, since records are
+combined. Both stop counting at the owner's rotation, for every verifier that
+sees it, as with every other theft of the current key (§10).
 
 ### 18.5 Publishing: `publish` in the log
 
@@ -917,8 +930,13 @@ publish   = "(" "publish" "(" "max-age" secs ")" *4url ")"   ; url: 1–255 byte
 - `max-age` is D: verifiers refuse a record more than D seconds old, so the
   owner signs a new one at least that often. At least 3600; `writ init
 --publish` defaults to 7 days, which a daily job can miss six times in a
-  row before anything fails, and which matches an OCSP response's usual life. URLs are where to find it; there may be none, if
-  records travel some other way (stapled to proofs, gossip).
+  row before anything fails, and which matches an OCSP response's usual
+  life.
+- URLs are where to find the record. There may be none, if records travel
+  some other way (stapled to proofs, gossip). Put them on different
+  providers: if they all fail for longer than D, the identity's long-lived
+  statements stop verifying (§18.8). `writ init --publish` and `writ rotate`
+  warn when every URL is on the same host.
 - As with `max-validity`, each event states its own `publish`, and the head's
   is the one in force; an event without it publishes nothing. Only a rotation
   can change it, so a thief with the current key cannot switch it off. Logs
@@ -935,8 +953,8 @@ statement used to reach a holder, and the signature in `verify`):
 
 - If `s`'s issuer X has `publish` with max-age D at its head, and `s` lives
   longer than D (no `expires`, or `expires − issued > D`), then the material
-  must hold a valid record by X with `issued ≥ now − D`, and `s` must not be
-  in its `revoked` list. Otherwise `s` is not valid, with the reason "no
+  must hold a valid record by X with `issued ≥ now − D`, and no valid record
+  by X under its head may list `s` (§18.4). Otherwise `s` is not valid, with the reason "no
   fresh record from X", and the denial lists X's URLs.
 - If X does not publish, nothing changes: revocations count when they are in
   the material, as today.
@@ -987,11 +1005,16 @@ not needed for integrity.
   libcurl's other protocols; at most 5 redirects, 10 seconds and 16 MiB per
   URL _(tune)_. It fetches only for issuers on a candidate chain from the
   verifier's roots, never for every identity in the material, so a bundle
-  cannot make a verifier fetch arbitrary URLs. https is used when the URL
-  says so: it adds privacy, while integrity comes from the signatures.
-- `--state` keeps, per remembered id, the log, the newest valid record, and
-  the revocation statements valid under the head (§16), so a record fetched
-  once keeps serving until it is D old.
+  cannot make a verifier fetch arbitrary URLs.
+- `--fetch` does not depend on TLS certificates. Records are checked by their
+  signatures, so TLS adds only privacy. It verifies certificates as usual;
+  on a certificate error (expired, wrong name, self-signed) it retries
+  without verification and says so in a warning. An expired certificate on
+  the owner's host then costs privacy against an active attacker, not
+  revocation.
+- `--state` keeps, per remembered id, the log, every valid record under its
+  head (§18.4 combines them), and the revocation statements valid under the
+  head (§16), so a record fetched once keeps serving until it is D old.
 - Answers say when a record a chain relies on is within a fifth of D
   _(tune)_ of going stale, so a broken cron job is noticed before it fails.
 
@@ -1007,6 +1030,16 @@ not needed for integrity.
   chosen per identity by its owner: short D revokes quickly and fails sooner
   in an outage; long D tolerates outages and revokes slowly; no `publish` at
   all depends on nothing.
+- **The owner loses a host or domain** (an expired domain, a closed account,
+  a lost or expired certificate). It is an outage, never a forgery: whoever
+  holds the name next can serve nothing, or the owner's old records, and
+  neither looks fresh. Recovery, cheapest first: the other URLs in the log;
+  handing fresh records over directly (they are text: a bundle, an email, a
+  proof stapled by a presenter); restoring the host within D; or rotating to
+  new URLs. The last needs the next key, deliberately: if the current key
+  could change the URLs, a thief could send verifiers to a host that serves
+  records without the owner's revocations. The new URLs then spread with
+  every proof, because proofs carry each issuer's log.
 - **The owner stops signing** (a broken job, or gone for good). Their
   long-lived statements stop verifying after D. For an owner who is gone,
   that is the right outcome; for a broken job, the staleness warnings are the
