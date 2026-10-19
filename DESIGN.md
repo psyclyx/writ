@@ -21,7 +21,7 @@ authority flows only from the roots the verifier chose.
 
 - Usable as a personal CA with plain files: issue a cert today, have it stay
   good until the math breaks, your key file leaks, or you revoke it. No forced
-  maintenance.
+  maintenance (publishing revocation records, §18, is opt-in).
 - Hierarchical trust without central authority: "my devices" vs "my friends'
   devices" vs "my org" vs "anyone" are all just chains from _my_ identity.
 - Safe not to know or trust everyone: delegation can only narrow.
@@ -35,8 +35,9 @@ authority flows only from the roots the verifier chose.
 **Non-goals**
 
 - Not a PKI: no CAs, no global namespace, no discovery.
-- No transport or freshness: how statements and revocations travel is the
-  application's job. The library is pure.
+- No transport: how statements and revocations travel is the application's
+  job. Freshness is opt-in per identity (§18). The library is pure; the one
+  network operation, `--fetch`, is at the edge, in the CLI.
 - Not a policy language: tags + narrowing is the ceiling.
 - No encryption (use age), no algorithm negotiation, no stateful signatures, no
   X.509 interop.
@@ -774,26 +775,53 @@ Four findings where the draft's claims didn't hold; decided as follows.
   with the sanitizer off: the code has no `unsafe`, so AddressSanitizer
   would add little, and it needs nightly.
 
+### Decided 2026-10-18: revocation records, multi-tag grants, channel binding
+
+Details in §18. In short:
+
+- **Grants may list up to 16 tags**, meaning exactly what that many grants
+  would; one hash, one signature. No conjunction: an application that needs
+  "and" asks two questions.
+- **No key exchange.** writ binds a channel made by TLS, DTLS, QUIC or Noise
+  to a key it vouches for: each side signs the channel's exporter value with
+  its leaf key. Contexts starting with `writ/` are reserved for writ.
+- **Revocation is published, not served.** An identity may opt in, in its
+  log, with `(publish (max-age D) url…)`: it signs a **record** (its head and
+  everything it has revoked) at least every D, and puts it wherever it likes.
+  Verifiers then need a fresh record from every issuer of a long-lived
+  statement on a chain, except their own root when they bring its issuance
+  log. A missing record fails closed after D; D is the owner's choice
+  (minimum 1 hour, default 7 days).
+- **No shared keyserver.** It would need spam pricing (an earlier draft used a
+  load-priced proof of work); if one is built later, it serves the same files
+  using a small vetted HTTP crate.
+- **Networking at the edge only:** `--fetch` in writ-tool links libcurl,
+  limited to http and https and to issuers on a candidate chain. libwrit stays
+  pure.
+- **Names:** `record` for the item (it reads naturally: sign, staple, a fresh
+  record), `publish` for the field, `max-age` for D (what it means to a
+  verifier, and HTTP's word for it).
+
 ## 17. Open questions
 
 None blocking. Revisit after use: exact resource limits (§9.1) and the default
 skew. Whether applications need a freshness primitive that bounds a warm-key
 thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
 
-## 18. Proposed: multi-tag grants, channel binding, published revocations
+## 18. Multi-tag grants, channel binding, published revocations
 
-**Status: proposal, not decided.** Nothing here is built. Once settled, the
-decisions move to §16 and the byte-level rules to SPEC.md. Numbers marked
-_(tune)_ are starting points.
+**Status: decided 2026-10-18 (§16); not built yet.** The byte-level rules
+move to SPEC.md as each part is built. Numbers marked _(tune)_ are starting
+points, to revisit after use.
 
 ### 18.1 Scope
 
 - libwrit stays pure: no IO, no clock, no ambient randomness. Everything new
   in it is a function on values.
-- writ still contains no networking code (§1, CLAUDE.md). An identity may
-  publish a signed record of its revocations wherever it likes, and verifiers
-  can then require a recent one (§18.4–§18.6). `--fetch` gets records by
-  running `curl`; anything else that delivers the file works as well.
+- An identity may publish a signed record of its revocations wherever it
+  likes, and verifiers can then require a recent one (§18.4–§18.6). The only
+  networking is `--fetch` in the CLI, through libcurl (§18.7); anything else
+  that delivers the file works as well.
 - Still out of scope: encryption (use age), key exchange and transport
   protocols, policy languages.
 
@@ -883,11 +911,13 @@ and where it puts it:
 ```
 inception = "(" "inception" authority "(" "next" hash ")" [ max-validity ] [ publish ] ")"
 rotation  = "(" "rotation" … [ max-validity ] [ publish ] "(" "keep" *hash ")" ")"
-publish   = "(" "publish" "(" "refresh" secs ")" *4url ")"   ; url: 1–255 bytes, printable ASCII, no spaces
+publish   = "(" "publish" "(" "max-age" secs ")" *4url ")"   ; url: 1–255 bytes, printable ASCII, no spaces
 ```
 
-- `refresh` is D: the owner promises a new record at least every D seconds
-  (at least 3600 _(tune)_). URLs are where to find it; there may be none, if
+- `max-age` is D: verifiers refuse a record more than D seconds old, so the
+  owner signs a new one at least that often. At least 3600; `writ init
+--publish` defaults to 7 days, which a daily job can miss six times in a
+  row before anything fails, and which matches an OCSP response's usual life. URLs are where to find it; there may be none, if
   records travel some other way (stapled to proofs, gossip).
 - As with `max-validity`, each event states its own `publish`, and the head's
   is the one in force; an event without it publishes nothing. Only a rotation
@@ -903,7 +933,7 @@ A verifier answering a question at time `now` applies one more rule to every
 statement or data signature `s` it uses (every grant on the chain, every name
 statement used to reach a holder, and the signature in `verify`):
 
-- If `s`'s issuer X has `publish` with refresh D at its head, and `s` lives
+- If `s`'s issuer X has `publish` with max-age D at its head, and `s` lives
   longer than D (no `expires`, or `expires − issued > D`), then the material
   must hold a valid record by X with `issued ≥ now − D`, and `s` must not be
   in its `revoked` list. Otherwise `s` is not valid, with the reason "no
@@ -949,9 +979,16 @@ not needed for integrity.
   needs no network.
 - **The verifier** fills gaps: `check`, `verify`, `resolve` and `prove` take
   `--fetch`, which, for each issuer that needs a record and has none fresh
-  in the material, runs `curl -fsS --max-filesize 16M --max-time 10` _(tune)_
-  on its URLs in turn, adds what comes back, and answers again. writ itself
-  opens no connections; without curl, `--fetch` fails with a clear error.
+  in the material, fetches its URLs in turn, adds what comes back, and
+  answers again.
+- `--fetch` uses libcurl (the `curl` crate), in writ-tool only; libwrit
+  stays pure and only lists what to fetch. Limits: `http` and `https` only,
+  redirects included, so a hostile URL cannot read `file:` paths or use
+  libcurl's other protocols; at most 5 redirects, 10 seconds and 16 MiB per
+  URL _(tune)_. It fetches only for issuers on a candidate chain from the
+  verifier's roots, never for every identity in the material, so a bundle
+  cannot make a verifier fetch arbitrary URLs. https is used when the URL
+  says so: it adds privacy, while integrity comes from the signatures.
 - `--state` keeps, per remembered id, the log, the newest valid record, and
   the revocation statements valid under the head (§16), so a record fetched
   once keeps serving until it is D old.
@@ -994,20 +1031,13 @@ serves the same files, with a small vetted HTTP crate (owner's choice,
 
 ```
 libwrit     multi-tag grants; channel binding; record item; publish; freshness rule
-writ-tool   grant with several TAGs; init/rotate --publish --refresh;
+writ-tool   grant with several TAGs; init/rotate --publish --max-age;
             export --record; --fetch; --state keeps records; staleness warnings
 ```
 
 1. Multi-tag grants: format, SPEC, vectors, `writ grant` with several TAGs.
 2. Records and `publish`: format, the freshness rule, SPEC, vectors (fresh,
    stale, exempt, local root, three-issuer chains).
-3. The CLI: `--publish`/`--refresh`, `export --record`, `--fetch`, `--state`,
-   warnings.
+3. The CLI: `--publish`/`--max-age`, `export --record`, `--fetch` (libcurl),
+   `--state`, warnings.
 4. Channel binding.
-
-### 18.11 Questions for the owner
-
-- Names: `record`, `publish`, `refresh`.
-- The minimum D, and whether `writ init` should suggest a default (7 days?).
-- `--fetch` running `curl`: acceptable as a runtime requirement for that
-  option only?

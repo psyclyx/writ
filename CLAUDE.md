@@ -32,6 +32,7 @@ Runtime dependencies are limited to this list. Ask before adding anything else.
 | `libcrux-ed25519` | libwrit              | Ed25519 (leaf suite). Verify it can do strict verification (DESIGN §3.2); if not, wrap it with the missing checks. Report what you find. |
 | `zeroize`         | writ-slhdsa, libwrit | wiping secret material (`unsafe` is forbidden here)                                                                                      |
 | `getrandom`       | writ-tool only       | the OS RNG                                                                                                                               |
+| `curl`            | writ-tool only       | libcurl, for `--fetch` only (DESIGN §18.7): http and https, nothing else                                                                 |
 
 - Pin libcrux crates to exact versions (`=x.y.z`). They are pre-0.1.
 - Allowed dev-dependencies: `proptest`, and RustCrypto `slh-dsa` and `ml-dsa`
@@ -104,6 +105,11 @@ clean, and a commit.
 8. **Spec and vectors**
    - Finish SPEC.md. Publish vectors in `vectors/` for every format and for
      chain-verification cases, including rejections.
+9. **DESIGN §18**, in the order of §18.10, each with SPEC changes and vectors:
+   - Multi-tag grants.
+   - Records, `publish`, and the freshness rule.
+   - The CLI: `--publish`, `export --record`, `--fetch`.
+   - Channel binding.
 
 ## Workflow
 
@@ -121,6 +127,7 @@ clean, and a commit.
 
 ## Out of scope
 
-Encryption (use age), networking or transport, agents and hardware keys,
+Encryption (use age), transport and key exchange, networking beyond
+`--fetch` (DESIGN §18.7), a shared keyserver, agents and hardware keys,
 X.509 interop, stateful signatures, algorithm negotiation. The `Signer` trait
 leaves room for agents later — don't build them now.
