@@ -779,3 +779,230 @@ Four findings where the draft's claims didn't hold; decided as follows.
 None blocking. Revisit after use: exact resource limits (§9.1) and the default
 skew. Whether applications need a freshness primitive that bounds a warm-key
 thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
+
+## 18. Proposed: multi-tag grants, channel binding, a revocation server
+
+**Status: proposal, not decided.** Nothing here is built. It widens the scope
+set in §1 and in CLAUDE.md ("networking or transport" is out of scope), so it
+needs the owner's sign-off; once settled, the decisions move to §16 and the
+byte-level rules to SPEC.md. Numbers marked _(tune)_ are starting points.
+
+### 18.1 Scope
+
+- libwrit stays pure: no IO, no clock, no ambient randomness. The new pieces
+  in it (§18.2–§18.5) are functions on values.
+- Networking appears in two places only: a new crate, `writ-keyserver`, and
+  two `writ` commands, `publish` and `fetch` (§18.6). Both speak plain
+  HTTP/1.1; items carry their own signatures, so TLS adds privacy, not
+  integrity (§18.5).
+- Still out of scope: encryption (use age), key exchange and transport
+  protocols, policy languages.
+
+### 18.2 Grants with several tags
+
+A grant may list up to 16 tags. It means exactly what the same number of
+grants would, one per tag, with the same subject, `delegate`, expiry and
+issuer; it has one hash, so one revocation or one `keep` entry covers all of
+its tags.
+
+```
+grant = "(" "grant" common subject 1*16tag [ "(" "delegate" ")" ] ")"
+```
+
+- Tags are distinct and in strictly increasing order of their canonical
+  encoding. A grant with one tag is encoded exactly as today, so existing
+  grants and vectors keep their bytes.
+- Issuing refuses a tag that another tag of the same grant already covers
+  (`(ssh)` with `(ssh nas)`): it would mean nothing.
+- Verification treats each tag as a separate grant sharing the signature; the
+  chain search, intersection and the proof are unchanged, and a proof's step
+  records which tag it used.
+- Why: an identity-signed grant carries a 7856-byte signature, so five paths
+  as five grants cost about 39 KB; as one grant, about 8 KB.
+
+No conjunction ("holds X only if also Y"): proofs would become trees instead
+of chains, and it is the policy language §1 rules out. An application that
+needs "and" asks two questions and combines the answers. "Or" over subjects
+already exists: a name may bind several subjects.
+
+### 18.3 Channel binding
+
+writ does not do key exchange. Applications use TLS 1.3, DTLS, QUIC or Noise,
+and writ says whether the key at the other end may do what it asks. The step
+applications get wrong is binding the two: checking the key the handshake
+authenticated, not one the peer merely claims. libwrit provides that step and
+nothing more.
+
+- After the handshake, each side takes the channel's exporter value `E`, a
+  secret unique to the session, at least 32 bytes (TLS: the exporter of RFC
+  8446 §7.5 with label `EXPORTER-writ-channel`; Noise: the handshake hash).
+- Each side makes a data signature (§8) with its leaf key: context
+  `writ/v1/channel/<app>`, data `D(role ‖ E)`, where `role` is the byte 1
+  for the side that started the handshake and 2 for the other, so a
+  signature cannot be reflected back to its signer.
+- The peer checks it with `Verifier::verify` and the tag it requires. `E`
+  never repeats, so a signature cannot be replayed on another channel.
+- Contexts starting with `writ/` are reserved for writ: `writ sign` and
+  `sign_data` refuse them for application data, so a file signature can
+  never pass as a channel binding or a keyserver answer.
+- API: `channel::bind(E, role, app, signer, now, rng)` and
+  `channel::check(sig, E, role, app, tag, verifier, now)`. About twenty lines
+  on top of `sign_data` and `verify`.
+
+### 18.4 Records
+
+The keyserver, `--state` (§16) and an application gossiping items (zuko) all
+keep the same thing per identity, so libwrit gets one pure type for it.
+
+A **record** for id `X` holds:
+
+- X's log (§6). If two different valid events share a position, the record
+  holds the evidence instead (the prefix and both events) and accepts nothing
+  more: X is compromised.
+- X's revocations that are valid under the log's head (§7): signed by the
+  head's authority, or kept by it.
+
+Nothing else: no names, grants or data signatures. A record says only "these
+keys" and "these statement hashes are dead", so it reveals nothing about
+what X said or to whom.
+
+`Record::accept(item, now) -> Accepted | Rejected(reason)`:
+
+- an inception whose id is `X` starts the record;
+- a rotation extends the log under §6, or yields evidence;
+- a revocation by `X`, valid under the head and not already present, is
+  added;
+- everything else is rejected.
+
+After a rotation, revocations issued under earlier events and not kept are
+dropped. They no longer mean anything: §7 ignores them, and a statement they
+revoked is not kept either (the tool never keeps revoked statements). So a
+record shrinks at every rotation, and a thief's revocations made with a
+stolen current key vanish with it.
+
+### 18.5 Keyserver
+
+A keyserver stores records and serves them. It is trusted for availability
+and freshness only: every item is checked again by whoever reads it.
+
+**Protocol** (HTTP/1.1; bodies are bundles, §12):
+
+- `GET /v1/challenge`: the current proof-of-work challenge and prices.
+- `POST /v1/items`: a bundle of items for one id, with header
+  `Writ-Stamp: <challenge> <nonce>`. The reply is a **receipt**: a signed
+  answer (below) listing the hashes accepted, so the uploader can later show
+  that the server had them.
+- `GET /v1/id/<writ1…>?nonce=<hex>`: the record, the server's log and the
+  grant to its answer key, and a signed **answer**.
+
+**Answers.** The server's identity grants a leaf key `(keyserver answer)`
+for a day at a time; the leaf signs each answer as a data signature with
+context `writ/v1/keyserver/answer` over `D(id ‖ nonce ‖ H(record))`, with
+`issued` the server's time. A client that trusts the server (it pins the
+server's id, or grants it `(keyserver answer)`) checks that the answer
+verifies, that its nonce is the one sent and that `issued` is recent. Then:
+
+- the record is what the server holds now, not a copy replayed by someone on
+  the network path, which TLS would otherwise be needed for;
+- a server that leaves out an item it gave a receipt for has signed evidence
+  against itself.
+
+What remains is privacy: on-path observers see which ids are fetched.
+Operators who care put TLS in front with a proxy; nothing in writ changes.
+A client may leave out the nonce to get a cached answer (at most a minute
+old _(tune)_), which a CDN can serve.
+
+**What spam can and cannot do.** Every item in X's record must be signed by
+X's keys, so nobody else can add to it, crowd it out, or block X's own
+upload. Two doors stay open, and the rest of this section is about pricing
+them:
+
+1. registering new ids: an inception costs its maker about 0.6 s of CPU and
+   the server about 8 KB;
+2. a thief with X's current key filling X's record with revocations: bounded
+   by the per-id quota, and undone by X's rotation (§18.4).
+
+**Order of checks** (cheapest first, so junk costs us the least): request
+size (64 KiB _(tune)_) → bounded decode → stamp → structural checks (one id;
+id known or an inception; a rotation's revealed authority matches the
+commitment; a revocation names the head event or a kept hash) → signatures
+(about 0.5 ms each) → `Record::accept` → store.
+
+**Stamps.**
+`stamp = SHAKE256(msg("writ/v1/keyserver/stamp", challenge ‖ H(body) ‖ nonce), 32)`
+must start with at least `b` zero bits. Checking one costs one hash; making
+one costs about `2^b` hashes, about 0.3 µs each on one core, so 20 bits take
+about 0.3 s, 24 bits about 5 s, 28 bits about 80 s. The challenge is 32
+random bytes, replaced every 5 minutes _(tune)_ (the previous one is still
+accepted), so stamps cannot be computed in advance. `H(body)` ties a stamp to
+one upload.
+
+**Price.** `b = base + size + new + busy + load`, where:
+
+| term   | value                                                                                                                                                              |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `base` | 16 _(tune)_                                                                                                                                                        |
+| `size` | ⌈log2(KiB stored)⌉: work grows with bytes                                                                                                                          |
+| `new`  | 4 for an inception of an unknown id: registration costs 16 times an update                                                                                         |
+| `busy` | 1 for each update to this id in the last 7 days beyond the first 4 _(tune)_: frequent changes double in price                                                      |
+| `load` | 0 to 40, recomputed each minute: +1 while accepted bytes over the last hour exceed the disk budget's hourly share, or the write queue is long; −1 while below half |
+
+**Protected updates.** An id first seen at least 30 days ago with no update
+in the last 7 days _(tune)_ pays `new = busy = 0` and `load` capped at 4: at
+most about 23 bits, a few seconds on a laptop, however busy the server is.
+This is the "my key was stolen, revoke now" case, and it is why an honest
+user is never priced out. To abuse it an attacker must register ids 30 days
+ahead at full price, and then gets one cheap update per id per week, within
+the per-id quota.
+
+**Limits.**
+
+- Disk: a budget per day set by the operator, which drives `load`; a hard
+  cap, above 90% of which registration closes and only updates to known ids
+  are accepted; per id, at most 512 revocations _(tune)_ under the head.
+- CPU: at most 4 connections per address _(tune)_, read timeouts, and a
+  write queue ordered with protected updates first, then by work paid per
+  byte. Reads are static files per id.
+- Connection floods are for a reverse proxy; the server does not try to
+  survive them alone.
+
+**Limit of this design.** A stamp is a Keccak hash, which GPUs compute much
+faster than CPUs. If that becomes the problem, a memory-hard stamp (Balloon
+hashing over SHAKE256, implemented here, no new dependency) narrows the gap.
+
+### 18.6 Client
+
+- `writ publish -i DIR --server URL`: uploads DIR's log and the revocations
+  valid under its head, paying the stamp; keeps the receipt in
+  `DIR/receipts.writ`.
+- `writ fetch --server URL --server-id ID ID...`: fetches records, checks the
+  answers, and prints the items (or adds them to `--state`).
+- A small hand-written HTTP/1.1 client on `std::net`: `http://` only, bounded
+  reads, no new dependency.
+- `writ init` and `writ rotate` remind the user to publish: an id published
+  early becomes established (§18.5) before it is ever needed.
+
+### 18.7 Crates and order of work
+
+```
+libwrit          + record (§18.4), stamp (§18.5), channel (§18.3); multi-tag grants (§18.2)
+writ-keyserver   new: the server binary (HTTP, files on disk)
+writ-tool        + publish, fetch; --state uses Record
+```
+
+1. Multi-tag grants: format, SPEC, vectors, CLI (`writ grant` takes several
+   TAGs).
+2. `Record`, and `--state` rebuilt on it.
+3. Stamps and pricing (pure: the server passes in its counters).
+4. `writ-keyserver`.
+5. `writ publish` and `writ fetch`.
+6. Channel binding.
+
+### 18.8 Questions for the owner
+
+- The HTTP server: hand-written on `std::net` (no dependency, but untrusted
+  connections meet our own parser) or a small vetted crate. Either way it
+  runs behind a reverse proxy in production.
+- The _(tune)_ numbers.
+- Whether `writ fetch` should also accept a record from standard input
+  (`curl … | writ fetch --check`), for people who want TLS through curl.
