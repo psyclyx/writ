@@ -780,21 +780,20 @@ None blocking. Revisit after use: exact resource limits (§9.1) and the default
 skew. Whether applications need a freshness primitive that bounds a warm-key
 thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
 
-## 18. Proposed: multi-tag grants, channel binding, a revocation server
+## 18. Proposed: multi-tag grants, channel binding, published revocations
 
-**Status: proposal, not decided.** Nothing here is built. It widens the scope
-set in §1 and in CLAUDE.md ("networking or transport" is out of scope), so it
-needs the owner's sign-off; once settled, the decisions move to §16 and the
-byte-level rules to SPEC.md. Numbers marked _(tune)_ are starting points.
+**Status: proposal, not decided.** Nothing here is built. Once settled, the
+decisions move to §16 and the byte-level rules to SPEC.md. Numbers marked
+_(tune)_ are starting points.
 
 ### 18.1 Scope
 
-- libwrit stays pure: no IO, no clock, no ambient randomness. The new pieces
-  in it (§18.2–§18.5) are functions on values.
-- Networking appears in two places only: a new crate, `writ-keyserver`, and
-  two `writ` commands, `publish` and `fetch` (§18.6). Both speak plain
-  HTTP/1.1; items carry their own signatures, so TLS adds privacy, not
-  integrity (§18.5).
+- libwrit stays pure: no IO, no clock, no ambient randomness. Everything new
+  in it is a function on values.
+- writ still contains no networking code (§1, CLAUDE.md). An identity may
+  publish a signed record of its revocations wherever it likes, and verifiers
+  can then require a recent one (§18.4–§18.6). `--fetch` gets records by
+  running `curl`; anything else that delivers the file works as well.
 - Still out of scope: encryption (use age), key exchange and transport
   protocols, policy languages.
 
@@ -844,165 +843,171 @@ nothing more.
   never repeats, so a signature cannot be replayed on another channel.
 - Contexts starting with `writ/` are reserved for writ: `writ sign` and
   `sign_data` refuse them for application data, so a file signature can
-  never pass as a channel binding or a keyserver answer.
+  never pass as a channel binding.
 - API: `channel::bind(E, role, app, signer, now, rng)` and
   `channel::check(sig, E, role, app, tag, verifier, now)`. About twenty lines
   on top of `sign_data` and `verify`.
 
 ### 18.4 Records
 
-The keyserver, `--state` (§16) and an application gossiping items (zuko) all
-keep the same thing per identity, so libwrit gets one pure type for it.
-
-A **record** for id `X` holds:
-
-- X's log (§6). If two different valid events share a position, the record
-  holds the evidence instead (the prefix and both events) and accepts nothing
-  more: X is compromised.
-- X's revocations that are valid under the log's head (§7): signed by the
-  head's authority, or kept by it.
-
-Nothing else: no names, grants or data signatures. A record says only "these
-keys" and "these statement hashes are dead", so it reveals nothing about
-what X said or to whom.
-
-`Record::accept(item, now) -> Accepted | Rejected(reason)`:
-
-- an inception whose id is `X` starts the record;
-- a rotation extends the log under §6, or yields evidence;
-- a revocation by `X`, valid under the head and not already present, is
-  added;
-- everything else is rejected.
-
-After a rotation, revocations issued under earlier events and not kept are
-dropped. They no longer mean anything: §7 ignores them, and a statement they
-revoked is not kept either (the tool never keeps revoked statements). So a
-record shrinks at every rotation, and a thief's revocations made with a
-stolen current key vanish with it.
-
-### 18.5 Keyserver
-
-A keyserver stores records and serves them. It is trusted for availability
-and freshness only: every item is checked again by whoever reads it.
-
-**Protocol** (HTTP/1.1; bodies are bundles, §12):
-
-- `GET /v1/challenge`: the current proof-of-work challenge and prices.
-- `POST /v1/items`: a bundle of items for one id, with header
-  `Writ-Stamp: <challenge> <nonce>`. The reply is a **receipt**: a signed
-  answer (below) listing the hashes accepted, so the uploader can later show
-  that the server had them.
-- `GET /v1/id/<writ1…>?nonce=<hex>`: the record, the server's log and the
-  grant to its answer key, and a signed **answer**.
-
-**Answers.** The server's identity grants a leaf key `(keyserver answer)`
-for a day at a time; the leaf signs each answer as a data signature with
-context `writ/v1/keyserver/answer` over `D(id ‖ nonce ‖ H(record))`, with
-`issued` the server's time. A client that trusts the server (it pins the
-server's id, or grants it `(keyserver answer)`) checks that the answer
-verifies, that its nonce is the one sent and that `issued` is recent. Then:
-
-- the record is what the server holds now, not a copy replayed by someone on
-  the network path, which TLS would otherwise be needed for;
-- a server that leaves out an item it gave a receipt for has signed evidence
-  against itself.
-
-What remains is privacy: on-path observers see which ids are fetched.
-Operators who care put TLS in front with a proxy; nothing in writ changes.
-A client may leave out the nonce to get a cached answer (at most a minute
-old _(tune)_), which a CDN can serve.
-
-**What spam can and cannot do.** Every item in X's record must be signed by
-X's keys, so nobody else can add to it, crowd it out, or block X's own
-upload. Two doors stay open, and the rest of this section is about pricing
-them:
-
-1. registering new ids: an inception costs its maker about 0.6 s of CPU and
-   the server about 8 KB;
-2. a thief with X's current key filling X's record with revocations: bounded
-   by the per-id quota, and undone by X's rotation (§18.4).
-
-**Order of checks** (cheapest first, so junk costs us the least): request
-size (64 KiB _(tune)_) → bounded decode → stamp → structural checks (one id;
-id known or an inception; a rotation's revealed authority matches the
-commitment; a revocation names the head event or a kept hash) → signatures
-(about 0.5 ms each) → `Record::accept` → store.
-
-**Stamps.**
-`stamp = SHAKE256(msg("writ/v1/keyserver/stamp", challenge ‖ H(body) ‖ nonce), 32)`
-must start with at least `b` zero bits. Checking one costs one hash; making
-one costs about `2^b` hashes, about 0.3 µs each on one core, so 20 bits take
-about 0.3 s, 24 bits about 5 s, 28 bits about 80 s. The challenge is 32
-random bytes, replaced every 5 minutes _(tune)_ (the previous one is still
-accepted), so stamps cannot be computed in advance. `H(body)` ties a stamp to
-one upload.
-
-**Price.** `b = base + size + new + busy + load`, where:
-
-| term   | value                                                                                                                                                              |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `base` | 16 _(tune)_                                                                                                                                                        |
-| `size` | ⌈log2(KiB stored)⌉: work grows with bytes                                                                                                                          |
-| `new`  | 4 for an inception of an unknown id: registration costs 16 times an update                                                                                         |
-| `busy` | 1 for each update to this id in the last 7 days beyond the first 4 _(tune)_: frequent changes double in price                                                      |
-| `load` | 0 to 40, recomputed each minute: +1 while accepted bytes over the last hour exceed the disk budget's hourly share, or the write queue is long; −1 while below half |
-
-**Protected updates.** An id first seen at least 30 days ago with no update
-in the last 7 days _(tune)_ pays `new = busy = 0` and `load` capped at 4: at
-most about 23 bits, a few seconds on a laptop, however busy the server is.
-This is the "my key was stolen, revoke now" case, and it is why an honest
-user is never priced out. To abuse it an attacker must register ids 30 days
-ahead at full price, and then gets one cheap update per id per week, within
-the per-id quota.
-
-**Limits.**
-
-- Disk: a budget per day set by the operator, which drives `load`; a hard
-  cap, above 90% of which registration closes and only updates to known ids
-  are accepted; per id, at most 512 revocations _(tune)_ under the head.
-- CPU: at most 4 connections per address _(tune)_, read timeouts, and a
-  write queue ordered with protected updates first, then by work paid per
-  byte. Reads are static files per id.
-- Connection floods are for a reverse proxy; the server does not try to
-  survive them alone.
-
-**Limit of this design.** A stamp is a Keccak hash, which GPUs compute much
-faster than CPUs. If that becomes the problem, a memory-hard stamp (Balloon
-hashing over SHAKE256, implemented here, no new dependency) narrows the gap.
-
-### 18.6 Client
-
-- `writ publish -i DIR --server URL`: uploads DIR's log and the revocations
-  valid under its head, paying the stamp; keeps the receipt in
-  `DIR/receipts.writ`.
-- `writ fetch --server URL --server-id ID ID...`: fetches records, checks the
-  answers, and prints the items (or adds them to `--state`).
-- A small hand-written HTTP/1.1 client on `std::net`: `http://` only, bounded
-  reads, no new dependency.
-- `writ init` and `writ rotate` remind the user to publish: an id published
-  early becomes established (§18.5) before it is ever needed.
-
-### 18.7 Crates and order of work
+A **record** is a new item, signed by an identity under its newest event,
+that says: as of this time, my log's head is this event, and these are all
+the statements and data signatures I have revoked.
 
 ```
-libwrit          + record (§18.4), stamp (§18.5), channel (§18.3); multi-tag grants (§18.2)
-writ-keyserver   new: the server binary (HTTP, files on disk)
-writ-tool        + publish, fetch; --state uses Record
+record = "(" "record" issuer "(" "issued" time ")" "(" "head" hash ")" "(" "revoked" *hash ")" ")"
 ```
 
-1. Multi-tag grants: format, SPEC, vectors, CLI (`writ grant` takes several
-   TAGs).
-2. `Record`, and `--state` rebuilt on it.
-3. Stamps and pricing (pure: the server passes in its counters).
-4. `writ-keyserver`.
-5. `writ publish` and `writ fetch`.
-6. Channel binding.
+- `issuer` is `(X, n)` with `n` the head of X's log; `head` is that event's
+  hash; `revoked` is sorted and distinct. Label `writ/v1/record`; signed by k
+  of event n's authority (the current keys), like a statement.
+- A record is valid when its issuer's log reaches `n` and no further (a
+  record under an older event says nothing: the rotation after it may have
+  changed everything), `head` matches, the signature verifies, and `issued ≤
+now + skew`.
+- Every hash a valid record lists is revoked, as if by a revocation statement.
+  Revocation statements still work on their own; a record collects them.
+- A record reveals only hashes: nothing about what was said, or to whom.
+- `rotate` never keeps records: they belong to one event.
 
-### 18.8 Questions for the owner
+A thief with the current key can sign records too: records that leave out
+the owner's later revocations, or that revoke good statements. Both stop
+counting at the owner's rotation, for every verifier that sees it, as with
+every other theft of the current key (§10).
 
-- The HTTP server: hand-written on `std::net` (no dependency, but untrusted
-  connections meet our own parser) or a small vetted crate. Either way it
-  runs behind a reverse proxy in production.
-- The _(tune)_ numbers.
-- Whether `writ fetch` should also accept a record from standard input
-  (`curl … | writ fetch --check`), for people who want TLS through curl.
+### 18.5 Publishing: `publish` in the log
+
+An identity opts in by naming, in its log, how often it signs a new record
+and where it puts it:
+
+```
+inception = "(" "inception" authority "(" "next" hash ")" [ max-validity ] [ publish ] ")"
+rotation  = "(" "rotation" … [ max-validity ] [ publish ] "(" "keep" *hash ")" ")"
+publish   = "(" "publish" "(" "refresh" secs ")" *4url ")"   ; url: 1–255 bytes, printable ASCII, no spaces
+```
+
+- `refresh` is D: the owner promises a new record at least every D seconds
+  (at least 3600 _(tune)_). URLs are where to find it; there may be none, if
+  records travel some other way (stapled to proofs, gossip).
+- As with `max-validity`, each event states its own `publish`, and the head's
+  is the one in force; an event without it publishes nothing. Only a rotation
+  can change it, so a thief with the current key cannot switch it off. Logs
+  without the field keep their bytes.
+- It is in the log, not in each statement: one place covers everything the
+  identity signs, it costs one field rather than one per statement, and the
+  current key cannot change it.
+
+### 18.6 Freshness
+
+A verifier answering a question at time `now` applies one more rule to every
+statement or data signature `s` it uses (every grant on the chain, every name
+statement used to reach a holder, and the signature in `verify`):
+
+- If `s`'s issuer X has `publish` with refresh D at its head, and `s` lives
+  longer than D (no `expires`, or `expires − issued > D`), then the material
+  must hold a valid record by X with `issued ≥ now − D`, and `s` must not be
+  in its `revoked` list. Otherwise `s` is not valid, with the reason "no
+  fresh record from X", and the denial lists X's URLs.
+- If X does not publish, nothing changes: revocations count when they are in
+  the material, as today.
+
+Consequences:
+
+- **Every issuer on the chain counts.** In me → alice → bob, the verifier
+  needs my record (for my grant to alice, which is alice's authority) and
+  alice's (for her grant to bob). If my record revokes my grant to alice,
+  everything alice granted under it dies with it.
+- **The verifier's own root is local.** A verifier that brings its root's
+  own issuance log (`--as DIR`) already knows that root's revocations; that
+  root needs no record. libwrit takes these ids as an argument
+  (`Verifier::local`). A root given only by its id is treated like any other
+  issuer.
+- **Short-lived statements are exempt**, statement by statement: a
+  revocation would take up to D to arrive anyway. Leaf grants (at most a
+  day) rarely need a record; a 90-day grant from the same issuer does.
+- **Delegation passes on dependence.** Bob's access through alice depends on
+  alice's records staying fresh. If that matters to me, I grant to bob
+  directly.
+- A verifier that wants revocation checked for everyone may refuse chains
+  through issuers that do not publish (`--require-records`). Not the
+  default.
+
+### 18.7 Getting records
+
+Records are signed, so it does not matter who carries them. A host can
+withhold a record but cannot forge one or make an old one look new; plain
+HTTP, a CDN, a git repository or an email attachment all work, and https is
+not needed for integrity.
+
+- **The owner** signs and publishes, for example daily from cron:
+  `writ export -i me --record | ssh web 'cat > www/writ/me.writ'`. The file
+  holds the log and a new record. A rotation voids the current record at
+  once (§18.4), so `writ rotate` signs a new record under the new event in
+  the same step, and the file should be published straight after.
+- **The presenter** may staple: `writ prove --fetch` gets a fresh record for
+  every issuer on the chain and includes them in the proof, so the verifier
+  needs no network.
+- **The verifier** fills gaps: `check`, `verify`, `resolve` and `prove` take
+  `--fetch`, which, for each issuer that needs a record and has none fresh
+  in the material, runs `curl -fsS --max-filesize 16M --max-time 10` _(tune)_
+  on its URLs in turn, adds what comes back, and answers again. writ itself
+  opens no connections; without curl, `--fetch` fails with a clear error.
+- `--state` keeps, per remembered id, the log, the newest valid record, and
+  the revocation statements valid under the head (§16), so a record fetched
+  once keeps serving until it is D old.
+- Answers say when a record a chain relies on is within a fifth of D
+  _(tune)_ of going stale, so a broken cron job is noticed before it fails.
+
+### 18.8 Failure modes
+
+- **A host goes down.** Nothing happens while any fresh copy reaches the
+  verifier: from `--state`, from a stapled proof, from another URL. Records
+  do not depend on any one place.
+- **No fresh record reaches the verifier for longer than D.** Statements
+  from that issuer that need one are refused. This is deliberate: the
+  alternative, accepting when the check cannot be done ("soft fail"), lets
+  anyone who can block the check disable revocation. D is the grace period,
+  chosen per identity by its owner: short D revokes quickly and fails sooner
+  in an outage; long D tolerates outages and revokes slowly; no `publish` at
+  all depends on nothing.
+- **The owner stops signing** (a broken job, or gone for good). Their
+  long-lived statements stop verifying after D. For an owner who is gone,
+  that is the right outcome; for a broken job, the staleness warnings are the
+  defence.
+- **An attacker blocks every copy for longer than D.** That denies service to
+  one identity's long-lived statements and forges nothing. An attacker who
+  controls a verifier's network that thoroughly can block its application
+  anyway.
+
+### 18.9 A shared server: not proposed
+
+A server many people upload to would add a place to publish for people
+without a host. Its hard problem is spam. Every item in a record is signed by
+its id's keys, so spam cannot touch an existing identity's files, but
+registering new ids and frequent updates would need pricing: an earlier
+draft (commit 1cdd395) priced writes with a proof of work that rises with
+load, while keeping updates to established, quiet ids cheap. If built, it
+serves the same files, with a small vetted HTTP crate (owner's choice,
+2026-10-18).
+
+### 18.10 Order of work
+
+```
+libwrit     multi-tag grants; channel binding; record item; publish; freshness rule
+writ-tool   grant with several TAGs; init/rotate --publish --refresh;
+            export --record; --fetch; --state keeps records; staleness warnings
+```
+
+1. Multi-tag grants: format, SPEC, vectors, `writ grant` with several TAGs.
+2. Records and `publish`: format, the freshness rule, SPEC, vectors (fresh,
+   stale, exempt, local root, three-issuer chains).
+3. The CLI: `--publish`/`--refresh`, `export --record`, `--fetch`, `--state`,
+   warnings.
+4. Channel binding.
+
+### 18.11 Questions for the owner
+
+- Names: `record`, `publish`, `refresh`.
+- The minimum D, and whether `writ init` should suggest a default (7 days?).
+- `--fetch` running `curl`: acceptable as a runtime requirement for that
+  option only?
