@@ -25,6 +25,14 @@ pub(crate) struct Signature {
     pub(crate) ht: [XmssSig; D],
 }
 
+impl zeroize::Zeroize for Signature {
+    fn zeroize(&mut self) {
+        for node in self.nodes_mut() {
+            node.zeroize();
+        }
+    }
+}
+
 /// Number of n-byte nodes in a signature.
 const NODES: usize = 1 + K * (1 + A) + D * (LEN + HP);
 const _: () = assert!(NODES * N == SIGNATURE_SIZE);

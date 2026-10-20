@@ -362,8 +362,25 @@ struct LeafKeys {
     ed25519: Zeroizing<[u8; 32]>,
 }
 
+/// Bytes of dead stack wiped after the leaf suite's libcrux calls, which
+/// leave key-derivation and signing intermediates (ξ, the expanded ML-DSA
+/// key, masks, the expanded Ed25519 key) in frames libwrit can't reach.
+/// ML-DSA-65 signing holds the matrix A and the expanded key, together over
+/// 50 KiB, in those frames; 128 KiB covers them with margin. Best effort, as
+/// in writ-slhdsa (DESIGN.md §16).
+const LEAF_SCRUB_BYTES: usize = 128 * 1024;
+
 impl LeafKeys {
     fn derive(seed: &[u8; 32]) -> LeafKeys {
+        let keys = Self::derive_pieces(seed);
+        writ_slhdsa::scrub_stack_below::<LEAF_SCRUB_BYTES>();
+        keys
+    }
+
+    /// Never inlined: the scrub in [`LeafKeys::derive`] wipes the frames
+    /// below its own, so the derivation must run in one of them.
+    #[inline(never)]
+    fn derive_pieces(seed: &[u8; 32]) -> LeafKeys {
         let mut okm = Zeroizing::new([[0u8; 32]; 2]);
         shake256_labelled(label::KEYGEN_LEAF, seed, okm.as_flattened_mut());
         let [xi, ed] = &*okm;
@@ -371,6 +388,23 @@ impl LeafKeys {
             mldsa: libcrux_ml_dsa::ml_dsa_65::generate_key_pair(*xi),
             ed25519: Zeroizing::new(*ed),
         }
+    }
+
+    /// Never inlined, for the same reason as [`LeafKeys::derive_pieces`].
+    #[inline(never)]
+    fn sign_pieces(&self, m: &[u8], rnd: &Zeroizing<[u8; 32]>) -> Result<Vec<u8>, SignError> {
+        let ml = libcrux_ml_dsa::ml_dsa_65::sign(
+            &self.mldsa.signing_key,
+            m,
+            label::LEAF_SUITE.as_bytes(),
+            **rnd,
+        )
+        .map_err(|_| SignError::MlDsa)?;
+        let ed = libcrux_ed25519::sign(m, &self.ed25519).map_err(|_| SignError::Ed25519)?;
+        let mut sig = Vec::with_capacity(LEAF_SIGNATURE_SIZE);
+        sig.extend_from_slice(ml.as_slice());
+        sig.extend_from_slice(&ed);
+        Ok(sig)
     }
 
     fn ed25519_public(&self) -> [u8; 32] {
@@ -396,20 +430,13 @@ impl Signer for LeafSigner {
         let m = labelled_message(label::LEAF_SUITE, msg);
         let mut rnd = Zeroizing::new([0u8; 32]);
         rng.fill(rnd.as_mut());
-        let ml = libcrux_ml_dsa::ml_dsa_65::sign(
-            &keys.mldsa.signing_key,
-            &m,
-            label::LEAF_SUITE.as_bytes(),
-            *rnd,
-        )
-        .map_err(|_| SignError::MlDsa)?;
-        let ed = libcrux_ed25519::sign(&m, &keys.ed25519).map_err(|_| SignError::Ed25519)?;
-        let mut sig = Vec::with_capacity(LEAF_SIGNATURE_SIZE);
-        sig.extend_from_slice(ml.as_slice());
-        sig.extend_from_slice(&ed);
+        let sig = keys.sign_pieces(&m, &rnd);
+        writ_slhdsa::scrub_stack_below::<LEAF_SCRUB_BYTES>();
+        let mut sig = sig?;
         // Verify before release, as for the root suite: catches faults in
         // deterministic Ed25519 signing, which would otherwise leak the key.
         if !self.public.verify(msg, &sig) {
+            sig.zeroize();
             return Err(SignError::SelfCheckFailed);
         }
         Ok(sig)

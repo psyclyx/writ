@@ -203,7 +203,7 @@ impl core::error::Error for Error {}
 /// hash-function frame under [`sign`] lies about 18 KiB below the top of the
 /// scrub frame, and libcrux's Keccak frames lie below that. 32 KiB covers
 /// them with margin; the cost is negligible next to signing.
-const SCRUB_BYTES: usize = 32 * 1024;
+pub const SCRUB_BYTES: usize = 32 * 1024;
 
 /// Best-effort wipe of the dead stack below the caller's frame.
 ///
@@ -218,7 +218,18 @@ const SCRUB_BYTES: usize = 32 * 1024;
 /// the residue.
 #[inline(never)]
 fn scrub_stack() {
-    let mut s = [0u8; SCRUB_BYTES];
+    scrub_stack_below::<SCRUB_BYTES>();
+}
+
+/// Best-effort wipe of `BYTES` of dead stack below the caller's frame, for
+/// callers that run other secret-handling code (libwrit's leaf suite) and
+/// want the same backstop as [`sign`]. Call it from the frame *above* the
+/// one whose callees held the secrets; a callee that may be inlined into the
+/// caller should be marked `#[inline(never)]`, as [`sign`] does. See
+/// [`SCRUB_BYTES`] for how the depth was chosen here.
+#[inline(never)]
+pub fn scrub_stack_below<const BYTES: usize>() {
+    let mut s = [0u8; BYTES];
     s.zeroize();
     core::hint::black_box(&s);
 }
@@ -297,12 +308,27 @@ pub fn sign_internal(
     msg: &[u8],
     addrnd: &[u8; N],
 ) -> Result<[u8; SIGNATURE_SIZE], Error> {
-    let sig = sign_pieces(sk, &[msg], addrnd).to_bytes();
-    let ok = verify_pieces(&sk.verifying_key(), &[msg], &sig);
+    let pieces: [&[u8]; 1] = [msg];
+    release(sk, &pieces, addrnd)
+}
+
+/// Signs `pieces`, verifies the result, and releases it only if it verifies.
+/// A signature that fails the check may be the product of a fault and so
+/// unsafe to let out: it is wiped, not just dropped.
+fn release(
+    sk: &SigningKey,
+    pieces: &Pieces<'_>,
+    addrnd: &Node,
+) -> Result<[u8; SIGNATURE_SIZE], Error> {
+    let mut typed = sign_pieces(sk, pieces, addrnd);
+    let mut sig = typed.to_bytes();
+    typed.zeroize();
+    let ok = verify_pieces(&sk.verifying_key(), pieces, &sig);
     scrub_stack();
     if ok {
         Ok(sig)
     } else {
+        sig.zeroize();
         Err(Error::SelfVerificationFailed)
     }
 }
@@ -342,14 +368,7 @@ pub fn sign(
 ) -> Result<[u8; SIGNATURE_SIZE], Error> {
     let prefix = pure_prefix(ctx).ok_or(Error::ContextTooLong)?;
     let pieces: [&[u8]; 3] = [&prefix, ctx, msg];
-    let sig = sign_pieces(sk, &pieces, addrnd).to_bytes();
-    let ok = verify_pieces(&sk.verifying_key(), &pieces, &sig);
-    scrub_stack();
-    if ok {
-        Ok(sig)
-    } else {
-        Err(Error::SelfVerificationFailed)
-    }
+    release(sk, &pieces, addrnd)
 }
 
 /// FIPS 205 Alg. 24 `slh_verify` (pure), with context string `ctx`.
