@@ -1353,7 +1353,9 @@ impl Item {
             return Err(DecodeError::Sexp(writ_sexp::DecodeError::TooLarge));
         }
         if writ_sexp::armor::is_armored(bytes) {
-            writ_sexp::armor::decode(bytes)
+            // Each block is bounded before it is base64-decoded, so an
+            // oversized block costs no more than in the binary form.
+            writ_sexp::armor::decode_bounded(bytes, writ_sexp::Limits::default().max_len)
                 .map_err(DecodeError::Armor)?
                 .iter()
                 .map(|b| Item::decode(b))

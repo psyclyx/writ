@@ -99,10 +99,14 @@ Items travel as armored text, one block per item:
 -----END WRIT-----
 ```
 
+- The BEGIN and END lines hold exactly those words, from the first column,
+  with nothing after them but the line ending.
 - Every base64 line is exactly 64 characters, except the last, which has 1 to 64. Base64 MUST be canonical (correct padding, zero trailing bits).
 - Lines end in LF; CRLF is also accepted. There are no headers.
 - Between and around blocks only whitespace (space, tab, CR, LF) may appear.
   Anything else MUST be rejected.
+- A decoder SHOULD refuse a block whose text is longer than one item's
+  limit allows (4·⌈4 MiB / 3⌉ characters) before base64-decoding it.
 
 A **bundle** is any number of blocks, in any order, so concatenating armored
 files yields a bundle. A bundle MAY instead be the binary concatenation of

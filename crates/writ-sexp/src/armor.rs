@@ -60,6 +60,11 @@ pub enum ArmorError {
         /// Line number of the BEGIN line.
         line: usize,
     },
+    /// The block encodes more than the caller's limit for one item.
+    TooLarge {
+        /// Line number of the BEGIN line.
+        line: usize,
+    },
 }
 
 impl fmt::Display for ArmorError {
@@ -77,6 +82,9 @@ impl fmt::Display for ArmorError {
             ArmorError::BadBase64 { line } => {
                 write!(f, "line {line}: block is not canonical base64")
             }
+            ArmorError::TooLarge { line } => {
+                write!(f, "line {line}: block is larger than one item may be")
+            }
         }
     }
 }
@@ -93,8 +101,17 @@ pub fn is_armored(text: &[u8]) -> bool {
         .is_some_and(|t| t.starts_with(BEGIN.as_bytes()))
 }
 
-/// Decodes every block in `text`.
+/// Decodes every block in `text`, with no limit on a block's size.
 pub fn decode(text: &[u8]) -> Result<Vec<Vec<u8>>, ArmorError> {
+    decode_bounded(text, usize::MAX)
+}
+
+/// Decodes every block in `text`, refusing a block that would decode to
+/// more than `max_item` bytes before decoding it, so an oversized block
+/// costs no more than reading its lines.
+pub fn decode_bounded(text: &[u8], max_item: usize) -> Result<Vec<Vec<u8>>, ArmorError> {
+    // Base64 of n bytes is 4·⌈n/3⌉ characters.
+    let max_body = max_item.div_ceil(3).saturating_mul(4);
     let mut items = Vec::new();
     let mut lines = text.split(|&b| b == b'\n').enumerate().peekable();
     while let Some((i, raw)) = lines.next() {
@@ -123,6 +140,9 @@ pub fn decode(text: &[u8]) -> Result<Vec<Vec<u8>>, ArmorError> {
                 return Err(ArmorError::BadLineLength { line: j + 1 });
             }
             short_line = line.len() < COLUMNS;
+            if body.len() + line.len() > max_body {
+                return Err(ArmorError::TooLarge { line: begin });
+            }
             body.extend_from_slice(line);
         }
         match base64::decode(&body) {
@@ -166,6 +186,25 @@ mod tests {
             Ok(vec![b"first".to_vec(), b"second".to_vec()])
         );
         assert_eq!(decode(b"  \n"), Ok(vec![]));
+    }
+
+    #[test]
+    fn bounded() {
+        let text = encode(&[7u8; 100]);
+        assert_eq!(decode_bounded(text.as_bytes(), 100).map(|v| v.len()), Ok(1));
+        assert_eq!(
+            decode_bounded(text.as_bytes(), 99),
+            Err(ArmorError::TooLarge { line: 1 })
+        );
+        // The limit is on what a block decodes to, not on the text, at the
+        // granularity of base64's three-byte groups.
+        for len in [1, 2, 3, 4, 5, 6, 63, 64, 65, 66] {
+            let text = encode(&vec![1u8; len]);
+            assert!(decode_bounded(text.as_bytes(), len).is_ok(), "{len}");
+            if len > 3 {
+                assert!(decode_bounded(text.as_bytes(), len - 3).is_err(), "{len}");
+            }
+        }
     }
 
     #[test]
