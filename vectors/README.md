@@ -38,6 +38,9 @@ lines are comments. Hex is lower case.
   candidate with its reason kind.
 - `chains/signature.writ`, `chains/signature.txt` — a leaf-signed data
   signature and its expected verification results.
+- `chains/channel.writ`, `chains/channel.txt` — a channel binding (SPEC §14)
+  by the same leaf: the exporter, role, application, context and data hash,
+  and the expected results of checking it.
 
 Reason kinds: `malformed`, `log`, `unknown-event`, `not-kept`,
 `unknown-leaf` (the leaf key is not in the material), `bad-signature`, `suite`, `revoked`, `not-yet-valid`, `expired`,

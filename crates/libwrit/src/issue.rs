@@ -306,6 +306,21 @@ pub fn sign_data_leaf(
     rng: &mut dyn Rng,
 ) -> Result<Signed<DataSig>, IssueError> {
     check_context(context)?;
+    sign_data_leaf_any(data, context, issued, signer, rng)
+}
+
+/// [`sign_data_leaf`] without refusing writ's own contexts: for writ's
+/// own uses, such as channel binding.
+pub(crate) fn sign_data_leaf_any(
+    data: Hash,
+    context: &[u8],
+    issued: crate::Time,
+    signer: &dyn Signer,
+    rng: &mut dyn Rng,
+) -> Result<Signed<DataSig>, IssueError> {
+    if context.is_empty() || context.len() > crate::model::MAX_ATOM {
+        return Err(IssueError::Rule("context must be 1 to 255 bytes"));
+    }
     let PublicKey::Leaf(key) = signer.public_key() else {
         return Err(IssueError::LeafSigner);
     };
@@ -318,9 +333,19 @@ pub fn sign_data_leaf(
     sign_leaf(body, signer, rng)
 }
 
+/// Contexts starting with this are writ's own (channel binding, DESIGN.md
+/// §18.3): applications can't sign data under them, so a file signature can
+/// never pass for one.
+pub const RESERVED_CONTEXT: &[u8] = b"writ/";
+
 fn check_context(context: &[u8]) -> Result<(), IssueError> {
     if context.is_empty() || context.len() > crate::model::MAX_ATOM {
         return Err(IssueError::Rule("context must be 1 to 255 bytes"));
+    }
+    if context.starts_with(RESERVED_CONTEXT) {
+        return Err(IssueError::Rule(
+            "contexts starting with writ/ are reserved for writ",
+        ));
     }
     Ok(())
 }

@@ -2,7 +2,7 @@
 
 data = 68656c6c6f2c20777269740a
 data-hash = cd551e5aae8f1d86673bf303b1586e24e4f5e32debed18bdb3c40052ca1c9b2f
-context = writ/test-vectors/v1
-signature-hash = 6e8d1eee1a27adcdad8fa1c3e01d202e9cdfd3673121883b59457c6f17fdd793
+context = example/test-vectors/v1
+signature-hash = fe736132699b66da98cab9e2a47ff3f18d7361a09cc3b9d1a033159b5b3d2c12
 verify-as-root-for-(svc)-at-1800000100 = good
 verify-as-root-for-(svc)-at-1800003600 = bad

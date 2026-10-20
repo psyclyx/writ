@@ -9,6 +9,7 @@
 //! - Issue with [`incept`], [`rotate`], [`issue`], [`sign_data`].
 
 pub mod bech32;
+pub mod channel;
 mod hash;
 pub mod issue;
 pub mod keys;

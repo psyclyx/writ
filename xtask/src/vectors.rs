@@ -407,7 +407,7 @@ fn world() -> World {
 
     let signature = sign_data_leaf(
         Hash::of_data(b"hello, writ\n"),
-        b"writ/test-vectors/v1",
+        b"example/test-vectors/v1",
         T0 + 10,
         &leaf,
         &mut rng,
@@ -817,7 +817,7 @@ fn items_and_chains(files: &mut Files) {
         String::from("# A data signature (SPEC.md §8) by the leaf key in chains/world.writ.\n");
     let _ = write!(
         s,
-        "\ndata = {}\ndata-hash = {}\ncontext = writ/test-vectors/v1\nsignature-hash = {}\n",
+        "\ndata = {}\ndata-hash = {}\ncontext = example/test-vectors/v1\nsignature-hash = {}\n",
         hex(b"hello, writ\n"),
         sig.body.data,
         sig.body.hash()
@@ -826,7 +826,7 @@ fn items_and_chains(files: &mut Files) {
     let ok = v.verify(
         sig,
         &Hash::of_data(b"hello, writ\n"),
-        b"writ/test-vectors/v1",
+        b"example/test-vectors/v1",
         &tag,
         T0 + 100,
     );
@@ -839,7 +839,7 @@ fn items_and_chains(files: &mut Files) {
     let late = v.verify(
         sig,
         &Hash::of_data(b"hello, writ\n"),
-        b"writ/test-vectors/v1",
+        b"example/test-vectors/v1",
         &tag,
         T0 + 3600,
     );
@@ -851,6 +851,58 @@ fn items_and_chains(files: &mut Files) {
     );
     put(files, "chains/signature.txt", &s);
     put(files, "chains/signature.writ", &item.armor());
+
+    // A channel binding (DESIGN.md §18.3) by the same leaf, with its own
+    // random stream so the vectors above don't move.
+    use libwrit::channel::{Role, bind, check};
+    let exporter = [0x42u8; 32];
+    let binding = bind(
+        &exporter,
+        Role::Initiator,
+        "example",
+        T0 + 10,
+        &seed(50).leaf(),
+        &mut VectorRng(Hash([5; 32])),
+    )
+    .unwrap();
+    let mut d = DataHasher::new();
+    d.update(&[1]);
+    d.update(&exporter);
+    let mut s = String::from(
+        "# A channel binding (DESIGN.md §18.3) by the leaf key in chains/world.writ:\n\
+         # data = D(role ‖ exporter), role 1 = initiator, 2 = responder;\n\
+         # context = writ/v1/channel/ ‖ app.\n",
+    );
+    let _ = write!(
+        s,
+        "\nexporter = {}\nrole = 1\napp = example\ncontext = writ/v1/channel/example\ndata-hash = {}\nsignature-hash = {}\n",
+        hex(&exporter),
+        d.finish(),
+        binding.body.hash()
+    );
+    let tag = Tag::parse("(svc)").unwrap();
+    for (what, role, now) in [
+        ("as-initiator", Role::Initiator, T0 + 100),
+        ("as-responder", Role::Responder, T0 + 100),
+        (
+            "as-initiator-after-the-leaf-expired",
+            Role::Initiator,
+            T0 + 3600,
+        ),
+    ] {
+        let ok = check(&v, &binding, &exporter, role, "example", &tag, now).is_ok();
+        let _ = writeln!(
+            s,
+            "check-{what}-for-(svc)-at-{now} = {}",
+            if ok { "good" } else { "bad" }
+        );
+    }
+    put(files, "chains/channel.txt", &s);
+    put(
+        files,
+        "chains/channel.writ",
+        &Item::Signature(binding).armor(),
+    );
 }
 
 /// Encodings every implementation must reject (SPEC.md §5).

@@ -280,6 +280,10 @@ signature = "(" "signature" issuer "(" "issued" time ")" "(" "context" context "
 `context` is 1–255 bytes chosen by the application. `data` is `D(data)` (§2).
 The signature **hash** is `H("writ/v1/sig", canonical(signature))`.
 
+Contexts that start with `writ/` are reserved for writ's own uses, such as
+channel binding (§14). Signers MUST NOT sign application data under them, so
+that no application signature can pass for one of writ's.
+
 ### 5.6 Records
 
 ```
@@ -486,3 +490,23 @@ On rotation, the tool's `keep` is every statement and data signature in
 §7, signatures included, except revocations and names and grants whose
 subject is a leaf key. `issued.writ` is not trusted: the rotation endorses
 each kept hash, and verifiers never check its signatures again.
+
+## 14. Channel binding
+
+A channel binding ties a secure channel (TLS 1.3, DTLS, QUIC, Noise) to a key
+writ vouches for. writ does no key exchange.
+
+- `E` is the channel's exporter value, at least 32 bytes, the same on both
+  sides and unique to the session: for TLS 1.3, the exporter (RFC 8446 §7.5)
+  with label `EXPORTER-writ-channel`, empty context and length 32; for Noise,
+  the handshake hash.
+- `role` is 1 for the side that started the handshake and 2 for the other.
+- `app` names the application, 1–239 bytes.
+- A side binds the channel with a data signature (§5.5) by its leaf key with
+  context `"writ/v1/channel/" ‖ app` over `D(role ‖ E)`.
+- The other side checks it: the context and data must be exactly those for
+  this channel's `E`, the binder's role and `app`; the signature must be good
+  for the tag the application requires (§10).
+
+Because `E` never repeats, a binding cannot be replayed on another channel;
+because the role is signed, it cannot be reflected back to its signer.

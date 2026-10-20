@@ -1882,3 +1882,15 @@ fn require_records_refuses_non_publishers_unless_local() {
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("publishes no records"), "{err}");
 }
+
+#[test]
+fn writ_contexts_are_reserved() {
+    let s = Sandbox::new("reserved");
+    s.init("me");
+    std::fs::write(s.path("f"), b"data").unwrap();
+    let err = s.fails(
+        &["sign", "-i", "me", "--context", "writ/v1/channel/x", "f"],
+        2,
+    );
+    assert!(err.contains("reserved for writ"), "{err}");
+}

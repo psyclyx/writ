@@ -1,0 +1,13 @@
+# A channel binding (DESIGN.md §18.3) by the leaf key in chains/world.writ:
+# data = D(role ‖ exporter), role 1 = initiator, 2 = responder;
+# context = writ/v1/channel/ ‖ app.
+
+exporter = 4242424242424242424242424242424242424242424242424242424242424242
+role = 1
+app = example
+context = writ/v1/channel/example
+data-hash = 6f12e84a0590839a8ed79ce7624fd8805f3fdda58dd87c81a7f02082e4ad29f5
+signature-hash = 59b87c6636f2d15104545af3c22432a90b4fdc61da5657fcd019aa46896ea7e3
+check-as-initiator-for-(svc)-at-1800000100 = good
+check-as-responder-for-(svc)-at-1800000100 = bad
+check-as-initiator-after-the-leaf-expired-for-(svc)-at-1800003600 = bad

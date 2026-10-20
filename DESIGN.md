@@ -818,9 +818,9 @@ thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
 
 ## 18. Multi-tag grants, channel binding, published revocations
 
-**Status: decided 2026-10-18 (§16); not built yet.** The byte-level rules
-move to SPEC.md as each part is built. Numbers marked _(tune)_ are starting
-points, to revisit after use.
+**Status: decided 2026-10-18 (§16); built 2026-10-19.** The byte-level rules
+are in SPEC.md (§5.3, §5.4, §5.6, §7, §10, §11, §14). Numbers marked _(tune)_
+are starting points, to revisit after use.
 
 ### 18.1 Scope
 
@@ -1082,4 +1082,6 @@ writ-tool   grant with several TAGs; init/rotate --publish --max-age;
    DIR/record.writ (the log and a new record); `export --record` renews it;
    query commands take `--fetch` and `--require-records`; `--state` keeps
    records; denials name the URLs; answers warn in the last fifth of max-age.
-4. Channel binding.
+4. Channel binding. Built 2026-10-19: `libwrit::channel` (`bind`, `check`,
+   `Role`); `sign_data` and `writ sign` refuse contexts starting with `writ/`;
+   SPEC §14 and a vector in `chains/channel.*`.

@@ -1706,3 +1706,72 @@ fn data_signatures_by_a_publisher_need_a_fresh_record() {
         .unwrap();
     assert!(proof.records.contains(&rec.body.hash()));
 }
+
+/// Channel binding (DESIGN.md §18.3): a binding counts for its channel, its
+/// role and its application only, and only if its key holds the tag.
+#[test]
+fn channel_binding() {
+    use crate::channel::{Role, bind, check};
+    let a = Ident::new(1);
+    let leaf = FakeLeaf::new(7);
+    let g = a.say(
+        grant(Subject::Leaf(leaf.0.clone()), "(screen view)", false),
+        10,
+        Some(10 + 3600),
+    );
+    let w = World::new(&a, [st(g)]);
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    let e = [0x42u8; 32];
+    let sig = bind(
+        &e,
+        Role::Initiator,
+        "screen",
+        20,
+        &leaf,
+        &mut TestRng::new(0),
+    )
+    .unwrap();
+    let ok =
+        |exporter: &[u8], role, app, t: &str| check(&v, &sig, exporter, role, app, &tag(t), 30);
+    assert!(ok(&e, Role::Initiator, "screen", "(screen view video)").is_ok());
+    // Not reflected to the other role, another channel, or another app.
+    assert_eq!(
+        ok(&e, Role::Responder, "screen", "(screen view)"),
+        Err(Denial::Data)
+    );
+    assert_eq!(
+        ok(&[0x43; 32], Role::Initiator, "screen", "(screen view)"),
+        Err(Denial::Data)
+    );
+    assert_eq!(
+        ok(&e, Role::Initiator, "files", "(screen view)"),
+        Err(Denial::Context)
+    );
+    // The key must hold the tag.
+    assert!(ok(&e, Role::Initiator, "screen", "(screen control)").is_err());
+    // Short exporters and writ's own contexts are refused when signing.
+    assert!(
+        bind(
+            &[0; 31],
+            Role::Initiator,
+            "screen",
+            20,
+            &leaf,
+            &mut TestRng::new(0)
+        )
+        .is_err()
+    );
+    assert_eq!(
+        sign_data_leaf(
+            Hash([0; 32]),
+            b"writ/v1/channel/screen",
+            20,
+            &leaf,
+            &mut TestRng::new(0)
+        )
+        .map(|_| ()),
+        Err(IssueError::Rule(
+            "contexts starting with writ/ are reserved for writ"
+        ))
+    );
+}
