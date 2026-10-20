@@ -1,15 +1,17 @@
-//! Verifier state (`--state DIR`): the clock floor, and the identity logs
-//! and revocations this verifier has accepted (DESIGN.md §4.4, §9.4).
+//! Verifier state (`--state DIR`): the clock floor, and the identity logs,
+//! revocations and revocation records this verifier has accepted (DESIGN.md
+//! §4.4, §9.4, §18.7).
 //!
 //! ```text
 //! DIR/floor             the clock floor, decimal seconds since the epoch
-//! DIR/logs/<id>.writ    the log and revocations of each identity a question
-//!                       relied on
+//! DIR/logs/<id>.writ    the log, revocations and records (the newest, and
+//!                       up to 15 older ones that list revocations the rest
+//!                       don't) of each identity a question relied on
 //! ```
 //!
 //! Persisted items are added to every query's material, so a verifier never
 //! goes back to an older log head (a stale bundle can't undo a rotation), a
-//! revocation once seen stays seen, and two conflicting events, once seen,
+//! revocation or fresh record once seen stays seen, and two conflicting events, once seen,
 //! stay seen: the identity remains refused until you delete its file.
 
 use crate::error::{Context, Result, err};

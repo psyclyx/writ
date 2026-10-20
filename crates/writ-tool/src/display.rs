@@ -422,7 +422,8 @@ fn issuer_short(i: &Issuer) -> String {
 }
 
 /// Why the answer is no.
-pub fn denial(d: &Denial, material: &Material) -> String {
+/// `fetched`: whether --fetch was used, so the hints don't suggest it again.
+pub fn denial(d: &Denial, material: &Material, fetched: bool) -> String {
     let mut out = format!("{d}\n");
     match d {
         Denial::NotFound { rejected } => {
@@ -443,12 +444,16 @@ pub fn denial(d: &Denial, material: &Material) -> String {
                     r.reason
                 );
                 if matches!(r.reason, libwrit::Reason::NoFreshRecord { .. }) {
-                    out.push_str(&record_hint(material, &r.statement));
+                    out.push_str(&record_hint(material, &r.statement, fetched));
                 }
             }
         }
         Denial::Signature(libwrit::Reason::NoFreshRecord { .. }) => {
-            out.push_str("  get a fresh record from the signer, or run again with --fetch\n");
+            out.push_str(if fetched {
+                "  get a fresh record from the signer\n"
+            } else {
+                "  get a fresh record from the signer, or run again with --fetch\n"
+            });
         }
         Denial::Compromised(e) => {
             let _ = writeln!(
@@ -468,7 +473,7 @@ pub fn denial(d: &Denial, material: &Material) -> String {
 }
 
 /// Where a statement's issuer publishes its records.
-fn record_hint(material: &Material, statement: &libwrit::Hash) -> String {
+fn record_hint(material: &Material, statement: &libwrit::Hash, fetched: bool) -> String {
     let urls = material
         .statement(statement)
         .and_then(|s| s.body.issuer.id())
@@ -489,8 +494,13 @@ fn record_hint(material: &Material, statement: &libwrit::Hash) -> String {
         "      get a fresh record from its issuer\n".to_owned()
     } else {
         format!(
-            "      a fresh record is published at {}; run again with --fetch\n",
-            urls.join(", ")
+            "      a fresh record is published at {}{}\n",
+            urls.join(", "),
+            if fetched {
+                ", but none could be fetched"
+            } else {
+                "; run again with --fetch"
+            }
         )
     }
 }

@@ -126,8 +126,8 @@ const STATE: Opt = opt(
     "state",
     "DIR",
     Value::NewDir,
-    "keep state in DIR between runs: the identity logs and revocations \
-     seen, and the clock floor",
+    "keep state in DIR between runs: the identity logs, revocations and \
+     revocation records seen, and the clock floor",
 );
 const LEAF_CEILING: Opt = opt(
     "leaf-ceiling",
@@ -143,7 +143,8 @@ const FETCH: Opt = flag(
 );
 const REQUIRE_RECORDS: Opt = flag(
     "require-records",
-    "refuse long-lived statements by identities that publish no revocation records",
+    "refuse statements by identities that publish no revocation records, \
+     except roots given as directories",
 );
 const PUBLISH: Opt = opt(
     "publish",
@@ -183,7 +184,7 @@ const TAGS_ARG: Arg = arg(
     "TAG",
     Value::Text,
     "a list of words from general to specific, such as '(ssh nas)'; \
-     several make one grant of each",
+     several TAGs make one grant that covers each of them",
 )
 .many();
 

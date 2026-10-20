@@ -279,8 +279,7 @@ pub fn revoke(parsed: &Parsed) -> Result<()> {
     // A publishing identity's verifiers learn of revocations from its
     // records: sign a new one now (DESIGN.md §18.7).
     if ident.log.head().publish().is_some() {
-        let record = records::sign(&ident.log, &ident.issued, &signers)?;
-        records::write(&ident.dir, &ident.log, record)?;
+        records::renew(&ident.dir, &ident.log, &signers)?;
         say(parsed, records::reminder(&ident.dir, &ident.log));
     }
     Ok(())

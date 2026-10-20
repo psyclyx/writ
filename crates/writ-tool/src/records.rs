@@ -4,7 +4,7 @@
 
 use crate::args::Parsed;
 use crate::error::{Error, Result, err};
-use crate::ident::RECORD;
+use crate::ident::{ISSUED, RECORD};
 use crate::{OsRng, fs, wall_clock, warn};
 use libwrit::keys::RootSigner;
 use libwrit::time::{Duration, parse_duration};
@@ -62,9 +62,15 @@ pub fn setting(parsed: &Parsed, current: Option<&Publish>) -> Result<Option<Publ
         if !lower.starts_with("https://") && !lower.starts_with("http://") {
             return err(format!("--publish {u:?}: give an http:// or https:// URL"));
         }
+        if host(u).is_empty() {
+            return err(format!("--publish {u:?}: the URL has no host"));
+        }
     }
     let publish = Publish::new(max_age, urls).ok_or_else(|| {
-        Error::Msg("--publish: a URL must be 1 to 255 characters, without spaces".into())
+        Error::Msg(
+            "--publish: a URL must be 1 to 255 characters of printable ASCII, without spaces"
+                .into(),
+        )
     })?;
     if let [first, rest @ ..] = publish.urls()
         && !rest.is_empty()
@@ -91,7 +97,7 @@ fn host(url: &str) -> String {
     } else {
         host.split(':').next().unwrap_or(host)
     };
-    host.to_ascii_lowercase()
+    host.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// A new record for the identity of `log`, signed now by `signers`:
@@ -119,6 +125,18 @@ pub fn sign(log: &Log, issued: &[Item], signers: &[RootSigner]) -> Result<Signed
     let refs: Vec<&dyn Signer> = signers.iter().map(|s| s as &dyn Signer).collect();
     libwrit::sign_record(log, revoked, now, &refs, &mut OsRng)
         .map_err(|e| Error::Msg(format!("signing the record: {e}")))
+}
+
+/// Signs a new record for the identity in `dir` (whose log is `log`) and
+/// writes DIR/record.writ, returning its text. It holds the lock that
+/// guards issued.writ and reads that file afresh, so a revocation recorded
+/// meanwhile by another writ is not left out, and two writers can't
+/// interleave.
+pub fn renew(dir: &Path, log: &Log, signers: &[RootSigner]) -> Result<String> {
+    let _recording = fs::lock_file(&dir.join(".issued.lock"), true)?;
+    let issued = fs::read_bundle_file(&dir.join(ISSUED))?;
+    let record = sign(log, &issued, signers)?;
+    write(dir, log, record)
 }
 
 /// Writes DIR/record.writ, the log and `record`, and returns its text.
@@ -161,5 +179,7 @@ mod tests {
         assert_eq!(host("http://u:p@example.org:8080/a?b"), "example.org");
         assert_eq!(host("https://[::1]:443/r"), "[::1]");
         assert_eq!(host("https://example.org"), "example.org");
+        assert_eq!(host("https://example.org./x"), "example.org");
+        assert_eq!(host("http://"), "");
     }
 }

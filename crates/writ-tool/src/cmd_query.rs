@@ -8,7 +8,15 @@ use crate::state::State;
 use crate::style::{self, Stream};
 use crate::{display, fs, subject, wall_clock};
 use libwrit::time::{Duration, parse_duration};
-use libwrit::{Body, Denial, Floor, Id, Item, LogError, Material, Policy, Reason, Time, Verifier};
+use libwrit::{
+    Body, Denial, Floor, Holder, Id, Item, LogError, Material, Policy, Reason, Tag, Time, Verifier,
+};
+
+/// Most identities `--fetch` gets records for in one command.
+const MAX_FETCHES: usize = 16;
+/// Most records `--state` keeps per identity: the newest, and older ones
+/// that list revocations the kept ones do not. A rotation clears them all.
+const MAX_RECORDS_KEPT: usize = 16;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -49,6 +57,13 @@ impl Query {
                 local.push(dir.id());
                 for item in dir.log.items().chain(dir.issued.iter().cloned()) {
                     material.add(item);
+                }
+                // Its own record, so proofs can carry it (DESIGN.md §18.7).
+                let record = dir.dir.join(crate::ident::RECORD);
+                if record.is_file() {
+                    for item in fs::read_bundle_file(&record)? {
+                        material.add(item);
+                    }
                 }
             } else {
                 roots.push(subject::id(who)?);
@@ -133,6 +148,10 @@ impl Query {
         let mut all: BTreeSet<Id> = ids.into_iter().collect();
         all.extend(self.roots.iter().copied());
         let verifier = self.verifier();
+        // What to keep is judged as of the latest time known, not an --at
+        // in the past: else a record or revocation issued after it would be
+        // dropped from the state, and a later bundle could leave it out.
+        let latest = self.now.max(self.wall);
         let remembered = all.into_iter().filter_map(|id| {
             let mut items = match &*self.material.log(&id) {
                 Ok(log) => log.items().collect::<Vec<_>>(),
@@ -144,26 +163,30 @@ impl Query {
             items.extend(self.material.issued_by(&id).iter().filter_map(|h| {
                 let st = self.material.statement(h)?;
                 let revoke = matches!(st.body.claim, libwrit::Claim::Revoke { .. });
-                (revoke && verifier.statement_status(h, self.now).is_ok())
+                (revoke && verifier.statement_status(h, latest).is_ok())
                     .then(|| self.material.shippable(h))?
             }));
             // And its records (DESIGN.md §18.7): the newest, which keeps
             // statements fresh, and any older one that lists a revocation
             // the kept ones don't, since records are combined.
-            let mut records: Vec<&libwrit::Signed<libwrit::Record>> = self
+            let mut records: Vec<(libwrit::Hash, &libwrit::Signed<libwrit::Record>)> = self
                 .material
                 .records_by(&id)
                 .iter()
-                .filter(|h| verifier.record_status(h, self.now).is_ok())
-                .filter_map(|h| self.material.record(h))
+                .filter(|h| verifier.record_status(h, latest).is_ok())
+                .filter_map(|h| Some((*h, self.material.record(h)?)))
                 .collect();
-            records.sort_by_key(|r| std::cmp::Reverse(r.body.issued));
+            records.sort_by_key(|(_, r)| std::cmp::Reverse(r.body.issued));
             let mut listed = BTreeSet::new();
-            for (i, r) in records.into_iter().enumerate() {
-                let adds = r.body.revoked.iter().any(|h| !listed.contains(h));
-                if i == 0 || adds {
+            let mut kept = 0;
+            for (i, (h, r)) in records.into_iter().enumerate() {
+                let adds = r.body.revoked.iter().any(|x| !listed.contains(x));
+                if (i == 0 || adds) && kept < MAX_RECORDS_KEPT {
                     listed.extend(r.body.revoked.iter().copied());
-                    items.push(Item::Record(r.clone()));
+                    // Only verified signatures: junk merged in must not
+                    // make the state file unreadable.
+                    items.extend(self.material.shippable_record(&h));
+                    kept += 1;
                 }
             }
             Some((id, items))
@@ -173,13 +196,14 @@ impl Query {
 
     /// Asks `question`. With --fetch, a denial that names identities whose
     /// fresh record is missing gets those records from the URLs in their
-    /// logs, and the question is asked again (DESIGN.md §18.7). Only issuers
-    /// the search reached from the roots are fetched for, each once, so a
-    /// bundle can't make writ fetch arbitrary URLs. `signer` is a data
-    /// signature's signer, whose record a `verify` denial may need.
+    /// logs, and the question is asked again (DESIGN.md §18.7). Only
+    /// identities the search reached from the roots through valid
+    /// statements are fetched for, each once and at most MAX_FETCHES, so a
+    /// bundle can't make writ fetch URLs of its choosing. `signer` is a
+    /// data signature's signer and the tag it must hold.
     fn ask<T>(
         &mut self,
-        signer: Option<Id>,
+        signer: Option<(Holder, Tag)>,
         question: impl Fn(&Verifier<'_>) -> std::result::Result<T, Denial>,
     ) -> std::result::Result<T, Denial> {
         let mut tried = BTreeSet::new();
@@ -189,11 +213,18 @@ impl Query {
             if !self.fetch {
                 return answer;
             }
-            let wanted: Vec<Id> = stale_issuers(d, &self.material, signer)
+            let wanted: Vec<Id> = self
+                .stale_issuers(d, signer.as_ref())
                 .into_iter()
                 .filter(|id| tried.insert(*id))
                 .collect();
             if wanted.is_empty() {
+                return answer;
+            }
+            if tried.len() > MAX_FETCHES {
+                crate::warn(format!(
+                    "stopped fetching after records for {MAX_FETCHES} identities"
+                ));
                 return answer;
             }
             for id in wanted {
@@ -202,7 +233,37 @@ impl Query {
         }
     }
 
-    /// Tries `id`'s publish URLs in turn until one gives a bundle.
+    /// Identities a denial says lack a fresh record, and that are worth
+    /// fetching for: issuers of rejected statements the search reached
+    /// through valid statements (grants from reached principals, names
+    /// under valid grants), and a data signature's signer once it is known
+    /// to hold the tag.
+    fn stale_issuers(&self, d: &Denial, signer: Option<&(Holder, Tag)>) -> Vec<Id> {
+        match d {
+            Denial::NotFound { rejected } => rejected
+                .iter()
+                .filter(|r| matches!(r.reason, Reason::NoFreshRecord { .. }))
+                .filter_map(|r| self.material.statement(&r.statement)?.body.issuer.id())
+                .collect(),
+            Denial::Signature(Reason::NoFreshRecord { .. }) => {
+                let Some((holder, tag)) = signer else {
+                    return Vec::new();
+                };
+                match self.verifier().check(holder, tag, self.now) {
+                    Ok(_) => match holder {
+                        Holder::Id(id) => vec![*id],
+                        _ => Vec::new(),
+                    },
+                    Err(d) => self.stale_issuers(&d, None),
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Tries `id`'s publish URLs in turn until one gives a fresh record: a
+    /// host that serves nothing useful (an old file, an empty one) must not
+    /// stop the others from being tried (DESIGN.md §18.8).
     fn fetch_record(&mut self, id: Id) {
         let urls = match &*self.material.log(&id) {
             Ok(log) => log
@@ -224,13 +285,34 @@ impl Query {
                     .add_bundle(&bytes)
                     .map_err(|e| format!("not a bundle: {e}"))
             }) {
-                Ok(_) => {
+                Ok(_) if self.verifier().has_fresh_record(&id, self.now) => {
                     crate::note(format!("fetched {url}"));
                     return;
                 }
+                Ok(_) => crate::warn(format!("{url}: no fresh record there")),
                 Err(e) => crate::warn(format!("{url}: {e}")),
             }
         }
+    }
+
+    /// The newest valid record of each local root the proof relies on.
+    /// Local roots need no record here, but whoever receives the proof does.
+    fn local_records(&self, proof: &libwrit::Proof) -> Vec<Item> {
+        let verifier = self.verifier();
+        self.local
+            .iter()
+            .filter(|id| proof.ids.contains(id))
+            .filter_map(|id| {
+                self.material
+                    .records_by(id)
+                    .iter()
+                    .filter(|h| verifier.record_status(h, self.now).is_ok())
+                    .filter_map(|h| Some((*h, self.material.record(h)?.body.issued)))
+                    .max_by_key(|(_, issued)| *issued)
+                    .filter(|(h, _)| !proof.records.contains(h))
+                    .and_then(|(h, _)| self.material.shippable_record(&h))
+            })
+            .collect()
     }
 
     /// Warns about records an answer relied on that will soon be too old,
@@ -269,7 +351,7 @@ impl Query {
             eprint!(
                 "{} {headline}: {}",
                 style::paint(Stream::Err, style::BAD, "denied:"),
-                display::denial(d, &self.material)
+                display::denial(d, &self.material, self.fetch)
             );
         }
         Error::Denied
@@ -278,20 +360,6 @@ impl Query {
 
 /// Identities a denial involved: the compromised one, or the issuers of the
 /// candidates that failed.
-/// Identities a denial says lack a fresh record: issuers of rejected
-/// statements, and the signer of a refused data signature.
-fn stale_issuers(d: &Denial, material: &Material, signer: Option<Id>) -> Vec<Id> {
-    match d {
-        Denial::NotFound { rejected } => rejected
-            .iter()
-            .filter(|r| matches!(r.reason, Reason::NoFreshRecord { .. }))
-            .filter_map(|r| material.statement(&r.statement)?.body.issuer.id())
-            .collect(),
-        Denial::Signature(Reason::NoFreshRecord { .. }) => signer.into_iter().collect(),
-        _ => Vec::new(),
-    }
-}
-
 fn denial_ids(d: &Denial, material: &Material) -> Vec<Id> {
     match d {
         Denial::Compromised(e) => vec![e.id()],
@@ -351,7 +419,8 @@ pub fn prove(parsed: &Parsed) -> Result<()> {
             if !parsed.flag("quiet") {
                 q.warn_stale(&proof);
             }
-            let items = proof.items(&q.material);
+            let mut items = proof.items(&q.material);
+            items.extend(q.local_records(&proof));
             fs::print(&items.iter().map(Item::armor).collect::<String>())?;
             if !parsed.flag("quiet") {
                 eprintln!(
@@ -440,8 +509,8 @@ pub fn verify(parsed: &Parsed) -> Result<()> {
         libwrit::Issuer::Leaf(k) => format!("leaf:{}", k.fingerprint()),
     };
     let now = q.now;
-    let signer_id = sig.body.signer.id();
-    match q.ask(signer_id, |v| {
+    let signer_holds = sig.body.signer.id().map(|id| (Holder::Id(id), tag.clone()));
+    match q.ask(signer_holds, |v| {
         v.verify(&sig, &hash, context.as_bytes(), &tag, now)
     }) {
         Ok(proof) => {

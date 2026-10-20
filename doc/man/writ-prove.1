@@ -33,7 +33,7 @@ read statements from PATH; '\-' means standard input
 answer for TIME instead of now: 2027\-01\-01, 2027\-01\-01T12:00Z, or @SECONDS
 .TP
 \fB\-\-state\fR \fIDIR\fR
-keep state in DIR between runs: the identity logs and revocations seen, and the clock floor
+keep state in DIR between runs: the identity logs, revocations and revocation records seen, and the clock floor
 .TP
 \fB\-\-leaf\-ceiling\fR \fIDUR\fR
 accept grants to leaf keys only if they last at most DUR (at most 24h)
@@ -42,7 +42,7 @@ accept grants to leaf keys only if they last at most DUR (at most 24h)
 when an answer needs a revocation record that is missing or too old, get it from the URLs its identity publishes, and ask again
 .TP
 \fB\-\-require\-records\fR
-refuse long\-lived statements by identities that publish no revocation records
+refuse statements by identities that publish no revocation records, except roots given as directories
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 print nothing; only set the exit status

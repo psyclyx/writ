@@ -7,7 +7,7 @@
 //! certificate, with a warning.
 
 use curl::easy::Easy;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Largest response accepted.
 const MAX_SIZE: usize = 16 << 20;
@@ -19,7 +19,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// stalled or trickling, and stops.
 const LOW_SPEED: u32 = 1024;
 const LOW_SPEED_TIME: Duration = Duration::from_secs(15);
-/// The longest a transfer may take, however steadily it moves.
+/// The longest fetching one URL may take, redirects included, however
+/// steadily it moves.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 enum Response {
@@ -31,12 +32,18 @@ enum Response {
 
 /// The body at `url`.
 pub fn get(url: &str) -> Result<Vec<u8>, String> {
+    // One deadline for the URL, across redirects and the retry.
+    let deadline = Instant::now() + TIMEOUT;
     let mut url = url.to_owned();
     let mut verify = true;
     let mut hops = 0;
     loop {
         check_scheme(&url)?;
-        match request(&url, verify) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(format!("took longer than {} s", TIMEOUT.as_secs()));
+        }
+        match request(&url, verify, left) {
             Ok(Response::Body(body)) => return Ok(body),
             Ok(Response::Status(code)) => return Err(format!("HTTP status {code}")),
             Ok(Response::Redirect(next)) => {
@@ -45,6 +52,9 @@ pub fn get(url: &str) -> Result<Vec<u8>, String> {
                     return Err(format!("more than {MAX_REDIRECTS} redirects"));
                 }
                 url = next;
+                // A new host is checked afresh: skipping the check for one
+                // never carries over to another.
+                verify = true;
             }
             Err(e) if verify && (e.is_peer_failed_verification() || e.is_ssl_cacert()) => {
                 crate::warn(format!(
@@ -80,12 +90,12 @@ fn check_scheme(url: &str) -> Result<(), String> {
     }
 }
 
-fn request(url: &str, verify: bool) -> Result<Response, curl::Error> {
+fn request(url: &str, verify: bool, left: Duration) -> Result<Response, curl::Error> {
     let mut easy = Easy::new();
     easy.url(url)?;
     easy.follow_location(false)?;
-    easy.timeout(TIMEOUT)?;
-    easy.connect_timeout(CONNECT_TIMEOUT)?;
+    easy.timeout(left)?;
+    easy.connect_timeout(CONNECT_TIMEOUT.min(left))?;
     easy.low_speed_limit(LOW_SPEED)?;
     easy.low_speed_time(LOW_SPEED_TIME)?;
     easy.max_filesize(MAX_SIZE as u64)?;

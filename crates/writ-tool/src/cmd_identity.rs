@@ -143,8 +143,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
         Some(_) => {
             let log = Log::build(&inception, |_| Vec::new())
                 .map_err(|e| Error::Msg(format!("the new log: {e}")))?;
-            let record = records::sign(&log, &[], std::slice::from_ref(&current))?;
-            records::write(path, &log, record)?;
+            records::renew(path, &log, std::slice::from_ref(&current))?;
             Some(records::reminder(path, &log))
         }
         None => None,
@@ -506,27 +505,43 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
         }
         _ => lines.push("  next keys    unchanged".to_owned()),
     }
-    // The rotation voids the old record (DESIGN.md §18.4): sign a new one
-    // under the new event right away, if the new current key can alone.
-    if publish.is_some() {
+    // The rotation voids the old record (DESIGN.md §18.4). The rotation has
+    // committed, so from here on problems are reported, not returned.
+    let record_path = ident.dir.join(crate::ident::RECORD);
+    let mut signed_record = false;
+    if publish.is_some() && current.k() == 1 {
         let mut material = ident.material();
         material.add(Item::Event(event));
-        let log = material
-            .log(&ident.id())
-            .as_ref()
-            .clone()
-            .map_err(|e| Error::Msg(format!("the new log: {e}")))?;
-        if current.k() == 1 {
-            let record = records::sign(&log, &ident.issued, &[current_seed.root()])?;
-            records::write(&ident.dir, &log, record)?;
-            lines.push(format!("  {}", records::reminder(&ident.dir, &log)));
-        } else {
-            lines.push(format!(
-                "  sign a new revocation record now: writ export -i {dir} --record \
-                 with {} of the current keys",
-                current.k()
-            ));
+        let renewed = match &*material.log(&ident.id()) {
+            Ok(log) => records::renew(&ident.dir, log, &[current_seed.root()])
+                .map(|_| records::reminder(&ident.dir, log)),
+            Err(e) => Err(Error::Msg(format!("the new log: {e}"))),
+        };
+        match renewed {
+            Ok(reminder) => {
+                lines.push(format!("  {reminder}"));
+                signed_record = true;
+            }
+            Err(e) => crate::warn(format!(
+                "the rotation is done, but signing a new record failed: {}; \
+                 run writ export -i {dir} --record",
+                match e {
+                    Error::Msg(m) => m,
+                    other => format!("{other:?}"),
+                }
+            )),
         }
+    } else if publish.is_some() {
+        let keys: String = (0..current.k()).map(|_| " --key PATH").collect();
+        lines.push(format!(
+            "  sign a new revocation record with {} of the current keys:\n    \
+             writ export -i {dir} --record{keys}",
+            current.k()
+        ));
+    }
+    // A record from before the rotation means nothing now.
+    if !signed_record && record_path.is_file() {
+        let _ = std::fs::remove_file(&record_path);
     }
     if !next_out.is_some_and(fs::is_stdout) || !parsed.flag("quiet") {
         say(parsed, lines.join("\n"));
@@ -573,7 +588,9 @@ pub fn export(parsed: &Parsed) -> Result<()> {
     let dir = parsed
         .value("identity")
         .ok_or_else(|| EXPORT.usage_error("-i DIR is required".into()))?;
-    let ident = IdentityDir::open(dir)?;
+    // Shared with issuers, so a record is never signed under a log that a
+    // rotation is replacing.
+    let ident = IdentityDir::open_locked(dir, false)?;
     if parsed.flag("record") {
         if parsed.flag("all") {
             return err("--record prints only the log and a record; it does not go with --all");
@@ -584,8 +601,7 @@ pub fn export(parsed: &Parsed) -> Result<()> {
             ));
         }
         let signers = ident.signers(parsed.values("key"))?;
-        let record = records::sign(&ident.log, &ident.issued, &signers)?;
-        let text = records::write(&ident.dir, &ident.log, record)?;
+        let text = records::renew(&ident.dir, &ident.log, &signers)?;
         fs::print(&text)?;
         say(parsed, records::reminder(&ident.dir, &ident.log));
         return Ok(());

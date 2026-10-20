@@ -1661,9 +1661,16 @@ fn grants_with_several_tags() {
 /// A small HTTP server for `--fetch`: serves files from `dir` by path, and
 /// `/evil` as a redirect to a file: URL. Runs until the test process ends.
 fn serve(dir: PathBuf) -> String {
+    serve_logged(dir).0
+}
+
+/// Like [`serve`], also returning the paths requested so far.
+fn serve_logged(dir: PathBuf) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     use std::io::{BufRead, BufReader};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
+    let requested = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = requested.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut reader = BufReader::new(&stream);
@@ -1677,6 +1684,7 @@ fn serve(dir: PathBuf) -> String {
                 header.clear();
             }
             let path = line.split(' ').nth(1).unwrap_or("/").to_owned();
+            log.lock().unwrap().push(path.clone());
             let mut out = &stream;
             let response = if path == "/evil" {
                 b"HTTP/1.1 302 Found\r\nLocation: file:///etc/passwd\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
@@ -1700,7 +1708,7 @@ fn serve(dir: PathBuf) -> String {
             let _ = out.write_all(&response);
         }
     });
-    base
+    (base, requested)
 }
 
 #[test]
@@ -2062,4 +2070,146 @@ fn fetch_over_tls_survives_a_bad_certificate() {
         err.contains("does not verify") && err.contains("fetched"),
         "{err}"
     );
+}
+
+/// A URL that serves something without a fresh record (an old or empty
+/// file) must not stop --fetch from trying the next one (DESIGN.md §18.8).
+#[test]
+fn fetch_tries_the_next_url_when_one_has_no_record() {
+    let s = Sandbox::new("nexturl");
+    let base = serve(s.dir.clone());
+    std::fs::write(s.path("empty.writ"), b"").unwrap();
+    s.init("me");
+    let alice = s.init("alice");
+    s.ok(&[
+        "init",
+        "pub",
+        "--next-out",
+        "pub-next.key",
+        "-q",
+        "--publish",
+        &format!("{base}/empty.writ"),
+        "--publish",
+        &format!("{base}/pub/record.writ"),
+    ]);
+    let pub_id = s.ok(&["id", "pub"]).trim().to_owned();
+    s.append(
+        "b.writ",
+        &s.ok(&["grant", "-i", "me", &pub_id, "()", "--delegate"]),
+    );
+    s.append("b.writ", &s.ok(&["grant", "-i", "pub", &alice, "(x)"]));
+    s.append("b.writ", &s.read("pub/log.writ"));
+    let (code, _, err) = s.run(&[
+        "check", "--as", "me", &alice, "(x)", "--in", "b.writ", "--fetch",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("no fresh record there"), "{err}");
+}
+
+/// --fetch fetches only for identities reached from the roots: a data
+/// signature by an unrelated identity that publishes must not make writ
+/// fetch its URL.
+#[test]
+fn fetch_ignores_identities_not_reached_from_the_roots() {
+    let s = Sandbox::new("unreached");
+    let (base, requested) = serve_logged(s.dir.clone());
+    s.init("me");
+    s.ok(&[
+        "init",
+        "x",
+        "--next-out",
+        "x-next.key",
+        "-q",
+        "--publish",
+        &format!("{base}/x/record.writ"),
+    ]);
+    std::fs::write(s.path("f"), b"data").unwrap();
+    let sig = s.ok(&["sign", "-i", "x", "--context", "app/v1", "f"]);
+    std::fs::write(s.path("f.sig"), sig).unwrap();
+    let (code, _, err) = s.run(&[
+        "verify",
+        "--as",
+        "me",
+        "--tag",
+        "(t)",
+        "--context",
+        "app/v1",
+        "--in",
+        "x/log.writ",
+        "--fetch",
+        "f",
+        "f.sig",
+    ]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        requested.lock().unwrap().is_empty(),
+        "{:?}",
+        requested.lock().unwrap()
+    );
+}
+
+#[test]
+fn state_keeps_records_issued_after_an_earlier_at() {
+    let s = Sandbox::new("stateat");
+    let alice = publisher_world(&s, "https://example.org/pub.writ");
+    let yesterday = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 86_400;
+    // pub, by id, is the root: asking about yesterday, its record (made
+    // today) doesn't count yet...
+    let pub_id = s.ok(&["id", "pub"]).trim().to_owned();
+    let at = format!("@{yesterday}");
+    let (code, _, err) = s.run(&[
+        "check",
+        "--as",
+        &pub_id,
+        &alice,
+        "(x)",
+        "--in",
+        "b.writ",
+        "--in",
+        "pub/record.writ",
+        "--state",
+        "st",
+        "--at",
+        &at,
+    ]);
+    assert_eq!(code, 1, "{err}");
+    // ...but the state keeps it, and today's question needs nothing more.
+    assert_eq!(
+        s.run(&[
+            "check", "--as", &pub_id, &alice, "(x)", "--in", "b.writ", "--state", "st"
+        ])
+        .0,
+        0
+    );
+}
+
+/// A root that publishes, given as a directory, needs no record itself;
+/// its proofs still carry one, for verifiers that aren't it.
+#[test]
+fn proofs_from_a_publishing_root_carry_its_record() {
+    let s = Sandbox::new("rootrec");
+    s.ok(&[
+        "init",
+        "me",
+        "--next-out",
+        "me-next.key",
+        "--publish",
+        "https://example.org/me.writ",
+        "-q",
+    ]);
+    let alice = s.init("alice");
+    std::fs::write(
+        s.path("b.writ"),
+        s.ok(&["grant", "-i", "me", &alice, "(x)"]),
+    )
+    .unwrap();
+    let proof = s.ok(&["prove", "--as", "me", &alice, "(x)", "--in", "b.writ"]);
+    std::fs::write(s.path("proof.writ"), &proof).unwrap();
+    let me_id = s.ok(&["id", "me"]).trim().to_owned();
+    let (code, _, err) = s.run(&["check", "--as", &me_id, &alice, "(x)", "--in", "proof.writ"]);
+    assert_eq!(code, 0, "{err}");
 }
