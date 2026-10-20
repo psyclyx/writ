@@ -40,7 +40,7 @@ pub use model::{
     Authority, Body, Claim, DataSig, DecodeError, Event, Inception, Issuer, Item, NamePath,
     OpaqueKey, Rotation, Sig, Signed, Statement, Subject,
 };
-pub use tag::Tag;
+pub use tag::{MAX_GRANT_TAGS, Tag, Tags, TagsError};
 pub use time::{Floor, Time};
 pub use verify::{Denial, Holder, Policy, Proof, Reason, Rejection, Step, Verifier};
 /// Re-exported so callers can hold secrets without depending on `zeroize`.

@@ -148,6 +148,14 @@ const TAG_ARG: Arg = arg(
     "a list of words from general to specific, such as '(ssh nas)'",
 );
 
+const TAGS_ARG: Arg = arg(
+    "TAG",
+    Value::Text,
+    "a list of words from general to specific, such as '(ssh nas)'; \
+     several make one grant of each",
+)
+.many();
+
 pub static INIT: Spec = Spec {
     name: "init",
     about: "create an identity",
@@ -389,9 +397,9 @@ pub static NAME: Spec = Spec {
 
 pub static GRANT: Spec = Spec {
     name: "grant",
-    about: "grant TAG to SUBJECT",
+    about: "grant one or more tags to SUBJECT",
     synopsis: None,
-    args: &[SUBJECT_ARG, TAG_ARG],
+    args: &[SUBJECT_ARG, TAGS_ARG],
     opts: &[
         IDENTITY,
         KEY,
@@ -404,10 +412,13 @@ pub static GRANT: Spec = Spec {
         QUIET_ISSUE,
     ],
     description: &[
-        "Grant TAG to SUBJECT, signed by the identity in DIR.",
+        "Grant each TAG to SUBJECT, signed by the identity in DIR.",
         "A tag is a list of words from general to specific, such as \
          (ssh nas). A grant of (ssh) also covers (ssh nas) and \
          (ssh nas backup). The tag () covers everything.",
+        "Several TAGs make one statement that grants each of them, as that \
+         many grants would. It is signed, revoked and kept as one, and costs \
+         one signature. No TAG may cover another.",
         "With --delegate, SUBJECT can grant TAG, or a narrower tag, to \
          others. A chain of grants can only narrow: each holder gets at \
          most what the grant before it allowed.",
@@ -461,9 +472,9 @@ pub static REVOKE: Spec = Spec {
 
 pub static LEAF: Spec = Spec {
     name: "leaf",
-    about: "make a short-lived leaf key and grant TAG to it",
+    about: "make a short-lived leaf key and grant tags to it",
     synopsis: None,
-    args: &[TAG_ARG],
+    args: &[TAGS_ARG],
     opts: &[
         IDENTITY,
         KEY,
@@ -494,7 +505,7 @@ pub static LEAF: Spec = Spec {
         flag("quiet", "print only the grant").short('q'),
     ],
     description: &[
-        "Make a leaf key and grant TAG to it. Leaf keys use ML-DSA-65 and \
+        "Make a leaf key and grant each TAG to it. Leaf keys use ML-DSA-65 and \
          Ed25519. They sign and verify quickly, and their signatures are \
          smaller than an identity's. A leaf key lives at most 24 hours.",
         "To keep using a leaf key, grant to its public key again (`writ \

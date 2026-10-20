@@ -125,3 +125,28 @@ kind = grant
 hash = 47dc1a8ddfe43e1b999fb5b67f4f0eae5ae099876fe2e24cfca17e168ecb3478
 label = me-grants-leaf-day
 encoded-length = 8029
+
+kind = grant
+hash = 233e91c9bc06154ec084128732b3f3b5194e2e694607e16cb7ed76ecd7a9dd20
+label = me-grants-bob-files
+encoded-length = 8045
+
+kind = grant
+hash = c8d6f6f255be4cceaa90dccb2cf657bc7650c89cde16d1e1c7cf9cf1224f7c8b
+label = me-grants-bob-print-scan
+encoded-length = 8030
+
+kind = revoke
+hash = 044ad7fc9292863ebab94e0eee4e6f1f2b7b7a1c1e0d4c4b401693ae4955c7cb
+label = me-revokes-print-scan
+encoded-length = 8008
+
+kind = grant
+hash = 2add54b8fa3a7743c25e922e2d773f8413bbaab11bea566669e46c1147e14da1
+label = me-grants-bob-teams
+encoded-length = 8047
+
+kind = grant
+hash = 22efad3cd05f19061c9a8fbd55782a37f438a78f095d50ad8d5b311e18b19ff2
+label = bob-grants-app-team-b
+encoded-length = 8056

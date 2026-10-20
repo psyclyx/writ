@@ -236,7 +236,7 @@ statement = name / grant / revoke
 issuer    = "(" "issuer" id event ")" / "(" "issuer" "(" "leaf" leafid ")" ")"
 common    = issuer "(" "issued" time ")" [ "(" "expires" time ")" ] [ "(" "note" text ")" ]
 name      = "(" "name"   common label subject ")"
-grant     = "(" "grant"  common subject tag [ "(" "delegate" ")" ] ")"
+grant     = "(" "grant"  common subject 1*16tag [ "(" "delegate" ")" ] ")"
 revoke    = "(" "revoke" common "(" "target" hash ")" ")"
 subject   = "(" "id" id ")" / leafkey / "(" "key" type keybytes ")" / "(" "name" id 1*16label ")"
 tag       = "(" "tag" *32atom ")"
@@ -246,6 +246,11 @@ tag       = "(" "tag" *32atom ")"
   UTF-8, at most 1024 bytes, display-only. `type`: 1–64 bytes of
   readable-token characters (ASCII graphic except `( ) " # | ' ; \ [ ] { }`).
   `keybytes`: 1–16384 bytes.
+- A grant's tags are in strictly increasing order of their canonical
+  encodings (so no two are equal), and no tag is within another (§9): such a
+  tag would add nothing. A grant with several tags means exactly what that
+  many grants with one tag each would, sharing one hash, one signature and
+  one validity.
 - The statement **hash** is `H("writ/v1/stmt", canonical(statement))`.
 
 A statement is **well-formed** when:
@@ -359,7 +364,10 @@ leaf key, or an opaque key) **holds** tag `T` when:
   3. for `i < L`: `gᵢ` has `(delegate)`, and the issuer of `gᵢ₊₁` (an id, at
      any event, or a leaf key) is in `denote_D(subject(gᵢ))`;
   4. `S ∈ denote_D(subject(g_L))`;
-  5. `E = ∩(tag(g₁), …, tag(g_L))` is defined, and `T ⊆ E`.
+  5. for each `gᵢ` there is a tag `tᵢ` among its tags such that
+     `E = ∩(t₁, …, t_L)` is defined, and `T ⊆ E`. (At most one tag of a grant
+     can serve: two that both did would both be prefixes of `T`, so one would
+     be within the other.)
 
 If `S` is an id whose log equivocates, the answer is no. A verifier SHOULD
 report equivocation it encountered when no chain exists.

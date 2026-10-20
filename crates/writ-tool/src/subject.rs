@@ -11,7 +11,7 @@
 
 use crate::error::{Error, Result, err};
 use crate::ident;
-use libwrit::{Holder, Id, Item, NamePath, OpaqueKey, PublicKey, Subject, Tag};
+use libwrit::{Holder, Id, Item, NamePath, OpaqueKey, PublicKey, Subject, Tag, Tags};
 use std::path::Path;
 use writ_sexp::{Sexp, readable};
 
@@ -42,6 +42,20 @@ pub fn tag(text: &str) -> Result<Tag> {
             "{text:?} is not a tag. A tag is a list of words, such as '(ssh nas)', or '()' for everything"
         ))
     })
+}
+
+/// The tags of one grant (DESIGN.md §18.2).
+pub fn tags(texts: &[String]) -> Result<Tags> {
+    let tags = texts.iter().map(|t| tag(t)).collect::<Result<Vec<Tag>>>()?;
+    for (i, a) in tags.iter().enumerate() {
+        for b in tags.iter().skip(i + 1) {
+            let (wide, narrow) = if b.is_within(a) { (a, b) } else { (b, a) };
+            if narrow.is_within(wide) && a != b {
+                return err(format!("{wide} already covers {narrow}; give only {wide}"));
+            }
+        }
+    }
+    Tags::new(tags).map_err(|e| Error::Msg(e.to_string()))
 }
 
 fn words(text: &str) -> Result<Vec<Vec<u8>>> {

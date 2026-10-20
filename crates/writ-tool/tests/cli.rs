@@ -1621,3 +1621,39 @@ fn readme_tour_runs() {
     }
     assert!(ran > 15, "{ran}");
 }
+
+#[test]
+fn grants_with_several_tags() {
+    let s = Sandbox::new("multitag");
+    s.init("me");
+    let alice = s.init("alice");
+    let out = s.ok(&[
+        "grant",
+        "-i",
+        "me",
+        &alice,
+        "(files docs)",
+        "(files photos)",
+    ]);
+    std::fs::write(s.path("b.writ"), &out).unwrap();
+    let check = |tag: &str| s.run(&["check", "--as", "me", &alice, tag, "--in", "b.writ"]);
+    assert_eq!(check("(files docs)").0, 0);
+    let (code, out, _) = check("(files photos 2026)");
+    assert_eq!(code, 0);
+    // The explanation shows the tag of the grant this chain used.
+    assert!(
+        out.contains("(files photos)") && !out.contains("(files docs)"),
+        "{out}"
+    );
+    assert_eq!(check("(files)").0, 1);
+    // A tag another covers is refused, naming both.
+    let err = s.fails(&["grant", "-i", "me", &alice, "(ssh)", "(ssh nas)"], 2);
+    assert!(err.contains("(ssh) already covers (ssh nas)"), "{err}");
+    // Leaf keys take several tags too.
+    s.ok(&[
+        "leaf", "-i", "me", "(svc a)", "(svc b)", "--out", "leaf.key",
+    ]);
+    // No tag at all is a usage error.
+    let err = s.fails(&["grant", "-i", "me", &alice], 2);
+    assert!(err.contains("missing TAG"), "{err}");
+}

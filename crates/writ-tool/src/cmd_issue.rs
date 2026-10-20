@@ -110,10 +110,10 @@ pub fn name(parsed: &Parsed) -> Result<()> {
 }
 
 pub fn grant(parsed: &Parsed) -> Result<()> {
-    let [subject_text, tag_text] = parsed.exact(&GRANT, ["SUBJECT", "TAG"])?;
+    let ([subject_text], tag_texts) = parsed.exact_then_many(&GRANT, ["SUBJECT"], "TAG")?;
     let mut ident = identity(parsed, &GRANT)?;
     let subj = subject::subject(subject_text)?;
-    let tag = subject::tag(tag_text)?;
+    let tags = subject::tags(tag_texts)?;
     let delegate = parsed.flag("delegate");
     if delegate && matches!(subj, Subject::Opaque(_)) {
         return err(
@@ -142,7 +142,7 @@ pub fn grant(parsed: &Parsed) -> Result<()> {
             note: note(parsed)?,
             claim: Claim::Grant {
                 subject: subj.clone(),
-                tag: tag.clone(),
+                tags: tags.clone(),
                 delegate,
             },
         },
@@ -150,7 +150,7 @@ pub fn grant(parsed: &Parsed) -> Result<()> {
     say(
         parsed,
         format!(
-            "granted {tag} to {}{}{} [{}]",
+            "granted {tags} to {}{}{} [{}]",
             display::subject(&subj),
             if delegate { ", delegable" } else { "" },
             expires
@@ -268,12 +268,12 @@ pub fn revoke(parsed: &Parsed) -> Result<()> {
 }
 
 pub fn leaf(parsed: &Parsed) -> Result<()> {
-    let [tag_text] = parsed.exact(&LEAF, ["TAG"])?;
+    let ([], tag_texts) = parsed.exact_then_many(&LEAF, [], "TAG")?;
     let out = parsed.value("out").ok_or_else(|| {
         LEAF.usage_error("--out PATH is required: where should the leaf's secret key go?".into())
     })?;
     let mut ident = identity(parsed, &LEAF)?;
-    let tag = subject::tag(tag_text)?;
+    let tags = subject::tags(tag_texts)?;
     fs::check_secret_target(out)?;
     let grant_out = match parsed.value("grant-out") {
         Some(p) if fs::same_output(p, out) => {
@@ -316,7 +316,7 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
             note: note(parsed)?,
             claim: Claim::Grant {
                 subject: Subject::Leaf(leaf.leaf_key().clone()),
-                tag: tag.clone(),
+                tags: tags.clone(),
                 delegate: parsed.flag("delegate"),
             },
         },
@@ -329,7 +329,7 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
         out,
         &fs::seeds_text(
             &format!(
-                "leaf key leaf:{}, granted {tag} by {} until {}",
+                "leaf key leaf:{}, granted {tags} by {} until {}",
                 leaf.leaf_key().fingerprint(),
                 ident.id(),
                 display::time(expires)
@@ -353,7 +353,7 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
     say(
         parsed,
         format!(
-            "leaf:{} holds {tag} until {} [{}]",
+            "leaf:{} holds {tags} until {} [{}]",
             leaf.leaf_key().fingerprint(),
             display::time(expires),
             display::short(&signed.body.hash())

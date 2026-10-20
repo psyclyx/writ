@@ -7,7 +7,7 @@ use crate::keys::{
     LEAF_SIGNATURE_SIZE, LeafKey, MLDSA65_PUBLIC_KEY_SIZE, PublicKey, ROOT_SIGNATURE_SIZE, RootKey,
     Suite,
 };
-use crate::tag::Tag;
+use crate::tag::{Tag, Tags};
 use crate::time::Time;
 use core::fmt;
 use writ_sexp::Sexp;
@@ -98,7 +98,12 @@ impl<'a> Fields<'a> {
     }
 
     fn peek_head(&self) -> Option<&'a [u8]> {
-        match self.items.first()?.as_list()? {
+        Fields::head_of(self.items.first()?)
+    }
+
+    /// The head atom of `(head …)`.
+    fn head_of(s: &'a Sexp) -> Option<&'a [u8]> {
+        match s.as_list()? {
             [Sexp::Atom(h), ..] => Some(h),
             _ => None,
         }
@@ -738,12 +743,12 @@ pub enum Claim {
         /// What it refers to.
         subject: Subject,
     },
-    /// "`subject` holds `tag`."
+    /// "`subject` holds each of `tags`." (DESIGN.md §18.2)
     Grant {
         /// The grantee.
         subject: Subject,
-        /// What is granted.
-        tag: Tag,
+        /// What is granted: as many grants as there are tags.
+        tags: Tags,
         /// Whether the subject may grant onward.
         delegate: bool,
     },
@@ -865,11 +870,11 @@ impl Body for Statement {
             }
             Claim::Grant {
                 subject,
-                tag,
+                tags,
                 delegate,
             } => {
                 items.push(subject.to_sexp());
-                items.push(tag.to_sexp());
+                items.extend(tags.iter().map(Tag::to_sexp));
                 if *delegate {
                     items.push(tagged("delegate", []));
                 }
@@ -914,7 +919,14 @@ impl Body for Statement {
             }
             b"grant" => {
                 let subject = Subject::from_sexp(f.next("subject")?)?;
-                let tag = Tag::from_sexp(f.next("tag")?)?;
+                let n = f
+                    .items
+                    .iter()
+                    .take_while(|s| Fields::head_of(s) == Some(b"tag"))
+                    .count();
+                let (tag_items, rest) = f.items.split_at(n);
+                f.items = rest;
+                let tags = Tags::from_sexps(tag_items)?;
                 let delegate = match f.optional("delegate", "delegate")? {
                     Some(d) => {
                         d.end("delegate")?;
@@ -924,7 +936,7 @@ impl Body for Statement {
                 };
                 Claim::Grant {
                     subject,
-                    tag,
+                    tags,
                     delegate,
                 }
             }

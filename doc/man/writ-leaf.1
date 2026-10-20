@@ -1,15 +1,15 @@
 .\" Generated from crates/writ-tool/src/specs.rs; do not edit.
 .TH WRIT\-LEAF 1 2026-10-12 "writ 0.1.0" "writ manual"
 .SH NAME
-writ\-leaf \- make a short\-lived leaf key and grant TAG to it
+writ\-leaf \- make a short\-lived leaf key and grant tags to it
 .SH SYNOPSIS
 .nh
 .ad l
-\fBwrit leaf\fR \fB\-i\fR\ \fIDIR\fR \fB\-\-out\fR\ \fIPATH\fR [\fB\-\-key\fR\ \fIPATH\fR]... [\fB\-\-grant\-out\fR\ \fIPATH\fR] [\fB\-\-expires\fR\ \fIWHEN\fR] [\fB\-\-delegate\fR] [\fB\-\-note\fR\ \fITEXT\fR] [\fB\-q\fR] \fITAG\fR
+\fBwrit leaf\fR \fB\-i\fR\ \fIDIR\fR \fB\-\-out\fR\ \fIPATH\fR [\fB\-\-key\fR\ \fIPATH\fR]... [\fB\-\-grant\-out\fR\ \fIPATH\fR] [\fB\-\-expires\fR\ \fIWHEN\fR] [\fB\-\-delegate\fR] [\fB\-\-note\fR\ \fITEXT\fR] [\fB\-q\fR] \fITAG\fR...
 .ad
 .hy
 .SH DESCRIPTION
-Make a leaf key and grant TAG to it. Leaf keys use ML\-DSA\-65 and Ed25519. They sign and verify quickly, and their signatures are smaller than an identity's. A leaf key lives at most 24 hours.
+Make a leaf key and grant each TAG to it. Leaf keys use ML\-DSA\-65 and Ed25519. They sign and verify quickly, and their signatures are smaller than an identity's. A leaf key lives at most 24 hours.
 .PP
 To keep using a leaf key, grant to its public key again (\fBwrit pubkey \-\-leaf KEY\fR prints it), or make a new one.
 .PP
@@ -19,7 +19,7 @@ A signature by a leaf key verifies only while the leaf key's grant is live, so u
 .SH ARGUMENTS
 .TP
 \fITAG\fR
-a list of words from general to specific, such as '(ssh nas)'
+a list of words from general to specific, such as '(ssh nas)'; several make one grant of each
 .SH OPTIONS
 .TP
 \fB\-i\fR, \fB\-\-identity\fR \fIDIR\fR

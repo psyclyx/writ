@@ -1,17 +1,19 @@
 .\" Generated from crates/writ-tool/src/specs.rs; do not edit.
 .TH WRIT\-GRANT 1 2026-10-12 "writ 0.1.0" "writ manual"
 .SH NAME
-writ\-grant \- grant TAG to SUBJECT
+writ\-grant \- grant one or more tags to SUBJECT
 .SH SYNOPSIS
 .nh
 .ad l
-\fBwrit grant\fR \fB\-i\fR\ \fIDIR\fR [\fB\-\-key\fR\ \fIPATH\fR]... [\fB\-\-delegate\fR] [\fB\-\-expires\fR\ \fIWHEN\fR] [\fB\-\-note\fR\ \fITEXT\fR] [\fB\-q\fR] \fISUBJECT\fR \fITAG\fR
+\fBwrit grant\fR \fB\-i\fR\ \fIDIR\fR [\fB\-\-key\fR\ \fIPATH\fR]... [\fB\-\-delegate\fR] [\fB\-\-expires\fR\ \fIWHEN\fR] [\fB\-\-note\fR\ \fITEXT\fR] [\fB\-q\fR] \fISUBJECT\fR \fITAG\fR...
 .ad
 .hy
 .SH DESCRIPTION
-Grant TAG to SUBJECT, signed by the identity in DIR.
+Grant each TAG to SUBJECT, signed by the identity in DIR.
 .PP
 A tag is a list of words from general to specific, such as (ssh nas). A grant of (ssh) also covers (ssh nas) and (ssh nas backup). The tag () covers everything.
+.PP
+Several TAGs make one statement that grants each of them, as that many grants would. It is signed, revoked and kept as one, and costs one signature. No TAG may cover another.
 .PP
 With \-\-delegate, SUBJECT can grant TAG, or a narrower tag, to others. A chain of grants can only narrow: each holder gets at most what the grant before it allowed.
 .PP
@@ -36,7 +38,7 @@ A grant to a leaf key must expire within 24 hours. writ prints the signed statem
 an id, an identity directory, a key file, or an OpenSSH public key
 .TP
 \fITAG\fR
-a list of words from general to specific, such as '(ssh nas)'
+a list of words from general to specific, such as '(ssh nas)'; several make one grant of each
 .SH OPTIONS
 .TP
 \fB\-i\fR, \fB\-\-identity\fR \fIDIR\fR

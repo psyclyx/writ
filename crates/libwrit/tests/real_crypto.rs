@@ -56,7 +56,7 @@ fn identity_leaf_and_rotation() {
             note: Some("build machine".into()),
             claim: Claim::Grant {
                 subject: Subject::Leaf(leaf.leaf_key().clone()),
-                tag: tag.clone(),
+                tags: Tags::one(tag.clone()),
                 delegate: false,
             },
         },

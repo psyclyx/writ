@@ -139,9 +139,14 @@ impl Who {
 }
 
 fn grant(subject: Subject, tag: &str, delegate: bool) -> Claim {
+    grant_tags(subject, &[tag], delegate)
+}
+
+/// A grant with several tags (DESIGN.md §18.2).
+fn grant_tags(subject: Subject, tags: &[&str], delegate: bool) -> Claim {
     Claim::Grant {
         subject,
-        tag: Tag::parse(tag).unwrap(),
+        tags: Tags::new(tags.iter().map(|t| Tag::parse(t).unwrap()).collect()).unwrap(),
         delegate,
     }
 }
@@ -438,6 +443,62 @@ fn world() -> World {
         );
     }
 
+    // Grants with several tags (DESIGN.md §18.2): two tags at once, a pair
+    // revoked by one revocation, and a delegation that passes on one tag.
+    add(
+        "me-grants-bob-files",
+        me.say(
+            grant_tags(
+                Subject::Id(bob.id()),
+                &["(files docs)", "(files photos)"],
+                false,
+            ),
+            T0,
+            None,
+            &mut rng,
+        ),
+        &mut m,
+    );
+    let pair = me.say(
+        grant_tags(Subject::Id(bob.id()), &["(print)", "(scan)"], false),
+        T0,
+        None,
+        &mut rng,
+    );
+    add("me-grants-bob-print-scan", pair.clone(), &mut m);
+    add(
+        "me-revokes-print-scan",
+        me.say(
+            Claim::Revoke {
+                target: pair.body.hash(),
+            },
+            T0 + 1,
+            None,
+            &mut rng,
+        ),
+        &mut m,
+    );
+    add(
+        "me-grants-bob-teams",
+        me.say(
+            grant_tags(Subject::Id(bob.id()), &["(team a)", "(team b)"], true),
+            T0,
+            None,
+            &mut rng,
+        ),
+        &mut m,
+    );
+    add(
+        "bob-grants-app-team-b",
+        bob.say(
+            grant(Subject::Opaque(app.clone()), "(team b x)", false),
+            T0,
+            None,
+            &mut rng,
+        ),
+        &mut m,
+    );
+
     let mut all: Vec<Item> = Vec::new();
     for id in m.ids().copied().collect::<Vec<_>>() {
         match &*m.log(&id) {
@@ -554,6 +615,27 @@ fn items_and_chains(files: &mut Files) {
         ("leaf named for an hour", "leaf", "(named day)", T0 + 100),
         ("leaf name expired", "leaf", "(named day)", T0 + 3600),
         ("nothing at all", "alice", "(nope)", T0 + 100),
+        ("several tags: the first", "bob", "(files docs)", T0 + 100),
+        (
+            "several tags: below the second",
+            "bob",
+            "(files photos 2026)",
+            T0 + 100,
+        ),
+        ("several tags: not their parent", "bob", "(files)", T0 + 100),
+        ("several tags: revoked as one", "bob", "(scan)", T0 + 100),
+        (
+            "several tags: delegated, one passed on",
+            "app",
+            "(team b x)",
+            T0 + 100,
+        ),
+        (
+            "several tags: delegated, the other",
+            "app",
+            "(team a)",
+            T0 + 100,
+        ),
     ];
     let roots = [w.root];
     let policy = Policy::default();
@@ -747,6 +829,36 @@ fn rejections(files: &mut Files) {
         (
             "delegate with a value",
             with_body(&|b| b.push(Sexp::list(vec![Sexp::atom("delegate"), Sexp::atom("yes")]))),
+        ),
+        ("grant without a tag", with_body(&|b| drop(b.remove(4)))),
+        (
+            "tags out of order",
+            with_body(&|b| {
+                b[4] = Sexp::list(vec![Sexp::atom("tag"), Sexp::atom("b")]);
+                b.insert(5, Sexp::list(vec![Sexp::atom("tag"), Sexp::atom("a")]));
+            }),
+        ),
+        ("a tag twice", with_body(&|b| b.insert(5, b[4].clone()))),
+        (
+            "a tag covering another",
+            with_body(&|b| {
+                b.insert(
+                    5,
+                    Sexp::list(vec![Sexp::atom("tag"), Sexp::atom("a"), Sexp::atom("x")]),
+                )
+            }),
+        ),
+        (
+            "17 tags",
+            with_body(&|b| {
+                b.remove(4);
+                for i in (0..17).rev() {
+                    b.insert(
+                        4,
+                        Sexp::list(vec![Sexp::atom("tag"), Sexp::atom(format!("t{i:02}"))]),
+                    );
+                }
+            }),
         ),
         ("trailing byte", {
             let mut v = item.encode();

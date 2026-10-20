@@ -27,7 +27,8 @@ lines are comments. Hex is lower case.
   MUST reject (SPEC §3, §5); the first case is the valid original.
 - `chains/world.writ` — a bundle exercising every rule: names, delegation,
   narrowing, expiry, revocation, future issue, leaf keys, an opaque key, a
-  rotation with `keep`, and an equivocating identity.
+  rotation with `keep`, an equivocating identity, and grants with several
+  tags (DESIGN §18.2).
 - `chains/items.txt` — each item in `world.writ`: kind, hash (and id for
   inceptions), encoded length, and the label the cases use.
 - `chains/cases.txt` — queries against `world.writ` from the root `me`, with

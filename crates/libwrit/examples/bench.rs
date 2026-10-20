@@ -94,7 +94,7 @@ fn main() {
                     note: None,
                     claim: Claim::Grant {
                         subject,
-                        tag: Tag::parse("(svc)").unwrap(),
+                        tags: Tags::one(Tag::parse("(svc)").unwrap()),
                         delegate,
                     },
                 },

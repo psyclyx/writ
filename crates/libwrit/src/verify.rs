@@ -13,7 +13,7 @@ use crate::model::{
     Body, Claim, DataSig, Issuer, Item, LEAF_CEILING, NamePath, OpaqueKey, Sig, Signed, Statement,
     Subject,
 };
-use crate::tag::Tag;
+use crate::tag::{Tag, Tags};
 use crate::time::{Rfc3339, Time};
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -126,13 +126,13 @@ pub enum Reason {
     MaxValidity(u64),
     /// A leaf grant longer than the policy's leaf ceiling.
     LeafCeiling(u64),
-    /// Valid and reaches the subject, but conveys only this tag (narrower
-    /// than asked).
-    Covers(Tag),
+    /// Valid and reaches the subject, but conveys only these tags (narrower
+    /// than asked, or beside it).
+    Covers(Vec<Tag>),
     /// Valid and reaches the subject, but grants a tag outside what its issuer holds.
     OutsideIssuer {
         /// What the statement grants.
-        granted: Tag,
+        granted: Tags,
         /// What its issuer holds on this chain.
         held: Tag,
     },
@@ -176,7 +176,13 @@ impl fmt::Display for Reason {
                     Duration(*c)
                 )
             }
-            Reason::Covers(t) => write!(f, "grants only {t} on this chain"),
+            Reason::Covers(ts) => {
+                f.write_str("grants only")?;
+                for t in ts {
+                    write!(f, " {t}")?;
+                }
+                f.write_str(" on this chain")
+            }
             Reason::OutsideIssuer { granted, held } => write!(
                 f,
                 "grants {granted}, but its issuer holds only {held} on this chain"
@@ -894,26 +900,26 @@ impl<'v, 'a> Query<'v, 'a> {
                 if self.budget().is_err() || self.rejected.len() >= MAX_REJECTIONS {
                     return;
                 }
-                let Some(Claim::Grant {
-                    subject, tag: gtag, ..
-                }) = self.v.material.statement(&h).map(|s| s.body.claim.clone())
+                let Some(Claim::Grant { subject, tags, .. }) =
+                    self.v.material.statement(&h).map(|s| s.body.claim.clone())
                 else {
                     continue;
                 };
-                let eff = held.intersect(&gtag);
-                if eff.as_ref().is_some_and(|e| tag.is_within(e)) {
+                let effs: Vec<Tag> = tags.iter().filter_map(|t| held.intersect(t)).collect();
+                if effs.iter().any(|e| tag.is_within(e)) {
                     continue;
                 }
                 let reaches = self
                     .denote(&subject, max_depth)
                     .is_ok_and(|m| m.contains_key(want));
                 if reaches && self.status(&h).is_ok() {
-                    let reason = match eff {
-                        Some(e) => Reason::Covers(e),
-                        None => Reason::OutsideIssuer {
-                            granted: gtag,
+                    let reason = if effs.is_empty() {
+                        Reason::OutsideIssuer {
+                            granted: tags,
                             held: held.clone(),
-                        },
+                        }
+                    } else {
+                        Reason::Covers(effs)
                     };
                     self.reject(h, reason);
                 }
@@ -1008,17 +1014,24 @@ impl<'v, 'a> Query<'v, 'a> {
                 self.budget()?;
                 let Some(Claim::Grant {
                     subject: gsubject,
-                    tag: gtag,
+                    tags,
                     delegate,
                 }) = self.v.material.statement(&h).map(|s| s.body.claim.clone())
                 else {
+                    continue;
+                };
+                // A grant with several tags is several grants (§18.2), but
+                // only one of them can lead to `tag`: two that both did would
+                // be prefixes of `tag`, so one would cover the other, which
+                // Tags forbids.
+                let Some(gtag) = tags.iter().find(|t| tag.is_within(t)) else {
                     continue;
                 };
                 // Structural checks first: is this grant useful at all? Tags
                 // only lengthen along a chain, so once the effective tag is
                 // not a prefix of `tag` no extension can cover `tag`. This
                 // also bounds the search to (principal, prefix of `tag`).
-                let Some(eff) = node_tag.intersect(&gtag) else {
+                let Some(eff) = node_tag.intersect(gtag) else {
                     continue;
                 };
                 if !tag.is_within(&eff) {

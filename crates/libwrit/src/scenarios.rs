@@ -136,9 +136,21 @@ pub(crate) fn tag(s: &str) -> Tag {
 }
 
 pub(crate) fn grant(subject: Subject, t: &str, delegate: bool) -> Claim {
+    grant_tags(subject, &[t], delegate)
+}
+
+/// A grant with several tags; any tag another one covers is left out, so
+/// generated combinations are always well formed.
+pub(crate) fn grant_tags(subject: Subject, ts: &[&str], delegate: bool) -> Claim {
+    let mut kept: Vec<Tag> = Vec::new();
+    for t in ts.iter().map(|t| tag(t)) {
+        if !kept.iter().any(|k| t.is_within(k) || k.is_within(&t)) {
+            kept.push(t);
+        }
+    }
     Claim::Grant {
         subject,
-        tag: tag(t),
+        tags: Tags::new(kept).unwrap(),
         delegate,
     }
 }
@@ -1365,5 +1377,88 @@ fn undecodable_items_are_not_signed() {
             .map(|i| Hash::labelled("writ/test", &i.to_be_bytes()))
             .collect(),
         None,
+    );
+}
+
+/// A grant with several tags means one grant per tag (DESIGN.md §18.2):
+/// each tag works, anything under one works, their parent does not, one
+/// revocation ends all of them, and delegation passes on what is narrowed.
+#[test]
+fn grants_with_several_tags() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    let c = Ident::new(3);
+    let g = a.say(
+        grant_tags(Subject::Id(b.id), &["(files docs)", "(files photos)"], true),
+        10,
+        None,
+    );
+    let onward = b.say(
+        grant(Subject::Id(c.id), "(files photos 2026)", false),
+        10,
+        None,
+    );
+    let w = World::new(
+        &a,
+        [st(g.clone()), st(onward)]
+            .into_iter()
+            .chain(b.items())
+            .chain(c.items()),
+    );
+    let bob = Holder::Id(b.id);
+    assert!(w.check(bob.clone(), "(files docs)", 50).is_ok());
+    let proof = w.check(bob.clone(), "(files photos x)", 50).unwrap();
+    assert_eq!(proof.tag, tag("(files photos)"));
+    assert!(w.check(bob.clone(), "(files)", 50).is_err());
+    assert!(w.check(bob.clone(), "(other)", 50).is_err());
+    // Through delegation, only the narrowed tag reaches c.
+    let carol = Holder::Id(c.id);
+    assert!(w.check(carol.clone(), "(files photos 2026)", 50).is_ok());
+    assert!(w.check(carol, "(files docs)", 50).is_err());
+    // One revocation ends both tags.
+    let r = a.say(
+        Claim::Revoke {
+            target: g.body.hash(),
+        },
+        20,
+        None,
+    );
+    let w = World::new(&a, [st(g), st(r)]);
+    assert!(w.check(bob.clone(), "(files docs)", 50).is_err());
+    assert!(w.check(bob, "(files photos)", 50).is_err());
+}
+
+#[test]
+fn several_tags_encode_canonically() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    // Order given doesn't matter: Tags sorts them.
+    let g1 = a.say(
+        grant_tags(Subject::Id(b.id), &["(b)", "(a)"], false),
+        10,
+        None,
+    );
+    let g2 = a.say(
+        grant_tags(Subject::Id(b.id), &["(a)", "(b)"], false),
+        10,
+        None,
+    );
+    assert_eq!(g1.body.hash(), g2.body.hash());
+    let item = Item::Statement(g1);
+    assert_eq!(Item::decode(&item.encode()).as_ref(), Ok(&item));
+    // One tag encodes exactly as before: `(tag …)` once, after the subject.
+    let one = a.say(grant(Subject::Id(b.id), "(a)", false), 10, None);
+    let text = String::from_utf8_lossy(&one.body.encode()).into_owned();
+    assert!(text.ends_with("(3:tag1:a))"), "{text}");
+    assert_eq!(
+        Tags::new(vec![tag("(a)"), tag("(a b)")]),
+        Err(TagsError::Covered)
+    );
+    assert_eq!(Tags::new(vec![]), Err(TagsError::Empty));
+    let many: Vec<Tag> = (0..17).map(|i| tag(&format!("(t{i})"))).collect();
+    assert_eq!(Tags::new(many), Err(TagsError::TooMany));
+    assert_eq!(
+        Tags::new(vec![tag("(a)"), tag("(a)")]).map(|t| t.as_slice().len()),
+        Ok(1)
     );
 }

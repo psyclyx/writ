@@ -337,6 +337,27 @@ impl Parsed {
         }
         Ok(out)
     }
+
+    /// Positional arguments: exactly `names.len()` of them, then one or
+    /// more called `many`.
+    pub fn exact_then_many<const N: usize>(
+        &self,
+        spec: &'static Spec,
+        names: [&str; N],
+        many: &str,
+    ) -> Result<([&str; N], &[String]), Error> {
+        let (first, rest) = self.positional.split_at(self.positional.len().min(N));
+        if rest.is_empty() {
+            let mut missing: Vec<&str> = names.iter().skip(first.len()).copied().collect();
+            missing.push(many);
+            return Err(spec.usage_error(format!("missing {}", missing.join(" "))));
+        }
+        let mut out = [""; N];
+        for (slot, value) in out.iter_mut().zip(first) {
+            *slot = value;
+        }
+        Ok((out, rest))
+    }
 }
 
 #[cfg(test)]

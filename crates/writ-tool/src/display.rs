@@ -250,11 +250,19 @@ fn statement(out: &mut String, s: &Signed<Statement>) {
         }
         Claim::Grant {
             subject: s,
-            tag,
+            tags,
             delegate,
         } => {
             row(out, "subject", subject(s));
-            row(out, "tag", tag);
+            row(
+                out,
+                if tags.as_slice().len() == 1 {
+                    "tag"
+                } else {
+                    "tags"
+                },
+                tags,
+            );
             row(out, "delegate", if *delegate { "yes" } else { "no" });
         }
         Claim::Revoke { target } => row(out, "revokes", target),
@@ -317,8 +325,14 @@ pub fn proof(p: &Proof, material: &Material, now: Time) -> String {
             }
         }
         if let Some(st) = material.statement(&step.grant)
-            && let Claim::Grant { tag, delegate, .. } = &st.body.claim
+            && let Claim::Grant { tags, delegate, .. } = &st.body.claim
         {
+            // The one of the grant's tags this chain used (§18.2).
+            let tag = tags
+                .iter()
+                .find(|t| step.tag.is_within(t))
+                .map(ToString::to_string)
+                .unwrap_or_else(|| tags.to_string());
             let _ = writeln!(
                 out,
                 "  {} {}  {from} → {} {tag}{}",
@@ -416,9 +430,9 @@ pub fn denial(d: &Denial, material: &Material) -> String {
 pub fn describe(s: &Statement) -> String {
     match &s.claim {
         Claim::Grant {
-            subject: sj, tag, ..
+            subject: sj, tags, ..
         } => {
-            format!("grant {tag} to {}", subject(sj))
+            format!("grant {tags} to {}", subject(sj))
         }
         Claim::Name { name, subject: sj } => {
             format!("name {} → {}", print_atom(name), subject(sj))

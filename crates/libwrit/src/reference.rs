@@ -9,7 +9,7 @@
 )]
 
 use crate::model::LEAF_CEILING;
-use crate::scenarios::{Ident, grant, name, path};
+use crate::scenarios::{Ident, grant_tags, name, path};
 use crate::testing::{FakeLeaf, TestRng};
 use crate::*;
 use proptest::prelude::*;
@@ -161,7 +161,7 @@ impl Reference<'_> {
             }
             let Claim::Grant {
                 subject,
-                tag: gtag,
+                tags,
                 delegate,
             } = &st.body.claim
             else {
@@ -170,19 +170,22 @@ impl Reference<'_> {
             if !self.valid(h) {
                 continue;
             }
-            let Some(next) = eff.intersect(gtag) else {
-                continue;
-            };
-            let members = eval(subject, names);
-            if members.contains(want) && tag.is_within(&next) {
-                return true;
-            }
-            if *delegate && depth + 1 < self.policy.max_chain {
-                for m in &members {
-                    if !matches!(m, Holder::Opaque(_))
-                        && self.chains(m, &next, depth + 1, want, tag, names)
-                    {
-                        return true;
+            // Literally one grant per tag (§18.2).
+            for gtag in tags.iter() {
+                let Some(next) = eff.intersect(gtag) else {
+                    continue;
+                };
+                let members = eval(subject, names);
+                if members.contains(want) && tag.is_within(&next) {
+                    return true;
+                }
+                if *delegate && depth + 1 < self.policy.max_chain {
+                    for m in &members {
+                        if !matches!(m, Holder::Opaque(_))
+                            && self.chains(m, &next, depth + 1, want, tag, names)
+                        {
+                            return true;
+                        }
                     }
                 }
             }
@@ -239,7 +242,8 @@ enum GenSubject {
 
 #[derive(Clone, Debug)]
 enum GenClaim {
-    Grant(GenSubject, usize, bool),
+    /// Indices into TAGS: one or two tags (DESIGN.md §18.2).
+    Grant(GenSubject, Vec<usize>, bool),
     Name(bool, GenSubject),
     Revoke(usize),
 }
@@ -281,6 +285,10 @@ fn arb_subject() -> impl Strategy<Value = GenSubject> {
     ]
 }
 
+fn arb_tag_index() -> impl Strategy<Value = usize> {
+    prop_oneof![3 => Just(0usize), 3 => Just(1usize), 1 => Just(2usize), 1 => Just(3usize)]
+}
+
 fn arb_statement() -> impl Strategy<Value = GenStatement> {
     let issuer = prop_oneof![
         6 => (
@@ -293,7 +301,11 @@ fn arb_statement() -> impl Strategy<Value = GenStatement> {
     let claim = prop_oneof![
         6 => (
             arb_subject(),
-            prop_oneof![3 => Just(0usize), 3 => Just(1usize), 1 => Just(2usize), 1 => Just(3usize)],
+            prop_oneof![
+                5 => arb_tag_index().prop_map(|t| vec![t]),
+                // Pairs where neither covers the other: (a)+(b), (a b)+(b), (b)+(a b c).
+                1 => prop_oneof![3 => Just(vec![1, 3]), 1 => Just(vec![2, 3]), 1 => Just(vec![3, 4])],
+            ],
             proptest::bool::weighted(0.7),
         ).prop_map(|(s, t, d)| GenClaim::Grant(s, t, d)),
         4 => (any::<bool>(), arb_subject()).prop_map(|(n, s)| GenClaim::Name(n, s)),
@@ -385,7 +397,7 @@ fn build(w: &GenWorld) -> Built {
         if !g.raw {
             match (&mut g.claim, &mut g.issuer) {
                 (GenClaim::Grant(_, _, d), Err(_)) => *d = false,
-                (claim, Err(_)) => *claim = GenClaim::Grant(GenSubject::Opaque, 0, false),
+                (claim, Err(_)) => *claim = GenClaim::Grant(GenSubject::Opaque, vec![0], false),
                 (GenClaim::Revoke(_), _) => g.lifetime = None,
                 (GenClaim::Grant(GenSubject::Opaque, _, d), _) => *d = false,
                 _ => {}
@@ -404,7 +416,10 @@ fn build(w: &GenWorld) -> Built {
         }
         let g = &g;
         let claim = match &g.claim {
-            GenClaim::Grant(s, t, d) => grant(subject(s), TAGS[*t], *d),
+            GenClaim::Grant(s, t, d) => {
+                let names: Vec<&str> = t.iter().map(|i| TAGS[*i]).collect();
+                grant_tags(subject(s), &names, *d)
+            }
             GenClaim::Name(n, s) => name(if *n { "x" } else { "y" }, subject(s)),
             GenClaim::Revoke(i) => Claim::Revoke {
                 target: hashes.get(*i).copied().unwrap_or(Hash([0; 32])),
@@ -518,7 +533,7 @@ fn proof_is_sound(r: &Reference<'_>, proof: &Proof, want: &Holder, tag: &Tag) ->
         };
         let Claim::Grant {
             subject,
-            tag: gtag,
+            tags,
             delegate,
         } = &st.body.claim
         else {
@@ -536,7 +551,12 @@ fn proof_is_sound(r: &Reference<'_>, proof: &Proof, want: &Holder, tag: &Tag) ->
                 return false;
             }
         }
-        let Some(next) = eff.intersect(gtag) else {
+        // One of the grant's tags must give the step's recorded tag.
+        let Some(next) = tags
+            .iter()
+            .filter_map(|t| eff.intersect(t))
+            .find(|n| *n == step.tag)
+        else {
             return false;
         };
         eff = next;
@@ -625,29 +645,38 @@ fn generator_coverage() {
     use proptest::test_runner::TestRunner;
     let mut runner = TestRunner::deterministic();
     let (mut ok, mut multi_step, mut named, mut denied, mut compromised) = (0, 0, 0, 0, 0);
+    let mut several = 0;
     for _ in 0..3000 {
         let w = arb_world().new_tree(&mut runner).unwrap().current();
         let q = arb_holder().new_tree(&mut runner).unwrap().current();
         let b = build(&w);
         let roots = [b.ids[0]];
         let want = holder(&b, &q);
-        match Verifier::new(&roots, &b.material, &b.policy).check(
-            &want,
-            &Tag::parse("(a)").unwrap(),
-            40,
-        ) {
-            Ok(p) => {
-                ok += 1;
-                multi_step += usize::from(p.steps.len() > 1);
-                named += usize::from(p.steps.iter().any(|s| !s.names.is_empty()));
+        for t in ["(a)", "(b)"] {
+            match Verifier::new(&roots, &b.material, &b.policy).check(
+                &want,
+                &Tag::parse(t).unwrap(),
+                40,
+            ) {
+                Ok(p) => {
+                    ok += 1;
+                    multi_step += usize::from(p.steps.len() > 1);
+                    named += usize::from(p.steps.iter().any(|s| !s.names.is_empty()));
+                    several += usize::from(p.steps.iter().any(|s| {
+                        matches!(
+                            b.material.statement(&s.grant).map(|st| &st.body.claim),
+                            Some(Claim::Grant { tags, .. }) if tags.as_slice().len() > 1
+                        )
+                    }));
+                }
+                Err(Denial::Compromised(_)) => compromised += 1,
+                Err(_) => denied += 1,
             }
-            Err(Denial::Compromised(_)) => compromised += 1,
-            Err(_) => denied += 1,
         }
     }
     eprintln!(
-        "ok {ok} (multi-step {multi_step}, via names {named}), denied {denied}, compromised {compromised}"
+        "ok {ok} (multi-step {multi_step}, via names {named}, several tags {several}), denied {denied}, compromised {compromised}"
     );
     assert!(ok > 300 && denied > 300, "ok {ok} denied {denied}");
-    assert!(multi_step > 20 && named > 20 && compromised > 5);
+    assert!(multi_step > 20 && named > 20 && compromised > 5 && several > 20);
 }

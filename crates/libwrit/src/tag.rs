@@ -96,6 +96,119 @@ impl core::fmt::Display for Tag {
     }
 }
 
+/// Most tags in one grant.
+pub const MAX_GRANT_TAGS: usize = 16;
+
+/// The tags of a grant (DESIGN.md §18.2): one to [`MAX_GRANT_TAGS`], no
+/// two equal and none covering another, in order of canonical encoding. A
+/// grant with several tags means what as many grants with one tag each
+/// would.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Tags(Vec<Tag>);
+
+/// Why a list of tags can't be a grant's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TagsError {
+    /// No tags.
+    Empty,
+    /// More than [`MAX_GRANT_TAGS`].
+    TooMany,
+    /// One tag covers another, which would then add nothing.
+    Covered,
+}
+
+impl core::fmt::Display for TagsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            TagsError::Empty => "a grant needs at least one tag",
+            TagsError::TooMany => "a grant has at most 16 tags",
+            TagsError::Covered => "one tag covers another, which would add nothing",
+        })
+    }
+}
+
+impl Tags {
+    /// One tag.
+    pub fn one(tag: Tag) -> Tags {
+        Tags(vec![tag])
+    }
+
+    /// Tags in any order; duplicates are dropped. Refuses an empty list,
+    /// more than [`MAX_GRANT_TAGS`], and a tag another one covers.
+    pub fn new(mut tags: Vec<Tag>) -> Result<Tags, TagsError> {
+        tags.sort_by_key(|t| t.to_sexp().encode());
+        tags.dedup();
+        Tags::check(&tags)?;
+        Ok(Tags(tags))
+    }
+
+    fn check(tags: &[Tag]) -> Result<(), TagsError> {
+        if tags.is_empty() {
+            return Err(TagsError::Empty);
+        }
+        if tags.len() > MAX_GRANT_TAGS {
+            return Err(TagsError::TooMany);
+        }
+        for (i, a) in tags.iter().enumerate() {
+            for b in tags.iter().skip(i + 1) {
+                if a.is_within(b) || b.is_within(a) {
+                    return Err(TagsError::Covered);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Decodes tags as they appear in a grant: strictly increasing
+    /// canonical encodings, and the rules of [`Tags::new`].
+    pub(crate) fn from_sexps(items: &[Sexp]) -> Result<Tags, DecodeError> {
+        let tags = items
+            .iter()
+            .map(Tag::from_sexp)
+            .collect::<Result<Vec<_>, _>>()?;
+        let increasing = items.windows(2).all(|w| match w {
+            [a, b] => a.encode() < b.encode(),
+            _ => true,
+        });
+        if !increasing {
+            return Err(DecodeError::NonCanonical);
+        }
+        Tags::check(&tags).map_err(|e| match e {
+            TagsError::Empty => DecodeError::Malformed("grant without a tag"),
+            TagsError::TooMany => DecodeError::Malformed("too many tags"),
+            TagsError::Covered => DecodeError::Malformed("a tag covers another"),
+        })?;
+        Ok(Tags(tags))
+    }
+
+    /// The tags, in order.
+    pub fn iter(&self) -> impl Iterator<Item = &Tag> {
+        self.0.iter()
+    }
+
+    /// The tags, in order.
+    pub fn as_slice(&self) -> &[Tag] {
+        &self.0
+    }
+
+    /// Whether some tag covers `tag`.
+    pub fn covers(&self, tag: &Tag) -> bool {
+        self.0.iter().any(|t| tag.is_within(t))
+    }
+}
+
+impl core::fmt::Display for Tags {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (i, t) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{t}")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {

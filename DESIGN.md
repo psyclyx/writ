@@ -285,7 +285,7 @@ a ⊆ b   iff  b is a prefix of a
 
 - `(zuko home relay) ⊆ (zuko home) ⊆ (zuko) ⊆ ()`.
 - Atoms compare whole: `(zuko home)` is not a prefix of `(zuko homework)`.
-- No wildcards, sets, or ranges. Unions are multiple grants. Order elements
+- No wildcards, sets, or ranges. Unions are several tags in one grant, or several grants (§18.2). Order elements
   general → specific (`(ssh <host>)`, not `(<host> ssh)`).
 - IP-style prefixes are nibble paths, e.g. `(zuko route f d 1 2 3 4)`;
   list-prefix narrowing gives containment. Non-nibble-aligned prefixes are not
@@ -847,11 +847,15 @@ grant = "(" "grant" common subject 1*16tag [ "(" "delegate" ")" ] ")"
 - Tags are distinct and in strictly increasing order of their canonical
   encoding. A grant with one tag is encoded exactly as today, so existing
   grants and vectors keep their bytes.
-- Issuing refuses a tag that another tag of the same grant already covers
-  (`(ssh)` with `(ssh nas)`): it would mean nothing.
+- No tag of a grant may cover another (`(ssh)` with `(ssh nas)`): it would
+  mean nothing. Decoders reject it, so a set of tags has one encoding and one
+  meaning, and issuing refuses it.
 - Verification treats each tag as a separate grant sharing the signature; the
   chain search, intersection and the proof are unchanged, and a proof's step
-  records which tag it used.
+  records the tag it used. For any query, at most one tag of a grant can
+  serve, so the search picks it and goes on as before.
+- Built 2026-10-19: `Tags` in libwrit; `writ grant` and `writ leaf` take
+  several TAGs; vectors in `chains/` and `items/rejections.txt`.
 - Why: an identity-signed grant carries a 7856-byte signature, so five paths
   as five grants cost about 39 KB; as one grant, about 8 KB.
 

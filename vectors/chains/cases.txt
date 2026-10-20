@@ -36,7 +36,7 @@ tag = (ssh)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-names-leaf-forever:malformed
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers me-grants-bob-files:covers me-grants-bob-teams:covers me-names-leaf-forever:malformed
 
 case = before expiry
 subject = bob
@@ -53,7 +53,7 @@ tag = (web)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = me-grants-bob-web:expired me-names-leaf-forever:malformed
+rejected = me-grants-bob-files:covers me-grants-bob-teams:covers me-grants-bob-web:expired me-names-leaf-forever:malformed
 
 case = revoked
 subject = bob
@@ -61,7 +61,7 @@ tag = (mail)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = me-grants-bob-mail:revoked me-names-leaf-forever:malformed
+rejected = me-grants-bob-files:covers me-grants-bob-mail:revoked me-grants-bob-teams:covers me-names-leaf-forever:malformed
 
 case = issued in the future
 subject = bob
@@ -69,7 +69,7 @@ tag = (future)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = me-grants-bob-future:not-yet-valid me-names-leaf-forever:malformed
+rejected = me-grants-bob-files:covers me-grants-bob-future:not-yet-valid me-grants-bob-teams:covers me-names-leaf-forever:malformed
 
 case = issued in the future, within skew
 subject = bob
@@ -112,7 +112,7 @@ tag = (ssh old)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-old:not-kept alice-grants-bob-ssh-nas:covers me-names-leaf-forever:malformed
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-old:not-kept alice-grants-bob-ssh-nas:covers me-grants-bob-files:covers me-grants-bob-teams:covers me-names-leaf-forever:malformed
 
 case = signed by a next key
 subject = bob
@@ -120,7 +120,7 @@ tag = (ssh next)
 now = 1800000100
 result = denied
 reason = not-found
-rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers alice-next-key-grants-bob:bad-signature me-names-leaf-forever:malformed
+rejected = alice-grants-bob-ftp:covers alice-grants-bob-ssh-nas:covers alice-next-key-grants-bob:bad-signature me-grants-bob-files:covers me-grants-bob-teams:covers me-names-leaf-forever:malformed
 
 case = through an equivocating identity
 subject = bob
@@ -170,3 +170,54 @@ now = 1800000100
 result = denied
 reason = not-found
 rejected = me-grants-alice-ssh:covers me-names-leaf-forever:malformed
+
+case = several tags: the first
+subject = bob
+tag = (files docs)
+now = 1800000100
+result = allowed
+chain = me-grants-bob-files
+effective-tag = (files docs)
+expires = never
+
+case = several tags: below the second
+subject = bob
+tag = (files photos 2026)
+now = 1800000100
+result = allowed
+chain = me-grants-bob-files
+effective-tag = (files photos)
+expires = never
+
+case = several tags: not their parent
+subject = bob
+tag = (files)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = me-grants-bob-files:covers me-grants-bob-teams:covers me-names-leaf-forever:malformed
+
+case = several tags: revoked as one
+subject = bob
+tag = (scan)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = me-grants-bob-files:covers me-grants-bob-print-scan:revoked me-grants-bob-teams:covers me-names-leaf-forever:malformed
+
+case = several tags: delegated, one passed on
+subject = app
+tag = (team b x)
+now = 1800000100
+result = allowed
+chain = me-grants-bob-teams bob-grants-app-team-b
+effective-tag = (team b x)
+expires = never
+
+case = several tags: delegated, the other
+subject = app
+tag = (team a)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = bob-grants-app-team-b:outside-issuer me-names-leaf-forever:malformed
