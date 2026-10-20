@@ -946,6 +946,67 @@ rest are fixes in the glue around the cryptography, which was found sound.
   suppress the `--fetch` that would have found the owner's, which is the
   warm-key theft of §10 until rotation.
 
+### Resolved after the second security review (2026-10-20)
+
+Four audits (cryptography, encoding, the verification core, the CLI) and a
+read of the whole. The cryptography and the verification core were found
+sound: no hostile material produces a wrong answer, and no warm-key thief
+outlasts the rotation. One design gap, one CLI defect, and small items.
+
+- **A leaf key's own statements had no lifetime bound.** The ceiling applied
+  to statements _about_ a leaf, not to statements _by_ one, so a grant
+  issued by a stolen leaf key stayed valid for as long as the daemon kept
+  renewing the grant to that same key, and nothing could revoke it: leaves
+  cannot revoke, and an identity revokes only its own statements. §10 had no
+  row for a stolen leaf key. **Decision:** every statement a leaf issues
+  carries `expires` within the ceiling (SPEC §5.4 rule 4, §7 rule 6), so
+  everything a leaf touches lasts at most a day; §7 and §10 say so. The
+  chain vectors gain a leaf-issued grant without expiry, rejected.
+- **`writ leaf --out` could put a key inside the identity directory.** It
+  made the overwrite check but not the "no keys inside DIR" check that
+  `init` and `rotate` make. A key at `DIR/current.key.new` was silently
+  deleted by the next command, which took it for a stale rotation; one at
+  `DIR/record.writ` broke `--as DIR` and was later replaced by the record
+  writer. **Decision:** `leaf --out`, `leaf --grant-out` and `sign --out`
+  refuse paths inside the identity directory.
+- **Two spellings of one descriptor passed the distinct-output check**, so
+  `--next-out /dev/fd/3 --key-out /proc/self/fd/3` wrote the cold and warm
+  keys into one pipe. Outputs now compare by descriptor number as well.
+- **Statements and records were memoized in one map.** Their labels differ,
+  so their hashes cannot collide, but a lookup of the wrong kind would have
+  cached "unknown" against the other, the permissive direction for a
+  record. Unreachable through the indexes; now two maps, both counted
+  against `max_statements`.
+- **The speccheck vectors do not pin `y ≥ p` rejection**, contrary to SPEC
+  §4.2: their non-canonical points encode `p − 1` with the sign bit set,
+  which is also of small order. libcrux rejects `p` and `p + 1` encodings
+  for A and R; libwrit's tests now pin that, and the SPEC says what the
+  vectors cover.
+- **A root's name could label another identity with an id lookalike**
+  (`WRIT1…`, `leaf:…`), which explanations then printed in place of the id.
+  Display only, and only a root could do it; labels now refuse both,
+  case-insensitively.
+- **`resolve` listed an equivocating identity as a member**, since
+  denotation never consults the member's log. Chains through it already
+  failed. **Decision:** members exclude it, and the evidence is the answer
+  when nothing else remains (SPEC §10).
+- **A record under an older event** is rejected with a reason of its own
+  (`OutdatedRecord`) rather than one that said the log ended before it.
+- **`rotate` refuses a symbolic link at `DIR/current.key`** when it would
+  replace it: the rename would have replaced the link and left the retired
+  key at its target, while the output said the old key no longer signed.
+- **Every stderr write** goes through one function that ignores a closed
+  descriptor; five `eprint!` calls remained after the last fix.
+- **Not changed.** The signature budget is charged by the number of
+  attached signatures before any is verified, so one junk-laden copy of a
+  real grant can deny it: fail-closed, and the accepted bound (§16,
+  2026-10-16). `--fetch` restricts protocols by checking each URL and
+  redirect itself; the `curl` crate exposes no `CURLOPT_PROTOCOLS` without
+  `unsafe`, and the check held against every redirect tried. After a crash
+  left a staged key, two concurrent issuers both try to finish the install
+  and one fails with a spurious error; availability only. State growth is
+  bounded per query, not across queries, as §16 (2026-10-16) accepts.
+
 ## 17. Open questions
 
 None blocking. The resource limits and the default skew were set on 2026-10-19
