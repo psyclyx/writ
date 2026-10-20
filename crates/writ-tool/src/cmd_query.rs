@@ -384,11 +384,11 @@ impl Query {
 
     fn deny(&self, parsed: &Parsed, headline: String, d: &Denial) -> Error {
         if !parsed.flag("quiet") {
-            eprint!(
+            crate::stderr(format!(
                 "{} {headline}: {}",
                 style::paint(Stream::Err, style::BAD, "denied:"),
                 display::denial(d, &self.material, self.fetch)
-            );
+            ));
         }
         Error::Denied
     }
@@ -459,13 +459,13 @@ pub fn prove(parsed: &Parsed) -> Result<()> {
             items.extend(q.local_records(&proof));
             fs::print(&items.iter().map(Item::armor).collect::<String>())?;
             if !parsed.flag("quiet") {
-                eprintln!(
+                crate::stderr_line(format!(
                     "proof: {} log event{} and {} statement{}",
                     items.iter().filter(|i| matches!(i, Item::Event(_))).count(),
                     plural(items.iter().filter(|i| matches!(i, Item::Event(_))).count()),
                     proof.statements().len(),
                     plural(proof.statements().len())
-                );
+                ));
             }
             Ok(())
         }

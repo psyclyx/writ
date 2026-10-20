@@ -466,10 +466,10 @@ pub fn emit(item: &Item, recorded_in: Option<&Path>) -> Result<()> {
     if let Some(path) = recorded_in
         && std::io::stdout().is_terminal()
     {
-        eprintln!(
+        crate::stderr_line(format!(
             "recorded in {}; standard output is a terminal, so the item was not printed",
             path.display()
-        );
+        ));
         return Ok(());
     }
     print(&item.armor())

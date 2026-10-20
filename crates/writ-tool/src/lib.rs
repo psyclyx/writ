@@ -107,7 +107,7 @@ fn take_color(argv: &mut Vec<OsString>) -> Result<()> {
 fn run(mut argv: Vec<OsString>) -> Result<()> {
     take_color(&mut argv)?;
     let Some(first) = argv.first().and_then(|a| a.to_str()) else {
-        eprint!("{}", help::overview(false));
+        stderr(help::overview(false));
         return Err(Error::Msg(String::new()));
     };
     match first {
@@ -176,6 +176,13 @@ pub(crate) fn stderr_line(line: impl std::fmt::Display) {
     let _ = writeln!(err, "{line}");
 }
 
+/// Writes to stderr without a line ending; see [`stderr_line`].
+pub(crate) fn stderr(text: impl std::fmt::Display) {
+    use std::io::Write;
+    let mut err = std::io::stderr().lock();
+    let _ = write!(err, "{text}");
+}
+
 /// Prints a warning to stderr.
 pub(crate) fn warn(message: impl std::fmt::Display) {
     stderr_line(format!(
@@ -199,7 +206,9 @@ impl libwrit::Rng for OsRng {
     fn fill(&mut self, out: &mut [u8]) {
         if let Err(e) = getrandom::fill(out) {
             // Continuing without randomness is never acceptable.
-            eprintln!("writ: the operating system's random number generator failed: {e}");
+            stderr_line(format!(
+                "writ: the operating system's random number generator failed: {e}"
+            ));
             std::process::abort();
         }
     }

@@ -184,7 +184,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
         lines.push(format!("  {note}"));
     }
     if !parsed.flag("quiet") || stdout_taken {
-        eprintln!("{}", lines.join("\n"));
+        crate::stderr_line(lines.join("\n"));
     }
     Ok(())
 }
@@ -690,10 +690,10 @@ pub fn keygen(parsed: &Parsed) -> Result<()> {
             std::slice::from_ref(&seed),
         ),
     )?;
-    eprintln!(
+    crate::stderr_line(format!(
         "public key: slh-dsa-shake-128s {}\nTo make a public key file for --next-pub, run 'writ pubkey' on the key file.",
         libwrit::Hash(public.0)
-    );
+    ));
     Ok(())
 }
 
