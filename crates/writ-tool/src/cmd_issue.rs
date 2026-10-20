@@ -409,8 +409,10 @@ pub fn sign(parsed: &Parsed) -> Result<()> {
     })?;
     // Opened first: if it can't be created, nothing is signed or recorded.
     // And never inside the identity's directory, among its own files.
-    if let (Some(p), Some(dir)) = (parsed.value("out"), parsed.value("identity")) {
-        ident::check_key_path(std::path::Path::new(dir), p, false)?;
+    match (parsed.value("out"), parsed.value("identity")) {
+        (Some(p), Some(dir)) => ident::check_key_path(std::path::Path::new(dir), p, false)?,
+        (Some(p), None) => ident::check_output_path(p)?,
+        (None, _) => {}
     }
     let out = parsed
         .value("out")

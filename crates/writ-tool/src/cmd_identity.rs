@@ -112,22 +112,27 @@ pub fn init(parsed: &Parsed) -> Result<()> {
 
     let new_dir = ident::NewDir::create(dir)?;
     let path = &new_dir.path;
+    // Both key outputs are opened before either is written, so a path that
+    // can't be created leaves no key behind. Once a key is written, a later
+    // failure names it as void: it belongs to an identity that was never
+    // created.
+    let mut written: Vec<&str> = Vec::new();
     let result = (|| {
         ident::check_key_path(path, next_out, false)?;
         ident::check_key_path(path, key_out, true)?;
-        if !next_seeds.is_empty() {
-            fs::write_secret(
-                next_out,
-                &fs::seeds_text(&next_comment(id, &next_seeds), &next_seeds),
-            )?;
+        let next_file = (!next_seeds.is_empty())
+            .then(|| fs::Output::open(next_out, true))
+            .transpose()?;
+        let key_file = fs::Output::open(key_out, true)?;
+        if let Some(out) = next_file {
+            out.write(&fs::seeds_text(&next_comment(id, &next_seeds), &next_seeds))?;
+            written.push(next_out);
         }
-        fs::write_secret(
-            key_out,
-            &fs::seeds_text(
-                &format!("current key for {id} (event 0)"),
-                std::slice::from_ref(&current_seed),
-            ),
-        )?;
+        key_file.write(&fs::seeds_text(
+            &format!("current key for {id} (event 0)"),
+            std::slice::from_ref(&current_seed),
+        ))?;
+        written.push(key_out);
         fs::replace(
             &path.join(NEXT),
             Item::Authority(next.clone()).armor().as_bytes(),
@@ -140,7 +145,23 @@ pub fn init(parsed: &Parsed) -> Result<()> {
     })();
     if let Err(e) = result {
         new_dir.abandon();
-        return Err(e);
+        let void: Vec<&str> = written
+            .into_iter()
+            .filter(|p| !fs::is_stdout(p) && !fs::is_descriptor(p))
+            .collect();
+        if void.is_empty() {
+            return Err(e);
+        }
+        let (files, them) = if void.len() == 1 {
+            ("The key file", "it is void: delete it")
+        } else {
+            ("The key files", "they are void: delete them")
+        };
+        return Err(e.with_note(format!(
+            "The identity was not created. {files} written before the error ({}) belong \
+             to no identity; {them}",
+            void.join(", ")
+        )));
     }
     // A publishing identity starts with a record, so its statements count
     // from the start (DESIGN.md §18.7).
@@ -220,7 +241,9 @@ fn compute_keep(
                     continue;
                 }
                 let h = s.body.hash();
-                (h, verifier.statement_status(&h, now))
+                // Not budgeted: an undecided statement would be dropped, so
+                // junk signatures written into issued.writ must not decide.
+                (h, verifier.statement_status_unbudgeted(&h, now))
             }
             Item::Signature(s) if s.body.signer.id() == Some(ident.id()) => {
                 let h = s.body.hash();
@@ -666,7 +689,7 @@ pub fn export(parsed: &Parsed) -> Result<()> {
         let now = wall_clock();
         for item in &ident.issued {
             if let Item::Statement(s) = item
-                && v.statement_status(&s.body.hash(), now).is_ok()
+                && v.statement_status_unbudgeted(&s.body.hash(), now).is_ok()
             {
                 out.push_str(&item.armor());
             }
@@ -678,6 +701,9 @@ pub fn export(parsed: &Parsed) -> Result<()> {
 pub fn keygen(parsed: &Parsed) -> Result<()> {
     parsed.exact(&KEYGEN, [])?;
     let out = parsed.value("out").unwrap_or("-");
+    // Never inside an identity directory: a key at DIR/current.key.new would
+    // be taken for a staged rotation, one at DIR/record.writ for the record.
+    ident::check_output_path(out)?;
     let seed = Seed::generate(&mut OsRng);
     let public = seed.root().root_key();
     fs::write_secret(

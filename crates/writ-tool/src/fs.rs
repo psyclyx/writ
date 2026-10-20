@@ -192,11 +192,27 @@ fn output_descriptor(path: &str) -> Option<u32> {
 /// Whether two output paths name the same destination, so that two secrets
 /// meant for different places can't end up in one.
 pub fn same_output(a: &str, b: &str) -> bool {
-    a == b
-        || matches!(
-            (output_descriptor(a), output_descriptor(b)),
-            (Some(x), Some(y)) if x == y
-        )
+    if a == b {
+        return true;
+    }
+    match (output_descriptor(a), output_descriptor(b)) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => {
+            // Two spellings of one file to be created: the same name in the
+            // same real directory (`a` and `./a`, or through a linked
+            // directory).
+            let place = |p: &str| {
+                let p = Path::new(p);
+                let parent = p
+                    .parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                Some((parent.canonicalize().ok()?, p.file_name()?.to_owned()))
+            };
+            matches!((place(a), place(b)), (Some(x), Some(y)) if x == y)
+        }
+        _ => false,
+    }
 }
 
 /// Whether `path` names a descriptor the caller handed us, other than
@@ -429,15 +445,56 @@ pub fn lock_dir(dir: &Path, exclusive: bool) -> Result<File> {
 /// Takes a lock file, creating it if needed, for as long as the returned
 /// handle lives.
 pub fn lock_file(path: &Path, exclusive: bool) -> Result<File> {
-    let f = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .context(|| format!("opening {}", path.display()))?;
+    let shown = path.display();
+    // Never through a symbolic link: a link planted at DIR/.lock would make
+    // writ create and hold a file wherever it points. A fresh lock file is
+    // created with O_EXCL; an existing one is opened, then shown to be the
+    // regular file at that path and not a link put there meanwhile.
+    let f = match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let is_link =
+                || std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+            let refused = || {
+                err(format!(
+                    "{shown} is a symbolic link; writ does not follow links for its lock \
+                     files. Remove it"
+                ))
+            };
+            if is_link() {
+                return refused();
+            }
+            let f = OpenOptions::new()
+                .write(true)
+                .truncate(false)
+                .open(path)
+                .context(|| format!("opening {shown}"))?;
+            // Shown to be the file at that path, not a link swapped in since.
+            let at_path =
+                std::fs::symlink_metadata(path).context(|| format!("checking {shown}"))?;
+            let opened = f.metadata().context(|| format!("checking {shown}"))?;
+            if at_path.file_type().is_symlink() || !same_file(&at_path, &opened) {
+                return refused();
+            }
+            f
+        }
+        Err(e) => return err(format!("opening {shown}: {e}")),
+    };
     if exclusive { f.lock() } else { f.lock_shared() }
         .context(|| format!("locking {}", path.display()))?;
     Ok(f)
+}
+
+/// Whether two metadata describe one file.
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    a.file_type() == b.file_type() && a.len() == b.len()
 }
 
 /// Reads a bundle file; a missing file is an empty bundle.
@@ -490,6 +547,8 @@ mod tests {
             ("/dev/fd/3", "/proc/self/fd/3"),
             ("/dev/stderr", "/dev/fd/2"),
             ("x.key", "x.key"),
+            ("x.key", "./x.key"),
+            ("x.key", "././x.key"),
         ] {
             assert!(same_output(a, b), "{a} {b}");
             assert!(same_output(b, a), "{b} {a}");
@@ -498,7 +557,7 @@ mod tests {
             ("/dev/fd/3", "/dev/fd/4"),
             ("-", "/dev/fd/3"),
             ("x.key", "y.key"),
-            ("x.key", "./x.key"),
+            ("x.key", "sub/x.key"),
         ] {
             assert!(!same_output(a, b), "{a} {b}");
         }

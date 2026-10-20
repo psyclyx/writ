@@ -163,11 +163,15 @@ impl Query {
                 Err(_) => return None,
             };
             // And its revocations, so that one seen once stays seen even
-            // when a later bundle (or a proof) leaves it out.
+            // when a later bundle (or a proof) leaves it out. Judged without
+            // the signature budget: a revocation left undecided would be
+            // dropped from the state, the permissive direction, and a bundle
+            // merging junk signatures onto a remembered one could arrange
+            // that. Only the signatures that verify are written.
             items.extend(self.material.issued_by(&id).iter().filter_map(|h| {
                 let st = self.material.statement(h)?;
                 let revoke = matches!(st.body.claim, libwrit::Claim::Revoke { .. });
-                (revoke && verifier.statement_status(h, latest).is_ok())
+                (revoke && verifier.statement_status_unbudgeted(h, latest).is_ok())
                     .then(|| self.material.shippable(h))?
             }));
             // And its records (DESIGN.md §18.7): the newest, which keeps
@@ -177,7 +181,7 @@ impl Query {
                 .material
                 .records_by(&id)
                 .iter()
-                .filter(|h| verifier.record_status(h, latest).is_ok())
+                .filter(|h| verifier.record_status_unbudgeted(h, latest).is_ok())
                 .filter_map(|h| Some((*h, self.material.record(h)?)))
                 .collect();
             records.sort_by_key(|(_, r)| std::cmp::Reverse(r.body.issued));

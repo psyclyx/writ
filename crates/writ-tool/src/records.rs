@@ -127,8 +127,13 @@ pub fn sign(log: &Log, issued: &[Item], signers: &[RootSigner]) -> Result<Signed
         .iter()
         .filter_map(|item| match item {
             Item::Statement(s) if s.body.issuer.id() == Some(log.id()) => match &s.body.claim {
+                // Not budgeted: a revocation left out of the record would
+                // be un-revoked for whoever relies on records, so junk
+                // signatures written into issued.writ must not decide it.
                 Claim::Revoke { target }
-                    if verifier.statement_status(&s.body.hash(), now).is_ok() =>
+                    if verifier
+                        .statement_status_unbudgeted(&s.body.hash(), now)
+                        .is_ok() =>
                 {
                     Some(*target)
                 }

@@ -21,6 +21,14 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
+    /// The same error with a line appended that says what to do next.
+    pub fn with_note(self, note: impl fmt::Display) -> Error {
+        match self {
+            Error::Msg(m) => Error::Msg(format!("{m}\n{note}")),
+            other => other,
+        }
+    }
+
     pub fn exit_code(&self) -> u8 {
         match self {
             Error::Help { .. } => 0,

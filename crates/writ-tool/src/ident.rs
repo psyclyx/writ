@@ -292,24 +292,49 @@ pub fn check_key_path(dir: &Path, path: &str, current: bool) -> Result<()> {
         return Ok(());
     }
     let p = Path::new(path);
-    let parent = p
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let parent = parent
-        .canonicalize()
-        .context(|| format!("{path}: directory {}", parent.display()))?;
-    let Ok(dir_real) = dir.canonicalize() else {
-        return Ok(());
-    };
-    if parent == dir_real && !(current && p.file_name() == Some(CURRENT_KEY.as_ref())) {
+    let parent = real_parent(path)?;
+    if let Ok(dir_real) = dir.canonicalize()
+        && parent == dir_real
+    {
+        if current && p.file_name() == Some(CURRENT_KEY.as_ref()) {
+            return Ok(());
+        }
         return err(format!(
             "{path} is inside {}, where writ keeps the identity's own files; \
              choose a path outside it",
             dir.display()
         ));
     }
+    check_output_path(path)
+}
+
+/// Refuses an output path inside any identity directory, for commands that
+/// have no identity of their own (`keygen`, `sign --leaf`): a file there
+/// could be taken for one of the identity's, or replaced by one. `init`
+/// checks its own directory separately, since it has no log yet.
+pub fn check_output_path(path: &str) -> Result<()> {
+    if fs::is_stdout(path) || fs::is_descriptor(path) {
+        return Ok(());
+    }
+    let parent = real_parent(path)?;
+    if is_identity_dir(&parent) {
+        return err(format!(
+            "{path} is inside {}, a writ identity directory; choose a path outside it",
+            parent.display()
+        ));
+    }
     Ok(())
+}
+
+/// The canonical directory `path` would be created in.
+fn real_parent(path: &str) -> Result<PathBuf> {
+    let parent = Path::new(path)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    parent
+        .canonicalize()
+        .context(|| format!("{path}: directory {}", parent.display()))
 }
 
 /// `writ rotate` writes the new current key to `DIR/current.key.new` before
@@ -318,11 +343,25 @@ pub fn check_key_path(dir: &Path, path: &str, current: bool) -> Result<()> {
 /// log uses it, or remove it if the rotation never happened.
 fn finish_key_install(dir: &Path, log: &Log) -> Result<()> {
     let staged = dir.join(format!("{CURRENT_KEY}.new"));
-    if !staged.is_file() {
+    let Ok(meta) = std::fs::symlink_metadata(&staged) else {
         return Ok(());
-    }
+    };
     let staged_str = staged.display().to_string();
-    let seeds = fs::read_seeds(&staged_str)?;
+    // Only a key file rotate staged is finished or removed: anything else
+    // there is left alone and named, so a key or file put there by other
+    // means is never deleted or installed.
+    if !meta.is_file() {
+        return err(format!(
+            "{staged_str} is not a regular file. writ rotate stages the new current key \
+             there; move this out of the way"
+        ));
+    }
+    let seeds = fs::read_seeds(&staged_str).map_err(|e| {
+        e.with_note(format!(
+            "{staged_str} is where writ rotate stages the new current key, and it does not \
+             hold one; move this file out of the way"
+        ))
+    })?;
     let committed = seeds.iter().all(|s| {
         log.head()
             .authority()
@@ -330,8 +369,15 @@ fn finish_key_install(dir: &Path, log: &Log) -> Result<()> {
             .is_some()
     });
     if committed {
-        std::fs::rename(&staged, dir.join(CURRENT_KEY))
-            .context(|| format!("installing {staged_str}"))?;
+        let target = dir.join(CURRENT_KEY);
+        if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
+            return err(format!(
+                "{} is a symbolic link; writ does not replace links. Move it away, then \
+                 run the command again to install the staged key {staged_str}",
+                target.display()
+            ));
+        }
+        std::fs::rename(&staged, &target).context(|| format!("installing {staged_str}"))?;
         fs::sync_parent(&staged)?;
         crate::note(format!(
             "finished an interrupted rotation: {} now holds the current key",

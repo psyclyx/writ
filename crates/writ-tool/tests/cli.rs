@@ -928,7 +928,8 @@ fn rotation_survives_a_crash_before_the_log_write() {
     std::fs::write(s.path("me/log.writ"), log_before).unwrap();
     std::fs::remove_file(s.path("me/current.key")).unwrap();
     std::fs::write(s.path("me/current.key"), &key_before).unwrap();
-    s.ok(&["keygen", "--out", "me/current.key.new"]);
+    s.ok(&["keygen", "--out", "staged.key"]);
+    std::fs::rename(s.path("staged.key"), s.path("me/current.key.new")).unwrap();
     let (code, _, err) = s.run(&[
         "rotate",
         "-i",
@@ -2457,4 +2458,179 @@ fn rotate_refuses_a_symlinked_current_key() {
     ]);
     assert_eq!(code, 0, "{err}");
     assert!(s.path("real.key").is_file());
+}
+
+/// A bundle that merges junk signatures onto a remembered revocation must
+/// not make `--state` forget it: what to remember is judged without the
+/// signature budget, and only the signatures that verify are written.
+#[test]
+fn state_keeps_a_revocation_under_junk_signatures() {
+    use libwrit::{Claim, Item, Sig};
+    let s = Sandbox::new("junkstate");
+    let me = s.init("me");
+    let alice = s.init("alice");
+    let grant = s.ok(&["grant", "-i", "me", &alice, "(x)"]);
+    let old = s.read("me/log.writ") + &grant;
+    std::fs::write(s.path("old.writ"), &old).unwrap();
+    let hash = s
+        .ok(&["show", "me/issued.writ"])
+        .lines()
+        .find_map(|l| l.strip_prefix("grant "))
+        .unwrap()
+        .to_owned();
+    let revoke = s.ok(&["revoke", "-i", "me", &hash[..10]]);
+    std::fs::write(s.path("new.writ"), old.clone() + &revoke).unwrap();
+    let check = |bundle: &str| {
+        s.run(&[
+            "check", "--as", &me, &alice, "(x)", "--in", bundle, "--state", "st",
+        ])
+        .0
+    };
+    assert_eq!(check("old.writ"), 0);
+    assert_eq!(check("new.writ"), 1);
+    assert_eq!(check("old.writ"), 1);
+    let state_file = s.path("st/logs").join(format!("{me}.writ"));
+    let before = std::fs::read_to_string(&state_file).unwrap();
+
+    // 126 copies of the revocation, each with 16 junk signatures: more than
+    // the query's signature budget.
+    let rev = Item::decode_bundle(revoke.as_bytes())
+        .unwrap()
+        .into_iter()
+        .find_map(|i| match i {
+            Item::Statement(st) if matches!(st.body.claim, Claim::Revoke { .. }) => Some(st),
+            _ => None,
+        })
+        .unwrap();
+    let mut hostile = old.clone();
+    let mut x: u64 = 1;
+    for _ in 0..126 {
+        let mut copy = rev.clone();
+        copy.sigs = (0..16u8)
+            .map(|index| {
+                let bytes = (0..7856)
+                    .map(|_| {
+                        x = x
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        (x >> 33) as u8
+                    })
+                    .collect();
+                Sig { index, bytes }
+            })
+            .collect();
+        hostile += &Item::Statement(copy).armor();
+    }
+    std::fs::write(s.path("hostile.writ"), &hostile).unwrap();
+    // The hostile bundle is refused (fail closed), and the state is unchanged.
+    assert_eq!(check("hostile.writ"), 1);
+    assert_eq!(std::fs::read_to_string(&state_file).unwrap(), before);
+    // So a clean bundle without the revocation still doesn't bring the grant back.
+    assert_eq!(check("old.writ"), 1);
+}
+
+#[test]
+fn keygen_and_leaf_signatures_stay_out_of_identity_directories() {
+    let s = Sandbox::new("keygen-dir");
+    s.init("me");
+    let err = s.fails(&["keygen", "--out", "me/current.key.new"], 2);
+    assert!(err.contains("identity directory"), "{err}");
+    assert!(!s.path("me/current.key.new").exists());
+    let err = s.fails(&["keygen", "--out", "me/record.writ"], 2);
+    assert!(err.contains("identity directory"), "{err}");
+    // A leaf signature has no identity of its own, but its output is checked too.
+    s.ok(&["keygen", "--out", "k.key"]);
+    std::fs::write(s.path("data"), b"hi").unwrap();
+    let leaf = s.ok(&[
+        "leaf",
+        "-i",
+        "me",
+        "(x)",
+        "--out",
+        "leaf.key",
+        "--grant-out",
+        "g.writ",
+    ]);
+    let _ = leaf;
+    let err = s.fails(
+        &[
+            "sign",
+            "--leaf",
+            "leaf.key",
+            "--context",
+            "t/v1",
+            "data",
+            "--out",
+            "me/current.key.new",
+        ],
+        2,
+    );
+    assert!(err.contains("identity directory"), "{err}");
+    assert!(!s.path("me/current.key.new").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn lock_files_do_not_follow_symlinks() {
+    let s = Sandbox::new("locklink");
+    std::fs::create_dir(s.path("d")).unwrap();
+    std::os::unix::fs::symlink(s.path("victim"), s.path("d/.lock")).unwrap();
+    let err = s.fails(&["init", "d", "--next-out", "n.key"], 2);
+    assert!(err.contains("symbolic link"), "{err}");
+    assert!(!s.path("victim").exists());
+    assert!(!s.path("n.key").exists());
+    // The same for verifier state.
+    let me = s.init("me");
+    std::fs::create_dir(s.path("st")).unwrap();
+    std::os::unix::fs::symlink(s.path("victim2"), s.path("st/.lock")).unwrap();
+    let err = s.fails(
+        &[
+            "check",
+            "--as",
+            &me,
+            &me,
+            "()",
+            "--in",
+            "me/log.writ",
+            "--state",
+            "st",
+        ],
+        2,
+    );
+    assert!(err.contains("symbolic link"), "{err}");
+    assert!(!s.path("victim2").exists());
+}
+
+#[test]
+fn init_leaves_no_void_key_behind() {
+    let s = Sandbox::new("initvoid");
+    // Two spellings of one file.
+    let err = s.fails(&["init", "me", "--next-out", "a", "--key-out", "./a"], 2);
+    assert!(err.contains("must differ"), "{err}");
+    assert!(!s.path("a").exists());
+    assert!(!s.path("me").exists());
+    // An output that can't be created: the one already opened is removed.
+    let err = s.fails(
+        &["init", "me", "--next-out", "b", "--key-out", "nowhere/k"],
+        2,
+    );
+    assert!(err.contains("nowhere"), "{err}");
+    assert!(!s.path("b").exists(), "{err}");
+    assert!(!s.path("me").exists());
+}
+
+#[test]
+fn a_foreign_file_at_the_staged_key_path_is_named_and_kept() {
+    let s = Sandbox::new("staged-foreign");
+    let me = s.init("me");
+    std::fs::write(s.path("me/current.key.new"), "not a key\n").unwrap();
+    let err = s.fails(&["grant", "-i", "me", &me, "(x)"], 2);
+    assert!(err.contains("stages the new current key"), "{err}");
+    assert!(s.path("me/current.key.new").exists());
+    std::fs::remove_file(s.path("me/current.key.new")).unwrap();
+    // A staged key that is not in the authority is still cleaned up.
+    s.ok(&["keygen", "--out", "k.key"]);
+    std::fs::rename(s.path("k.key"), s.path("me/current.key.new")).unwrap();
+    s.ok(&["grant", "-i", "me", &me, "(x)"]);
+    assert!(!s.path("me/current.key.new").exists());
 }
