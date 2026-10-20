@@ -7,14 +7,16 @@ use crate::specs::{CHECK, PROVE, RESOLVE, VERIFY};
 use crate::state::State;
 use crate::style::{self, Stream};
 use crate::{display, fs, subject, wall_clock};
-use libwrit::time::parse_duration;
-use libwrit::{Body, Denial, Floor, Id, Item, LogError, Material, Policy, Time, Verifier};
+use libwrit::time::{Duration, parse_duration};
+use libwrit::{Body, Denial, Floor, Id, Item, LogError, Material, Policy, Reason, Time, Verifier};
 use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Everything a question needs.
 struct Query {
     roots: Vec<Id>,
+    /// --fetch: get missing revocation records and ask again.
+    fetch: bool,
     /// Roots given as directories: their whole issuance log is in the
     /// material, so they need no records (DESIGN.md §18.6).
     local: Vec<Id>,
@@ -71,7 +73,10 @@ impl Query {
             }
         }
         label_roots_names(&roots, &material);
-        let mut policy = Policy::default();
+        let mut policy = Policy {
+            require_records: parsed.flag("require-records"),
+            ..Policy::default()
+        };
         if let Some(c) = parsed.value("leaf-ceiling") {
             policy.leaf_ceiling = parse_duration(c)
                 .ok_or_else(|| Error::Msg(format!("--leaf-ceiling: not a duration: {c:?}")))?;
@@ -93,6 +98,7 @@ impl Query {
         };
         Ok(Query {
             roots,
+            fetch: parsed.flag("fetch"),
             local,
             material,
             policy,
@@ -141,9 +147,121 @@ impl Query {
                 (revoke && verifier.statement_status(h, self.now).is_ok())
                     .then(|| self.material.shippable(h))?
             }));
+            // And its records (DESIGN.md §18.7): the newest, which keeps
+            // statements fresh, and any older one that lists a revocation
+            // the kept ones don't, since records are combined.
+            let mut records: Vec<&libwrit::Signed<libwrit::Record>> = self
+                .material
+                .records_by(&id)
+                .iter()
+                .filter(|h| verifier.record_status(h, self.now).is_ok())
+                .filter_map(|h| self.material.record(h))
+                .collect();
+            records.sort_by_key(|r| std::cmp::Reverse(r.body.issued));
+            let mut listed = BTreeSet::new();
+            for (i, r) in records.into_iter().enumerate() {
+                let adds = r.body.revoked.iter().any(|h| !listed.contains(h));
+                if i == 0 || adds {
+                    listed.extend(r.body.revoked.iter().copied());
+                    items.push(Item::Record(r.clone()));
+                }
+            }
             Some((id, items))
         });
         state.save(floor, remembered)
+    }
+
+    /// Asks `question`. With --fetch, a denial that names identities whose
+    /// fresh record is missing gets those records from the URLs in their
+    /// logs, and the question is asked again (DESIGN.md §18.7). Only issuers
+    /// the search reached from the roots are fetched for, each once, so a
+    /// bundle can't make writ fetch arbitrary URLs. `signer` is a data
+    /// signature's signer, whose record a `verify` denial may need.
+    fn ask<T>(
+        &mut self,
+        signer: Option<Id>,
+        question: impl Fn(&Verifier<'_>) -> std::result::Result<T, Denial>,
+    ) -> std::result::Result<T, Denial> {
+        let mut tried = BTreeSet::new();
+        loop {
+            let answer = question(&self.verifier());
+            let Err(d) = &answer else { return answer };
+            if !self.fetch {
+                return answer;
+            }
+            let wanted: Vec<Id> = stale_issuers(d, &self.material, signer)
+                .into_iter()
+                .filter(|id| tried.insert(*id))
+                .collect();
+            if wanted.is_empty() {
+                return answer;
+            }
+            for id in wanted {
+                self.fetch_record(id);
+            }
+        }
+    }
+
+    /// Tries `id`'s publish URLs in turn until one gives a bundle.
+    fn fetch_record(&mut self, id: Id) {
+        let urls = match &*self.material.log(&id) {
+            Ok(log) => log
+                .head()
+                .publish()
+                .map(|p| p.urls().to_vec())
+                .unwrap_or_default(),
+            Err(_) => return,
+        };
+        if urls.is_empty() {
+            crate::warn(format!(
+                "{} publishes records at no URL; get one from its owner",
+                display::id(&id)
+            ));
+        }
+        for url in urls {
+            match crate::fetch::get(&url).and_then(|bytes| {
+                self.material
+                    .add_bundle(&bytes)
+                    .map_err(|e| format!("not a bundle: {e}"))
+            }) {
+                Ok(_) => {
+                    crate::note(format!("fetched {url}"));
+                    return;
+                }
+                Err(e) => crate::warn(format!("{url}: {e}")),
+            }
+        }
+    }
+
+    /// Warns about records an answer relied on that will soon be too old,
+    /// so a stopped publishing job is noticed before it causes refusals.
+    fn warn_stale(&self, proof: &libwrit::Proof) {
+        for h in &proof.records {
+            let Some(r) = self.material.record(h) else {
+                continue;
+            };
+            let id = r.body.id;
+            let Some(max_age) = self
+                .material
+                .log(&id)
+                .as_ref()
+                .as_ref()
+                .ok()
+                .and_then(|log| log.head().publish().map(libwrit::Publish::max_age))
+            else {
+                continue;
+            };
+            let age = self.now.saturating_sub(r.body.issued);
+            if age.saturating_mul(5) >= max_age.saturating_mul(4) {
+                crate::warn(format!(
+                    "the newest revocation record from {} is {} old; statements that \
+                     need it stop counting in {}",
+                    display::id(&id),
+                    Duration(age),
+                    Duration(max_age.saturating_sub(age))
+                ));
+            }
+        }
     }
 
     fn deny(&self, parsed: &Parsed, headline: String, d: &Denial) -> Error {
@@ -160,6 +278,20 @@ impl Query {
 
 /// Identities a denial involved: the compromised one, or the issuers of the
 /// candidates that failed.
+/// Identities a denial says lack a fresh record: issuers of rejected
+/// statements, and the signer of a refused data signature.
+fn stale_issuers(d: &Denial, material: &Material, signer: Option<Id>) -> Vec<Id> {
+    match d {
+        Denial::NotFound { rejected } => rejected
+            .iter()
+            .filter(|r| matches!(r.reason, Reason::NoFreshRecord { .. }))
+            .filter_map(|r| material.statement(&r.statement)?.body.issuer.id())
+            .collect(),
+        Denial::Signature(Reason::NoFreshRecord { .. }) => signer.into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn denial_ids(d: &Denial, material: &Material) -> Vec<Id> {
     match d {
         Denial::Compromised(e) => vec![e.id()],
@@ -176,11 +308,15 @@ pub fn check(parsed: &Parsed) -> Result<()> {
     require_as(parsed, &CHECK)?;
     let holder = subject::holder(subject_text)?;
     let tag = subject::tag(tag_text)?;
-    let q = Query::setup(parsed, &CHECK, true)?;
-    let result = q.verifier().check(&holder, &tag, q.now);
+    let mut q = Query::setup(parsed, &CHECK, true)?;
+    let now = q.now;
+    let result = q.ask(None, |v| v.check(&holder, &tag, now));
     match result {
         Ok(proof) => {
             q.persist(proof.ids.iter().copied())?;
+            if !parsed.flag("quiet") {
+                q.warn_stale(&proof);
+            }
             if !parsed.flag("quiet") {
                 fs::print(&format!(
                     "{} {} holds {tag}\n{}",
@@ -207,10 +343,14 @@ pub fn prove(parsed: &Parsed) -> Result<()> {
     require_as(parsed, &PROVE)?;
     let holder = subject::holder(subject_text)?;
     let tag = subject::tag(tag_text)?;
-    let q = Query::setup(parsed, &PROVE, true)?;
-    match q.verifier().check(&holder, &tag, q.now) {
+    let mut q = Query::setup(parsed, &PROVE, true)?;
+    let now = q.now;
+    match q.ask(None, |v| v.check(&holder, &tag, now)) {
         Ok(proof) => {
             q.persist(proof.ids.iter().copied())?;
+            if !parsed.flag("quiet") {
+                q.warn_stale(&proof);
+            }
             let items = proof.items(&q.material);
             fs::print(&items.iter().map(Item::armor).collect::<String>())?;
             if !parsed.flag("quiet") {
@@ -244,9 +384,10 @@ pub fn resolve(parsed: &Parsed) -> Result<()> {
     require_as(parsed, &RESOLVE)?;
     // The output is for scripts: full ids.
     display::full_ids();
-    let q = Query::setup(parsed, &RESOLVE, true)?;
+    let mut q = Query::setup(parsed, &RESOLVE, true)?;
     let path = subject::name_path(path_text, q.roots.first().copied())?;
-    match q.verifier().resolve(&path, q.now) {
+    let now = q.now;
+    match q.ask(None, |v| v.resolve(&path, now)) {
         Ok(members) => {
             let mut ids = BTreeSet::new();
             let mut out = String::new();
@@ -293,17 +434,21 @@ pub fn verify(parsed: &Parsed) -> Result<()> {
         }
     };
     let hash = fs::hash_input(file, "the signed data")?;
-    let q = Query::setup(parsed, &VERIFY, file != "-" && sig_path != "-")?;
+    let mut q = Query::setup(parsed, &VERIFY, file != "-" && sig_path != "-")?;
     let signer = match &sig.body.signer {
         libwrit::Issuer::Identity { id, .. } => display::id(id),
         libwrit::Issuer::Leaf(k) => format!("leaf:{}", k.fingerprint()),
     };
-    match q
-        .verifier()
-        .verify(&sig, &hash, context.as_bytes(), &tag, q.now)
-    {
+    let now = q.now;
+    let signer_id = sig.body.signer.id();
+    match q.ask(signer_id, |v| {
+        v.verify(&sig, &hash, context.as_bytes(), &tag, now)
+    }) {
         Ok(proof) => {
             q.persist(proof.ids.iter().copied())?;
+            if !parsed.flag("quiet") {
+                q.warn_stale(&proof);
+            }
             if !parsed.flag("quiet") {
                 fs::print(&format!(
                     "{} by {signer}, signed {}, holding {tag}\n{}",

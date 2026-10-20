@@ -1078,5 +1078,8 @@ writ-tool   grant with several TAGs; init/rotate --publish --max-age;
    libwrit (`Publish`, `Record`, `sign_record`, `Verifier::with_local`,
    `Policy::require_records`); proofs carry the records they relied on.
 3. The CLI: `--publish`/`--max-age`, `export --record`, `--fetch` (libcurl),
-   `--state`, warnings.
+   `--state`, warnings. Built 2026-10-19: `init`, `rotate` and `revoke` write
+   DIR/record.writ (the log and a new record); `export --record` renews it;
+   query commands take `--fetch` and `--require-records`; `--state` keeps
+   records; denials name the URLs; answers warn in the last fifth of max-age.
 4. Channel binding.

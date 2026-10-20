@@ -1657,3 +1657,228 @@ fn grants_with_several_tags() {
     let err = s.fails(&["grant", "-i", "me", &alice], 2);
     assert!(err.contains("missing TAG"), "{err}");
 }
+
+/// A small HTTP server for `--fetch`: serves files from `dir` by path, and
+/// `/evil` as a redirect to a file: URL. Runs until the test process ends.
+fn serve(dir: PathBuf) -> String {
+    use std::io::{BufRead, BufReader};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                continue;
+            }
+            // Skip the headers.
+            let mut header = String::new();
+            while reader.read_line(&mut header).is_ok_and(|n| n > 2) {
+                header.clear();
+            }
+            let path = line.split(' ').nth(1).unwrap_or("/").to_owned();
+            let mut out = &stream;
+            let response = if path == "/evil" {
+                b"HTTP/1.1 302 Found\r\nLocation: file:///etc/passwd\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+            } else {
+                match std::fs::read(dir.join(path.trim_start_matches('/'))) {
+                    Ok(body) => [
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .into_bytes(),
+                        body,
+                    ]
+                    .concat(),
+                    Err(_) => {
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec()
+                    }
+                }
+            };
+            let _ = out.write_all(&response);
+        }
+    });
+    base
+}
+
+#[test]
+fn revocation_records_publish_and_fetch() {
+    let s = Sandbox::new("records");
+    let base = serve(s.dir.clone());
+    s.init("me");
+    let alice = s.init("alice");
+    // pub publishes its records at base/pub/record.writ, its own record file.
+    let url = format!("{base}/pub/record.writ");
+    let (code, _, err) = s.run(&[
+        "init",
+        "pub",
+        "--next-out",
+        "pub-next.key",
+        "--publish",
+        &url,
+        "--max-age",
+        "2h",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("publish") && err.contains(&url), "{err}");
+    assert!(s.read("pub/record.writ").contains("BEGIN WRIT"));
+    // me (local, as a directory) delegates to pub; pub grants alice.
+    let pub_id = s.ok(&["id", "pub"]).trim().to_owned();
+    s.append(
+        "b.writ",
+        &s.ok(&["grant", "-i", "me", &pub_id, "()", "--delegate"]),
+    );
+    s.append("b.writ", &s.ok(&["grant", "-i", "pub", &alice, "(x)"]));
+    s.append("b.writ", &s.read("pub/log.writ"));
+    let check = |extra: &[&str]| {
+        let mut args = vec!["check", "--as", "me", &alice, "(x)", "--in", "b.writ"];
+        args.extend_from_slice(extra);
+        s.run(&args)
+    };
+    // No record in the input: refused, saying where to get one.
+    let (code, _, err) = check(&[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("no older than 2h") && err.contains(&url) && err.contains("--fetch"),
+        "{err}"
+    );
+    // The record, given directly or fetched: allowed.
+    assert_eq!(check(&["--in", "pub/record.writ"]).0, 0);
+    let (code, _, err) = check(&["--fetch"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("fetched"), "{err}");
+    // Near the end of the record's life, the answer warns.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let soon = format!("@{}", now + 100 * 60);
+    let (code, _, err) = check(&["--in", "pub/record.writ", "--at", &soon]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("stop counting in"), "{err}");
+    // pub revokes its grant; the new record says so, and a fetch finds it.
+    let hash = s
+        .ok(&["show", "pub/issued.writ"])
+        .lines()
+        .find_map(|l| l.strip_prefix("grant "))
+        .unwrap()
+        .to_owned();
+    s.ok(&["revoke", "-i", "pub", &hash[..10]]);
+    let (code, _, err) = check(&["--fetch"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("revoked"), "{err}");
+    // export --record signs a new one and prints log and record.
+    let out = s.ok(&["export", "-i", "pub", "--record"]);
+    assert_eq!(out.matches("BEGIN WRIT").count(), 2, "{out}");
+    // A rotation keeps publishing and signs a record under the new event.
+    s.ok(&[
+        "rotate",
+        "-i",
+        "pub",
+        "--next-key",
+        "pub-next.key",
+        "--same-next",
+    ]);
+    assert_eq!(s.read("pub/record.writ").matches("BEGIN WRIT").count(), 3);
+}
+
+#[test]
+fn fetch_refuses_other_schemes_and_publish_is_checked() {
+    let s = Sandbox::new("fetchguard");
+    let base = serve(s.dir.clone());
+    s.init("me");
+    let alice = s.init("alice");
+    let url = format!("{base}/evil");
+    s.ok(&[
+        "init",
+        "bad",
+        "--next-out",
+        "bad-next.key",
+        "--publish",
+        &url,
+    ]);
+    let bad = s.ok(&["id", "bad"]).trim().to_owned();
+    s.append(
+        "b.writ",
+        &s.ok(&["grant", "-i", "me", &bad, "()", "--delegate"]),
+    );
+    s.append("b.writ", &s.ok(&["grant", "-i", "bad", &alice, "(y)"]));
+    s.append("b.writ", &s.read("bad/log.writ"));
+    let (code, _, err) = s.run(&[
+        "check", "--as", "me", &alice, "(y)", "--in", "b.writ", "--fetch",
+    ]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("only http and https"), "{err}");
+    // The settings are checked when they are made.
+    let err = s.fails(
+        &["init", "x1", "--next-out", "x1.key", "--max-age", "30m"],
+        2,
+    );
+    assert!(err.contains("at least 1h"), "{err}");
+    let err = s.fails(
+        &[
+            "init",
+            "x2",
+            "--next-out",
+            "x2.key",
+            "--publish",
+            "ftp://h/r",
+        ],
+        2,
+    );
+    assert!(err.contains("http:// or https://"), "{err}");
+    let (code, _, err) = s.run(&[
+        "init",
+        "x3",
+        "--next-out",
+        "x3.key",
+        "--publish",
+        "https://h.example/a",
+        "--publish",
+        "https://H.example:8443/b",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("every --publish URL is on h.example"), "{err}");
+}
+
+#[test]
+fn require_records_refuses_non_publishers_unless_local() {
+    let s = Sandbox::new("requirerec");
+    let me = s.init("me");
+    let alice = s.init("alice");
+    std::fs::write(
+        s.path("b.writ"),
+        s.read("me/log.writ") + &s.ok(&["grant", "-i", "me", &alice, "(z)"]),
+    )
+    .unwrap();
+    // me as a directory is local: its own grants need no record.
+    assert_eq!(
+        s.run(&[
+            "check",
+            "--as",
+            "me",
+            &alice,
+            "(z)",
+            "--in",
+            "b.writ",
+            "--require-records"
+        ])
+        .0,
+        0
+    );
+    // me by id is not, and publishes no records.
+    let (code, _, err) = s.run(&[
+        "check",
+        "--as",
+        &me,
+        &alice,
+        "(z)",
+        "--in",
+        "b.writ",
+        "--require-records",
+    ]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("publishes no records"), "{err}");
+}

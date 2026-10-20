@@ -4,6 +4,8 @@
   cargo-nextest,
   cargo-fuzz,
   cargo-audit,
+  pkg-config,
+  curl,
   clippy,
   marksman,
   nixd,
@@ -34,6 +36,10 @@ mkShell {
     cargo-nextest
     cargo-fuzz # fuzz/README.md
     cargo-audit # hooks/pre-commit
+
+    # writ --fetch links the system libcurl (DESIGN.md §18.7)
+    pkg-config
+    curl
 
     # testing the completion scripts and man pages
     bashInteractive

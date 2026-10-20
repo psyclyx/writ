@@ -5,7 +5,7 @@ writ\-rotate \- replace the keys of an identity, keeping its id
 .SH SYNOPSIS
 .nh
 .ad l
-\fBwrit rotate\fR \-i DIR \-\-next\-key PATH... (\-\-next\-out PATH | \-\-same\-next) [\-\-key\-out PATH] [\-\-key\-pub PATH]... [\-\-key\-k K] [\-\-next\-n N] [\-\-next\-k K] [\-\-next\-pub PATH]... [\-\-max\-validity DUR | \-\-no\-max\-validity] [\-q]
+\fBwrit rotate\fR \-i DIR \-\-next\-key PATH... (\-\-next\-out PATH | \-\-same\-next) [\-\-key\-out PATH] [\-\-key\-pub PATH]... [\-\-key\-k K] [\-\-next\-n N] [\-\-next\-k K] [\-\-next\-pub PATH]... [\-\-max\-validity DUR | \-\-no\-max\-validity] [\-\-publish URL]... [\-\-max\-age DUR | \-\-no\-publish] [\-q]
 .ad
 .hy
 .SH DESCRIPTION
@@ -55,6 +55,15 @@ set a new limit on how long statements may last
 .TP
 \fB\-\-no\-max\-validity\fR
 remove the limit on how long statements may last
+.TP
+\fB\-\-publish\fR \fIURL\fR
+a URL where this identity's revocation record will be published; give one \-\-publish per URL, at most 4, on different hosts
+.TP
+\fB\-\-max\-age\fR \fIDUR\fR
+how old a revocation record may be before verifiers refuse it; a new record must be signed and published at least this often (default 7d, at least 1h)
+.TP
+\fB\-\-no\-publish\fR
+stop publishing revocation records
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 print nothing on success

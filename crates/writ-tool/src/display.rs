@@ -442,7 +442,13 @@ pub fn denial(d: &Denial, material: &Material) -> String {
                     style::paint(Stream::Err, style::DIM, &short(&r.statement)),
                     r.reason
                 );
+                if matches!(r.reason, libwrit::Reason::NoFreshRecord { .. }) {
+                    out.push_str(&record_hint(material, &r.statement));
+                }
             }
+        }
+        Denial::Signature(libwrit::Reason::NoFreshRecord { .. }) => {
+            out.push_str("  get a fresh record from the signer, or run again with --fetch\n");
         }
         Denial::Compromised(e) => {
             let _ = writeln!(
@@ -459,6 +465,34 @@ pub fn denial(d: &Denial, material: &Material) -> String {
         _ => {}
     }
     out
+}
+
+/// Where a statement's issuer publishes its records.
+fn record_hint(material: &Material, statement: &libwrit::Hash) -> String {
+    let urls = material
+        .statement(statement)
+        .and_then(|s| s.body.issuer.id())
+        .and_then(|id| {
+            let log = material.log(&id);
+            let urls = log
+                .as_ref()
+                .as_ref()
+                .ok()?
+                .head()
+                .publish()?
+                .urls()
+                .to_vec();
+            Some(urls)
+        })
+        .unwrap_or_default();
+    if urls.is_empty() {
+        "      get a fresh record from its issuer\n".to_owned()
+    } else {
+        format!(
+            "      a fresh record is published at {}; run again with --fetch\n",
+            urls.join(", ")
+        )
+    }
 }
 
 /// One-line summary of a statement.

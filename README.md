@@ -110,7 +110,10 @@ of `--same-next`, and encrypt the new key to an age recipient (`age -r`) so
 that only one age command asks for a passphrase.
 
 Verifiers learn about rotations and revocations only from the bundles they
-are given. With `--state DIR`, `check`, `verify`, `resolve` and `prove`
+are given. An identity can also publish revocation records (`writ init
+--publish URL`): a signed list of what it has revoked, renewed at least every
+`--max-age`. Verifiers then accept its long-lived statements only with a recent
+record, which `--fetch` gets from the URL. With `--state DIR`, `check`, `verify`, `resolve` and `prove`
 remember the logs and revocations they have seen, so an older bundle cannot
 undo a rotation or a revocation. They also never use a time earlier than the
 newest statement seen from the identities they trust, so setting the clock

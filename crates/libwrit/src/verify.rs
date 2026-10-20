@@ -541,6 +541,12 @@ impl<'a> Verifier<'a> {
         Query::new(self, now).status(hash)
     }
 
+    /// Whether a revocation record in the material is valid at `now` (SPEC
+    /// §5.6): made under its issuer's head, and signed by its current keys.
+    pub fn record_status(&self, hash: &Hash, now: Time) -> Result<(), Reason> {
+        Query::new(self, now).record_status(hash)
+    }
+
     /// Whether a data signature in the material is valid at `now` (SPEC §7),
     /// and if not, why. Says nothing about what its signer holds.
     pub fn signature_status(&self, hash: &Hash, now: Time) -> Result<(), Reason> {

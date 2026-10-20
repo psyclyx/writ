@@ -17,6 +17,8 @@ pub const LOG: &str = "log.writ";
 pub const ISSUED: &str = "issued.writ";
 pub const NEXT: &str = "next.writ";
 pub const CURRENT_KEY: &str = "current.key";
+/// The log and the newest revocation record: the file to publish (DESIGN.md §18.7).
+pub const RECORD: &str = "record.writ";
 
 pub struct IdentityDir {
     pub dir: PathBuf,

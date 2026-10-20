@@ -5,13 +5,15 @@ writ\-verify \- check a signature and what its signer may do
 .SH SYNOPSIS
 .nh
 .ad l
-\fBwrit verify\fR \fB\-\-as\fR\ \fIID\fR... \fB\-t\fR\ \fITAG\fR \fB\-c\fR\ \fICONTEXT\fR [\fB\-\-in\fR\ \fIPATH\fR]... [\fB\-\-at\fR\ \fITIME\fR] [\fB\-\-state\fR\ \fIDIR\fR] [\fB\-\-leaf\-ceiling\fR\ \fIDUR\fR] [\fB\-q\fR] \fIFILE\fR \fISIGNATURE\fR
+\fBwrit verify\fR \fB\-\-as\fR\ \fIID\fR... \fB\-t\fR\ \fITAG\fR \fB\-c\fR\ \fICONTEXT\fR [\fB\-\-in\fR\ \fIPATH\fR]... [\fB\-\-at\fR\ \fITIME\fR] [\fB\-\-state\fR\ \fIDIR\fR] [\fB\-\-leaf\-ceiling\fR\ \fIDUR\fR] [\fB\-\-fetch\fR] [\fB\-\-require\-records\fR] [\fB\-q\fR] \fIFILE\fR \fISIGNATURE\fR
 .ad
 .hy
 .SH DESCRIPTION
 Check that SIGNATURE signs FILE for CONTEXT, and that the signer holds TAG. If so, writ prints the chain of grants that shows it and exits with status 0. If not, it prints the reasons to standard error and exits with status 1.
 .PP
 writ reads statements, identity logs and revocations from the \-\-in files, from standard input when it is a file or a pipe, and from each \-\-as identity directory. The order does not matter.
+.PP
+An identity may publish revocation records (see writ\-init(1)). Then its long\-lived statements count only with a record from it that is younger than its max\-age; a record also lists what it revoked. Records come from the input, from \-\-state, or with \-\-fetch from the URLs in the identity's log. A record is signed, so it does not matter who delivers it.
 .PP
 writ uses the current time, but never a time before its own build date. With \-\-state, it also never uses a time before the newest statement it has seen from the \-\-as identities, so setting the clock back does not make expired grants valid again. Use \-\-at to ask about another time.
 .SH ARGUMENTS
@@ -43,6 +45,12 @@ keep state in DIR between runs: the identity logs and revocations seen, and the 
 .TP
 \fB\-\-leaf\-ceiling\fR \fIDUR\fR
 accept grants to leaf keys only if they last at most DUR (at most 24h)
+.TP
+\fB\-\-fetch\fR
+when an answer needs a revocation record that is missing or too old, get it from the URLs its identity publishes, and ask again
+.TP
+\fB\-\-require\-records\fR
+refuse long\-lived statements by identities that publish no revocation records
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 print nothing; only set the exit status

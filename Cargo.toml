@@ -21,6 +21,8 @@ libcrux-ml-dsa = { version = "=0.0.11", default-features = false, features = [
 libcrux-ed25519 = { version = "=0.0.10", default-features = false }
 
 getrandom = "0.4"
+# libcurl, for `writ --fetch` only (DESIGN.md §18.7). System libcurl, its own TLS.
+curl = { version = "0.4.51", default-features = false }
 zeroize = "1.8"
 
 # dev-only

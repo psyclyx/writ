@@ -3,6 +3,8 @@
   stdenv,
   rustPlatform,
   installShellFiles,
+  pkg-config,
+  curl,
 }:
 let
   root = ../..;
@@ -32,7 +34,11 @@ rustPlatform.buildRustPackage {
   # Run the whole workspace's tests: ACVP and writ's own vectors included.
   cargoTestFlags = [ "--workspace" ];
 
-  nativeBuildInputs = [ installShellFiles ];
+  nativeBuildInputs = [
+    installShellFiles
+    pkg-config # so curl-sys links the system libcurl, with TLS
+  ];
+  buildInputs = [ curl ];
 
   postInstall = ''
     installManPage doc/man/*.1

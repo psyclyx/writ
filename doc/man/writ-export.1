@@ -5,13 +5,15 @@ writ\-export \- print the log and valid statements of an identity
 .SH SYNOPSIS
 .nh
 .ad l
-\fBwrit export\fR \fB\-i\fR\ \fIDIR\fR [\fB\-\-all\fR]
+\fBwrit export\fR \fB\-i\fR\ \fIDIR\fR [\fB\-\-all\fR] [\fB\-\-record\fR] [\fB\-\-key\fR\ \fIPATH\fR]...
 .ad
 .hy
 .SH DESCRIPTION
 Print a bundle with the log of the identity in DIR and every statement it issued that is valid now, including revocations. Give this bundle to the people who check your statements.
 .PP
 Data signatures are left out, because they travel with the data they sign.
+.PP
+With \-\-record, writ signs a new revocation record with the current key, writes the log and the record to DIR/record.writ, and prints them. Run it at least once per max\-age and publish the result at the URLs given to \fBwrit init \-\-publish\fR.
 .SH OPTIONS
 .TP
 \fB\-i\fR, \fB\-\-identity\fR \fIDIR\fR
@@ -19,6 +21,12 @@ the identity to export
 .TP
 \fB\-\-all\fR
 also print expired and revoked statements, and data signatures
+.TP
+\fB\-\-record\fR
+print the log and a new, signed revocation record instead: the file to publish
+.TP
+\fB\-\-key\fR \fIPATH\fR
+secret key file (default: DIR/current.key); give one \-\-key per key when several keys must sign; '\-' means standard input
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 print help; \fB\-h\fR is short, \fB\-\-help\fR is long
@@ -38,6 +46,14 @@ Publish your statements:
 .RS 4
 .nf
 writ export \-i me > me.writ
+.fi
+.RE
+.PP
+Make and publish a new revocation record, daily from cron:
+.PP
+.RS 4
+.nf
+writ export \-i me \-\-record | ssh web 'cat > www/writ/me.writ'
 .fi
 .RE
 .SH SEE ALSO

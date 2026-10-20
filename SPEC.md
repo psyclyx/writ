@@ -468,14 +468,16 @@ DIR/log.writ       the identity log, armored events
 DIR/issued.writ    everything the identity issued: statements and data signatures
 DIR/next.writ      every next authority committed to (authority items; public, append-only)
 DIR/current.key    the current secret key(s), mode 0600, unless kept elsewhere
+DIR/record.writ    if the identity publishes: its log and newest record, the file to publish
 ```
 
 and verifier state (`--state DIR`) as:
 
 ```
 DIR/floor           the clock floor, decimal seconds
-DIR/logs/ID.writ    the log and valid revocations of each identity a question relied
-                    on (roots, chain issuers, subjects of allowed questions, failed
+DIR/logs/ID.writ    the log, valid revocations and records (the newest, and any
+                    other that lists a revocation the rest don't) of each identity
+                    a question relied on (roots, chain issuers, subjects of allowed questions, failed
                     candidates' issuers, equivocators)
 ```
 

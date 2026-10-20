@@ -3,11 +3,14 @@
 use crate::args::Parsed;
 use crate::error::{Context, Error, Result, err};
 use crate::ident::{self, CURRENT_KEY, ISSUED, IdentityDir, LOG, NEXT};
+use crate::records;
 use crate::specs::{EXPORT, ID, INIT, KEYGEN, PUBKEY, ROTATE};
 use crate::{OsRng, fs, say, wall_clock};
 use libwrit::keys::RootSigner;
 use libwrit::time::{Duration, parse_duration};
-use libwrit::{Authority, Body, Claim, Item, Policy, PublicKey, RootKey, Seed, Signer, Verifier};
+use libwrit::{
+    Authority, Body, Claim, Item, Log, Policy, PublicKey, RootKey, Seed, Signer, Verifier,
+};
 use std::collections::BTreeSet;
 
 fn count(parsed: &Parsed, name: &str, default: usize) -> Result<usize> {
@@ -85,6 +88,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
         return err("--next-out and --key-out must differ: each gets its own secret key");
     }
     let max_validity = duration_arg(parsed, "max-validity")?;
+    let publish = records::setting(parsed, None)?;
     for p in [next_out, key_out] {
         fs::check_secret_target(p)?;
     }
@@ -95,7 +99,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
         Authority::single(current.root_key()),
         &next,
         max_validity,
-        None,
+        publish.clone(),
         &[&current],
         &mut OsRng,
     )
@@ -124,12 +128,27 @@ pub fn init(parsed: &Parsed) -> Result<()> {
             Item::Authority(next.clone()).armor().as_bytes(),
         )?;
         fs::replace(&path.join(ISSUED), b"")?;
-        fs::replace(&path.join(LOG), Item::Event(inception).armor().as_bytes())
+        fs::replace(
+            &path.join(LOG),
+            Item::Event(inception.clone()).armor().as_bytes(),
+        )
     })();
     if let Err(e) = result {
         new_dir.abandon();
         return Err(e);
     }
+    // A publishing identity starts with a record, so its statements count
+    // from the start (DESIGN.md §18.7).
+    let record_note = match &publish {
+        Some(_) => {
+            let log = Log::build(&inception, |_| Vec::new())
+                .map_err(|e| Error::Msg(format!("the new log: {e}")))?;
+            let record = records::sign(&log, &[], std::slice::from_ref(&current))?;
+            records::write(path, &log, record)?;
+            Some(records::reminder(path, &log))
+        }
+        None => None,
+    };
 
     let stdout_taken = fs::is_stdout(next_out) || fs::is_stdout(key_out);
     if !stdout_taken {
@@ -156,6 +175,9 @@ pub fn init(parsed: &Parsed) -> Result<()> {
             "  every statement must expire within {}",
             Duration(mv)
         ));
+    }
+    if let Some(note) = record_note {
+        lines.push(format!("  {note}"));
     }
     if !parsed.flag("quiet") || stdout_taken {
         eprintln!("{}", lines.join("\n"));
@@ -364,6 +386,7 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
             None => ident.log.head().max_validity(),
         }
     };
+    let publish = records::setting(parsed, ident.log.head().publish())?;
     let now = wall_clock();
     let (keep, stats) = compute_keep(&ident, now)?;
     let signer_refs: Vec<&dyn Signer> = signers.iter().map(|s| s as &dyn Signer).collect();
@@ -374,7 +397,7 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
             authority: current.clone(),
             next: next_authority.clone(),
             max_validity,
-            publish: None,
+            publish: publish.clone(),
             keep: keep.clone(),
         },
         &signer_refs,
@@ -427,7 +450,7 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
             &[Item::Authority(next_authority.clone())],
         )?;
     }
-    fs::append_items(&ident.dir.join(LOG), &[Item::Event(event)])?;
+    fs::append_items(&ident.dir.join(LOG), &[Item::Event(event.clone())])?;
     if matches!(key_out, KeyOut::Replace) {
         std::fs::rename(&staged, &current_path)
             .context(|| format!("replacing {current_path_str}"))?;
@@ -483,6 +506,28 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
         }
         _ => lines.push("  next keys    unchanged".to_owned()),
     }
+    // The rotation voids the old record (DESIGN.md §18.4): sign a new one
+    // under the new event right away, if the new current key can alone.
+    if publish.is_some() {
+        let mut material = ident.material();
+        material.add(Item::Event(event));
+        let log = material
+            .log(&ident.id())
+            .as_ref()
+            .clone()
+            .map_err(|e| Error::Msg(format!("the new log: {e}")))?;
+        if current.k() == 1 {
+            let record = records::sign(&log, &ident.issued, &[current_seed.root()])?;
+            records::write(&ident.dir, &log, record)?;
+            lines.push(format!("  {}", records::reminder(&ident.dir, &log)));
+        } else {
+            lines.push(format!(
+                "  sign a new revocation record now: writ export -i {dir} --record \
+                 with {} of the current keys",
+                current.k()
+            ));
+        }
+    }
     if !next_out.is_some_and(fs::is_stdout) || !parsed.flag("quiet") {
         say(parsed, lines.join("\n"));
     }
@@ -529,6 +574,22 @@ pub fn export(parsed: &Parsed) -> Result<()> {
         .value("identity")
         .ok_or_else(|| EXPORT.usage_error("-i DIR is required".into()))?;
     let ident = IdentityDir::open(dir)?;
+    if parsed.flag("record") {
+        if parsed.flag("all") {
+            return err("--record prints only the log and a record; it does not go with --all");
+        }
+        if ident.log.head().publish().is_none() {
+            return err(format!(
+                "{dir} does not publish revocation records; to start, rotate with --publish"
+            ));
+        }
+        let signers = ident.signers(parsed.values("key"))?;
+        let record = records::sign(&ident.log, &ident.issued, &signers)?;
+        let text = records::write(&ident.dir, &ident.log, record)?;
+        fs::print(&text)?;
+        say(parsed, records::reminder(&ident.dir, &ident.log));
+        return Ok(());
+    }
     let mut out: String = ident.log.items().map(|i| i.armor()).collect();
     if parsed.flag("all") {
         out.extend(ident.issued.iter().map(Item::armor));

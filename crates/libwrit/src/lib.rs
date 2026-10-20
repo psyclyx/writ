@@ -37,8 +37,8 @@ pub use keys::{LeafKey, PublicKey, Rng, RootKey, Seed, Signer, Suite};
 pub use log::{Evidence, Log, LogError, equivocation};
 pub use material::{Material, Principal};
 pub use model::{
-    Authority, Body, Claim, DataSig, DecodeError, Event, Inception, Issuer, Item, NamePath,
-    OpaqueKey, Publish, Record, Rotation, Sig, Signed, Statement, Subject,
+    Authority, Body, Claim, DataSig, DecodeError, Event, Inception, Issuer, Item, MAX_PUBLISH_URLS,
+    MIN_MAX_AGE, NamePath, OpaqueKey, Publish, Record, Rotation, Sig, Signed, Statement, Subject,
 };
 pub use tag::{MAX_GRANT_TAGS, Tag, Tags, TagsError};
 pub use time::{Floor, Time};

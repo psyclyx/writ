@@ -136,6 +136,37 @@ const LEAF_CEILING: Opt = opt(
     "accept grants to leaf keys only if they last at most DUR (at most 24h)",
 );
 const QUIET_QUERY: Opt = flag("quiet", "print nothing; only set the exit status").short('q');
+const FETCH: Opt = flag(
+    "fetch",
+    "when an answer needs a revocation record that is missing or too old, get \
+     it from the URLs its identity publishes, and ask again",
+);
+const REQUIRE_RECORDS: Opt = flag(
+    "require-records",
+    "refuse long-lived statements by identities that publish no revocation records",
+);
+const PUBLISH: Opt = opt(
+    "publish",
+    "URL",
+    Value::Text,
+    "a URL where this identity's revocation record will be published; give \
+     one --publish per URL, at most 4, on different hosts",
+)
+.many();
+const MAX_AGE: Opt = opt(
+    "max-age",
+    "DUR",
+    Value::Text,
+    "how old a revocation record may be before verifiers refuse it; a new \
+     record must be signed and published at least this often (default 7d, \
+     at least 1h)",
+);
+/// Query commands: what --fetch and records mean.
+const RECORDS: &str = "An identity may publish revocation records (see writ-init(1)). \
+     Then its long-lived statements count only with a record from it that is \
+     younger than its max-age; a record also lists what it revoked. Records \
+     come from the input, from --state, or with --fetch from the URLs in the \
+     identity's log. A record is signed, so it does not matter who delivers it.";
 
 const SUBJECT_ARG: Arg = arg(
     "SUBJECT",
@@ -188,6 +219,8 @@ pub static INIT: Spec = Spec {
             Value::Text,
             "require every statement to expire within DUR, such as 90d",
         ),
+        PUBLISH,
+        MAX_AGE,
         flag("quiet", "print only the id").short('q'),
     ],
     description: &[
@@ -203,6 +236,15 @@ pub static INIT: Spec = Spec {
          example, 2 of 3: your own offline key, a friend's key, and a key in \
          a safe. K must be more than half of N, so that two separate groups of \
          holders can't each rotate.",
+        "With --publish or --max-age, the identity publishes revocation \
+         records: a signed list of what it has revoked, made again at least \
+         every max-age. Verifiers then accept its long-lived statements only \
+         with a record younger than that, so a revocation reaches them within \
+         max-age. writ writes the file to publish to DIR/record.writ; put it \
+         at each URL, and run `writ export -i DIR --record` at least once per \
+         max-age (from cron, for example) to make a new one. If no new record \
+         reaches a verifier for longer than max-age, it refuses those \
+         statements. Only a rotation can change these settings.",
     ],
     examples: &[
         (
@@ -237,7 +279,8 @@ pub static ROTATE: Spec = Spec {
     synopsis: Some(
         "-i DIR --next-key PATH... (--next-out PATH | --same-next) [--key-out PATH] \
          [--key-pub PATH]... [--key-k K] [--next-n N] [--next-k K] [--next-pub PATH]... \
-         [--max-validity DUR | --no-max-validity] [-q]",
+         [--max-validity DUR | --no-max-validity] [--publish URL]... [--max-age DUR | \
+         --no-publish] [-q]",
     ),
     args: &[],
     opts: &[
@@ -297,6 +340,9 @@ pub static ROTATE: Spec = Spec {
             "no-max-validity",
             "remove the limit on how long statements may last",
         ),
+        PUBLISH,
+        MAX_AGE,
+        flag("no-publish", "stop publishing revocation records"),
         flag("quiet", "print nothing on success").short('q'),
     ],
     description: &[
@@ -347,6 +393,12 @@ pub static EXPORT: Spec = Spec {
             "all",
             "also print expired and revoked statements, and data signatures",
         ),
+        flag(
+            "record",
+            "print the log and a new, signed revocation record instead: the file \
+             to publish",
+        ),
+        KEY,
     ],
     description: &[
         "Print a bundle with the log of the identity in DIR and every \
@@ -354,8 +406,18 @@ pub static EXPORT: Spec = Spec {
          this bundle to the people who check your statements.",
         "Data signatures are left out, because they travel with the data \
          they sign.",
+        "With --record, writ signs a new revocation record with the current \
+         key, writes the log and the record to DIR/record.writ, and prints \
+         them. Run it at least once per max-age and publish the result at the \
+         URLs given to `writ init --publish`.",
     ],
-    examples: &[("Publish your statements:", "writ export -i me > me.writ")],
+    examples: &[
+        ("Publish your statements:", "writ export -i me > me.writ"),
+        (
+            "Make and publish a new revocation record, daily from cron:",
+            "writ export -i me --record | ssh web 'cat > www/writ/me.writ'",
+        ),
+    ],
     see_also: &["show", "prove"],
 };
 
@@ -616,6 +678,8 @@ pub static VERIFY: Spec = Spec {
         AT,
         STATE,
         LEAF_CEILING,
+        FETCH,
+        REQUIRE_RECORDS,
         QUIET_QUERY,
     ],
     description: &[
@@ -624,6 +688,7 @@ pub static VERIFY: Spec = Spec {
          exits with status 0. If not, it prints the reasons to standard error \
          and exits with status 1.",
         MATERIAL,
+        RECORDS,
         TIME,
     ],
     examples: &[(
@@ -641,7 +706,16 @@ pub static CHECK: Spec = Spec {
         SUBJECT_ARG,
         arg("TAG", Value::Text, "what to check for, such as '(ssh nas)'"),
     ],
-    opts: &[AS, IN, AT, STATE, LEAF_CEILING, QUIET_QUERY],
+    opts: &[
+        AS,
+        IN,
+        AT,
+        STATE,
+        LEAF_CEILING,
+        FETCH,
+        REQUIRE_RECORDS,
+        QUIET_QUERY,
+    ],
     description: &[
         "Check whether SUBJECT holds TAG, from the point of view of the --as \
          identity. If it does, writ prints the chain of statements that shows \
@@ -650,6 +724,7 @@ pub static CHECK: Spec = Spec {
         "Holding a tag also means holding every narrower tag: whoever holds \
          (ssh) holds (ssh nas).",
         MATERIAL,
+        RECORDS,
         TIME,
     ],
     examples: &[
@@ -681,6 +756,8 @@ pub static RESOLVE: Spec = Spec {
         STATE,
         LEAF_CEILING,
         flag("verbose", "also print the statements behind each answer").short('v'),
+        FETCH,
+        REQUIRE_RECORDS,
         QUIET_QUERY,
     ],
     description: &[
@@ -689,6 +766,7 @@ pub static RESOLVE: Spec = Spec {
          If it doesn't, it starts at the first --as identity: 'alice \
          laptops' means the laptops of your alice.",
         MATERIAL,
+        RECORDS,
         TIME,
     ],
     examples: &[(
@@ -703,13 +781,23 @@ pub static PROVE: Spec = Spec {
     about: "print only the statements that show SUBJECT holds TAG",
     synopsis: None,
     args: &[SUBJECT_ARG, TAG_ARG],
-    opts: &[AS, IN, AT, STATE, LEAF_CEILING, QUIET_QUERY],
+    opts: &[
+        AS,
+        IN,
+        AT,
+        STATE,
+        LEAF_CEILING,
+        FETCH,
+        REQUIRE_RECORDS,
+        QUIET_QUERY,
+    ],
     description: &[
         "Like `writ check`, but print a bundle with only the identity logs \
          and statements the answer needs. Give a verifier this proof instead \
          of everything you have. Statements show who you know, so share only \
          what a verifier needs.",
         MATERIAL,
+        RECORDS,
     ],
     examples: &[(
         "Send only what nas needs to let alice in:",
@@ -973,13 +1061,18 @@ pub static FILES: &[(&str, &str)] = &[
         "the current secret key, unless you keep it somewhere else",
     ),
     (
+        "DIR/record.writ",
+        "the log and the newest revocation record, if the identity publishes them: \
+         the file to publish",
+    ),
+    (
         "STATE/floor",
         "with --state: the clock floor, in seconds since 1970",
     ),
     (
         "STATE/logs/ID.writ",
-        "with --state: the log and revocations of each identity a question \
-         relied on",
+        "with --state: the log, revocations and newest revocation records of \
+         each identity a question relied on",
     ),
 ];
 

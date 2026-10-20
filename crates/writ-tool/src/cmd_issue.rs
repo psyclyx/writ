@@ -5,7 +5,8 @@ use crate::cmd_identity::expiry;
 use crate::error::{Error, Result, err};
 use crate::ident::IdentityDir;
 use crate::specs::{GRANT, LEAF, NAME, REVOKE, SIGN};
-use crate::{OsRng, display, fs, say, subject, wall_clock};
+use crate::{OsRng, display, fs, records, say, subject, wall_clock};
+use libwrit::keys::RootSigner;
 use libwrit::model::LEAF_CEILING;
 use libwrit::time::Duration;
 use libwrit::{Body, Claim, Hash, Issuer, Item, PublicKey, Seed, Signer, Statement, Subject};
@@ -35,6 +36,16 @@ fn issue(
     statement: Statement,
 ) -> Result<libwrit::Signed<Statement>> {
     let signers = ident.signers(parsed.values("key"))?;
+    issue_with(&signers, ident, statement)
+}
+
+/// Like [`issue`], with keys already read (a key from standard input can be
+/// read only once).
+fn issue_with(
+    signers: &[RootSigner],
+    ident: &mut IdentityDir,
+    statement: Statement,
+) -> Result<libwrit::Signed<Statement>> {
     let refs: Vec<&dyn Signer> = signers.iter().map(|s| s as &dyn Signer).collect();
     let signed = libwrit::issue(statement, &ident.log, &refs, &mut OsRng)
         .map_err(|e| Error::Msg(e.to_string()))?;
@@ -245,8 +256,9 @@ pub fn revoke(parsed: &Parsed) -> Result<()> {
         ));
     }
     let (issuer, issued) = base(&ident, wall_clock());
-    let signed = issue(
-        parsed,
+    let signers = ident.signers(parsed.values("key"))?;
+    let signed = issue_with(
+        &signers,
         &mut ident,
         Statement {
             issuer,
@@ -264,6 +276,13 @@ pub fn revoke(parsed: &Parsed) -> Result<()> {
             display::short(&signed.body.hash())
         ),
     );
+    // A publishing identity's verifiers learn of revocations from its
+    // records: sign a new one now (DESIGN.md §18.7).
+    if ident.log.head().publish().is_some() {
+        let record = records::sign(&ident.log, &ident.issued, &signers)?;
+        records::write(&ident.dir, &ident.log, record)?;
+        say(parsed, records::reminder(&ident.dir, &ident.log));
+    }
     Ok(())
 }
 

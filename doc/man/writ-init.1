@@ -5,7 +5,7 @@ writ\-init \- create an identity
 .SH SYNOPSIS
 .nh
 .ad l
-\fBwrit init\fR \fB\-\-next\-out\fR\ \fIPATH\fR [\fB\-\-next\-n\fR\ \fIN\fR] [\fB\-\-next\-k\fR\ \fIK\fR] [\fB\-\-next\-pub\fR\ \fIPATH\fR]... [\fB\-\-key\-out\fR\ \fIPATH\fR] [\fB\-\-max\-validity\fR\ \fIDUR\fR] [\fB\-q\fR] \fIDIR\fR
+\fBwrit init\fR \fB\-\-next\-out\fR\ \fIPATH\fR [\fB\-\-next\-n\fR\ \fIN\fR] [\fB\-\-next\-k\fR\ \fIK\fR] [\fB\-\-next\-pub\fR\ \fIPATH\fR]... [\fB\-\-key\-out\fR\ \fIPATH\fR] [\fB\-\-max\-validity\fR\ \fIDUR\fR] [\fB\-\-publish\fR\ \fIURL\fR]... [\fB\-\-max\-age\fR\ \fIDUR\fR] [\fB\-q\fR] \fIDIR\fR
 .ad
 .hy
 .SH DESCRIPTION
@@ -22,6 +22,8 @@ writ init me \-\-next\-out \- | age \-p > me\-next.key.age
 .RE
 .PP
 The next keys can be K of N keys held by different people. For example, 2 of 3: your own offline key, a friend's key, and a key in a safe. K must be more than half of N, so that two separate groups of holders can't each rotate.
+.PP
+With \-\-publish or \-\-max\-age, the identity publishes revocation records: a signed list of what it has revoked, made again at least every max\-age. Verifiers then accept its long\-lived statements only with a record younger than that, so a revocation reaches them within max\-age. writ writes the file to publish to DIR/record.writ; put it at each URL, and run \fBwrit export \-i DIR \-\-record\fR at least once per max\-age (from cron, for example) to make a new one. If no new record reaches a verifier for longer than max\-age, it refuses those statements. Only a rotation can change these settings.
 .SH ARGUMENTS
 .TP
 \fIDIR\fR
@@ -45,6 +47,12 @@ where to write the current key (default: DIR/current.key)
 .TP
 \fB\-\-max\-validity\fR \fIDUR\fR
 require every statement to expire within DUR, such as 90d
+.TP
+\fB\-\-publish\fR \fIURL\fR
+a URL where this identity's revocation record will be published; give one \-\-publish per URL, at most 4, on different hosts
+.TP
+\fB\-\-max\-age\fR \fIDUR\fR
+how old a revocation record may be before verifiers refuse it; a new record must be signed and published at least this often (default 7d, at least 1h)
 .TP
 \fB\-q\fR, \fB\-\-quiet\fR
 print only the id

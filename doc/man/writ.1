@@ -153,11 +153,14 @@ the public keys of every set of next keys the log has committed to
 \fBDIR/current.key\fR
 the current secret key, unless you keep it somewhere else
 .TP
+\fBDIR/record.writ\fR
+the log and the newest revocation record, if the identity publishes them: the file to publish
+.TP
 \fBSTATE/floor\fR
 with \-\-state: the clock floor, in seconds since 1970
 .TP
 \fBSTATE/logs/ID.writ\fR
-with \-\-state: the log and revocations of each identity a question relied on
+with \-\-state: the log, revocations and newest revocation records of each identity a question relied on
 .SH EXAMPLES
 Create two identities:
 .PP
