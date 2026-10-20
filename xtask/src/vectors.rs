@@ -627,6 +627,7 @@ fn reason_kind(r: &Reason) -> &'static str {
         Reason::Malformed(_) => "malformed",
         Reason::Log(_) => "log",
         Reason::UnknownEvent { .. } => "unknown-event",
+        Reason::OutdatedRecord { .. } => "outdated-record",
         Reason::NotKept { .. } => "not-kept",
         Reason::UnknownLeaf(_) => "unknown-leaf",
         Reason::BadSignature => "bad-signature",

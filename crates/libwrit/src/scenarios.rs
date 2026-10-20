@@ -455,6 +455,31 @@ fn statements_from_the_future_event_are_unknown() {
     );
 }
 
+/// A record made before a rotation says nothing after it (SPEC §5.6), and
+/// the reason says so, as distinct from a record claiming an event the log
+/// never reached.
+#[test]
+fn records_under_an_older_event_are_outdated() {
+    let mut a = Ident::publishing(1, 3600);
+    let old = a.record(vec![], 10);
+    a.rotate(vec![], None);
+    let mut future = a.record(vec![], 20);
+    future.body.event = 5;
+    let w = World::new(
+        &a,
+        [Item::Record(old.clone()), Item::Record(future.clone())],
+    );
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    assert_eq!(
+        v.record_status(&old.body.hash(), 50),
+        Err(Reason::OutdatedRecord { event: 0, head: 1 })
+    );
+    assert_eq!(
+        v.record_status(&future.body.hash(), 50),
+        Err(Reason::UnknownEvent { event: 5, head: 1 })
+    );
+}
+
 #[test]
 fn max_validity() {
     let a = Ident::with_policy(1, Some(50));
@@ -803,6 +828,47 @@ fn equivocation_is_detected_and_fails_closed() {
     assert!(w.check(Holder::Id(c.id), "(direct)", 50).is_ok());
     assert!(crate::equivocation(&r1, &r1b));
     assert!(!crate::equivocation(&r1, &r1));
+}
+
+/// A name's members exclude an equivocating identity (SPEC §10), and the
+/// evidence is reported when nothing else remains.
+#[test]
+fn resolve_excludes_an_equivocating_member() {
+    let a = Ident::new(1);
+    let mut b = Ident::new(2);
+    let c = Ident::new(3);
+    let r1 = b.rotate(vec![], None);
+    let mut b2 = Ident::new(2);
+    let r1b = b2.rotate(vec![], Some(99));
+    assert_ne!(r1.body.hash(), r1b.body.hash());
+    let to_b = a.say(name("friend", Subject::Id(b.id)), 10, None);
+    let to_c = a.say(name("friend", Subject::Id(c.id)), 10, None);
+    let items = [st(to_b), st(to_c), Item::Event(r1b)]
+        .into_iter()
+        .chain(b.items())
+        .collect::<Vec<_>>();
+    let w = World::new(&a, items.clone());
+    let friend = NamePath {
+        base: a.id,
+        names: vec![b"friend".to_vec()],
+    };
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    let members = v.resolve(&friend, 50).unwrap();
+    assert_eq!(
+        members.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(),
+        vec![Holder::Id(c.id)]
+    );
+    // With B the only member, the answer is the evidence.
+    let only_b = items
+        .into_iter()
+        .filter(|i| !matches!(i, Item::Statement(s) if s.body.claim.subject() == Some(&Subject::Id(c.id))))
+        .collect::<Vec<_>>();
+    let w = World::new(&a, only_b);
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    assert!(matches!(
+        v.resolve(&friend, 50),
+        Err(Denial::Compromised(e)) if e.id() == b.id
+    ));
 }
 
 #[test]

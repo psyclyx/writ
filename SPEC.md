@@ -426,6 +426,9 @@ If `S` is an id whose log equivocates, the answer is no. A verifier SHOULD
 report equivocation it encountered when no chain exists. A subject's own log
 matters only in that case: an id whose log is missing or broken still holds
 what valid chains grant it (its log counts when it issues, or is a root).
+Likewise, when a name path is resolved for its own sake (`resolve`), an id
+whose log equivocates is left out of the members, and a verifier SHOULD
+report the equivocation if no member remains.
 
 A **proof** is the logs of every identity involved (the root, every issuer,
 and `S` if it is an id), the grants of one chain, the name statements that put

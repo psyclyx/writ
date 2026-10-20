@@ -107,6 +107,14 @@ pub enum Reason {
         /// The log's head.
         head: u64,
     },
+    /// A record made under an earlier event: the rotation after it may have
+    /// changed everything, so it no longer counts (SPEC §5.6).
+    OutdatedRecord {
+        /// The record's event.
+        event: u64,
+        /// The log's head.
+        head: u64,
+    },
     /// Issued under an earlier event and not in the latest rotation's `keep`.
     NotKept {
         /// The issuing event.
@@ -166,6 +174,11 @@ impl fmt::Display for Reason {
                     "names event {event} of its issuer, but the issuer's log ends at event {head}"
                 )
             }
+            Reason::OutdatedRecord { event, head } => write!(
+                f,
+                "made under event {event}, but its issuer has since rotated to event {head}, \
+                 so it no longer counts"
+            ),
             Reason::NotKept { head, .. } => {
                 write!(f, "issued before rotation {head}, which did not keep it")
             }
@@ -451,7 +464,14 @@ impl<'a> Verifier<'a> {
         if let Err(LogError::Equivocation(e)) = &*self.material.log(&path.base) {
             return Err(Denial::Compromised(e.clone()));
         }
-        let members = q.resolve_path(&path.base, &path.names, q.v.policy.max_name_depth)?;
+        let mut members = q.resolve_path(&path.base, &path.names, q.v.policy.max_name_depth)?;
+        // An equivocating identity is refused as a member too (SPEC §10): a
+        // query that depends on it must fail, and its evidence is reported
+        // when nothing else remains.
+        members.retain(|holder, _| match holder {
+            Holder::Id(id) => !matches!(q.log(id), Err(Reason::Log(LogError::Equivocation(_)))),
+            _ => true,
+        });
         if members.is_empty() {
             if let Some(e) = q.evidence.take() {
                 return Err(Denial::Compromised(e));
@@ -596,7 +616,13 @@ impl<'a> Verifier<'a> {
 struct Query<'v, 'a> {
     v: &'v Verifier<'a>,
     now: Time,
+    /// Memoized statement validity, by hash.
     status: HashMap<Hash, Result<(), Reason>>,
+    /// Memoized record validity, by hash. A map of its own: a record hash
+    /// could never collide with a statement's (the labels differ), but a
+    /// shared map would let a lookup of the wrong kind cache "unknown"
+    /// against the other, the permissive direction for a record.
+    records: HashMap<Hash, Result<(), Reason>>,
     names: HashMap<(Id, Vec<u8>, usize), Rc<Members>>,
     steps: usize,
     signatures: usize,
@@ -676,6 +702,7 @@ impl<'v, 'a> Query<'v, 'a> {
             v,
             now,
             status: HashMap::new(),
+            records: HashMap::new(),
             names: HashMap::new(),
             steps: 0,
             signatures: 0,
@@ -892,13 +919,14 @@ impl<'v, 'a> Query<'v, 'a> {
     /// head, naming it, and signed by its current authority. Its `issued`
     /// plays no part: what it revokes stays revoked whatever the clock says;
     /// only freshness ([`Query::newest_record`]) reads the time. Memoized
-    /// with statements (the labels differ, so the hashes cannot collide).
+    /// apart from statements; each record examined counts as a statement
+    /// examined (SPEC §11).
     fn record_status(&mut self, h: &Hash) -> Result<(), Reason> {
-        if let Some(s) = self.status.get(h) {
+        if let Some(s) = self.records.get(h) {
             return s.clone();
         }
         let result = self.compute_record_status(h);
-        self.status.insert(*h, result.clone());
+        self.records.insert(*h, result.clone());
         result
     }
 
@@ -911,11 +939,12 @@ impl<'v, 'a> Query<'v, 'a> {
             return Err(Reason::BadSignature);
         };
         let head = log.head_n();
-        if rec.body.event != head {
-            return Err(Reason::UnknownEvent {
-                event: rec.body.event,
-                head,
-            });
+        let event = rec.body.event;
+        if event < head {
+            return Err(Reason::OutdatedRecord { event, head });
+        }
+        if event > head {
+            return Err(Reason::UnknownEvent { event, head });
         }
         if log.event_hash(head) != Some(rec.body.head) {
             return Err(Reason::Malformed("record names another head event"));
@@ -1007,13 +1036,18 @@ impl<'v, 'a> Query<'v, 'a> {
         }
     }
 
+    /// Statements and records examined so far (SPEC §11).
+    fn examined(&self) -> usize {
+        self.status.len().saturating_add(self.records.len())
+    }
+
     fn over_budget(&self) -> bool {
-        self.status.len() > self.v.policy.max_statements
+        self.examined() > self.v.policy.max_statements
             || self.signatures > self.v.policy.max_signatures
     }
 
     fn budget(&self) -> Result<(), Denial> {
-        if self.status.len() > self.v.policy.max_statements {
+        if self.examined() > self.v.policy.max_statements {
             Err(Denial::Limit("statements examined"))
         } else if self.signatures > self.v.policy.max_signatures {
             Err(Denial::Limit("signatures checked"))
