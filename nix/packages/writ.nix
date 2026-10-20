@@ -5,6 +5,7 @@
   installShellFiles,
   pkg-config,
   curl,
+  openssl,
 }:
 let
   root = ../..;
@@ -39,6 +40,8 @@ rustPlatform.buildRustPackage {
     pkg-config # so curl-sys links the system libcurl, with TLS
   ];
   buildInputs = [ curl ];
+  # The --fetch TLS test serves a record with `openssl s_server`.
+  nativeCheckInputs = [ openssl ];
 
   postInstall = ''
     installManPage doc/man/*.1

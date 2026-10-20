@@ -1894,3 +1894,172 @@ fn writ_contexts_are_reserved() {
     );
     assert!(err.contains("reserved for writ"), "{err}");
 }
+
+/// In `s`: a publisher, pub, whose grant to alice needs a fresh record,
+/// published at `url`. b.writ holds me's delegation to pub, pub's log and
+/// pub's grant; pub/record.writ is pub's file to publish. Returns alice's id.
+fn publisher_world(s: &Sandbox, url: &str) -> String {
+    s.init("me");
+    let alice = s.init("alice");
+    s.ok(&[
+        "init",
+        "pub",
+        "--next-out",
+        "pub-next.key",
+        "--publish",
+        url,
+        "--max-age",
+        "2h",
+        "-q",
+    ]);
+    let pub_id = s.ok(&["id", "pub"]).trim().to_owned();
+    s.append(
+        "b.writ",
+        &s.ok(&["grant", "-i", "me", &pub_id, "()", "--delegate"]),
+    );
+    s.append("b.writ", &s.ok(&["grant", "-i", "pub", &alice, "(x)"]));
+    s.append("b.writ", &s.read("pub/log.writ"));
+    alice
+}
+
+#[test]
+fn state_remembers_records_and_prunes_them() {
+    let s = Sandbox::new("staterec");
+    let alice = publisher_world(&s, "https://example.org/pub.writ");
+    let check = |extra: &[&str]| {
+        let mut args = vec![
+            "check", "--as", "me", &alice, "(x)", "--in", "b.writ", "--state", "st",
+        ];
+        args.extend_from_slice(extra);
+        s.run(&args).0
+    };
+    std::fs::write(s.path("old.writ"), s.read("pub/record.writ")).unwrap();
+    // Seen once, remembered: later questions need no record in the input.
+    assert_eq!(check(&["--in", "old.writ"]), 0);
+    assert_eq!(check(&[]), 0);
+    // A newer record that lists nothing new replaces the old one in state.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    s.ok(&["export", "-i", "pub", "--record"]);
+    assert_eq!(check(&["--in", "pub/record.writ"]), 0);
+    let pub_id = s.ok(&["id", "pub"]).trim().to_owned();
+    let shown = s.ok(&["show", &format!("st/logs/{pub_id}.writ")]);
+    let records = shown.lines().filter(|l| l.starts_with("record")).count();
+    assert_eq!(records, 1, "{shown}");
+}
+
+#[test]
+fn a_stapled_proof_verifies_alone() {
+    let s = Sandbox::new("staple");
+    let base = serve(s.dir.clone());
+    let alice = publisher_world(&s, &format!("{base}/pub/record.writ"));
+    // The presenter fetches and staples; the verifier then needs nothing else.
+    let (code, proof, err) = s.run(&[
+        "prove", "--as", "me", &alice, "(x)", "--in", "b.writ", "--fetch",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    std::fs::write(s.path("proof.writ"), &proof).unwrap();
+    let me_id = s.ok(&["id", "me"]).trim().to_owned();
+    let (code, _, err) = s.run(&[
+        "check",
+        "--as",
+        &me_id,
+        &alice,
+        "(x)",
+        "--in",
+        "proof.writ",
+        "--in",
+        "me/log.writ",
+    ]);
+    assert_eq!(code, 0, "{err}");
+}
+
+/// `openssl s_server`, serving files from `dir` over TLS with a throwaway
+/// self-signed certificate; killed when dropped.
+struct TlsServer {
+    child: std::process::Child,
+    port: u16,
+}
+
+impl TlsServer {
+    fn start(dir: &Path) -> Option<TlsServer> {
+        let made = Command::new("openssl")
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+                "-nodes",
+                "-keyout",
+                "k.pem",
+                "-out",
+                "c.pem",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=writ-test",
+            ])
+            .current_dir(dir)
+            .output()
+            .ok()?;
+        if !made.status.success() {
+            return None;
+        }
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .ok()?
+            .local_addr()
+            .ok()?
+            .port();
+        let child = Command::new("openssl")
+            .args([
+                "s_server", "-quiet", "-WWW", "-cert", "c.pem", "-key", "k.pem",
+            ])
+            .args(["-accept", &port.to_string()])
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let server = TlsServer { child, port };
+        for _ in 0..50 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return Some(server);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        None
+    }
+}
+
+impl Drop for TlsServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn fetch_over_tls_survives_a_bad_certificate() {
+    let s = Sandbox::new("tls");
+    let Some(server) = TlsServer::start(&s.dir) else {
+        eprintln!("openssl not available; skipping the TLS fetch test");
+        return;
+    };
+    let url = format!("https://127.0.0.1:{}/pub/record.writ", server.port);
+    let alice = publisher_world(&s, &url);
+    let (code, _, err) = s.run(&[
+        "check", "--as", "me", &alice, "(x)", "--in", "b.writ", "--fetch",
+    ]);
+    if err.contains("without TLS support") {
+        eprintln!("this build of writ has no TLS; skipping the TLS fetch test");
+        return;
+    }
+    // The certificate is self-signed: writ says so, fetches anyway, and the
+    // record's own signature makes the answer.
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("does not verify") && err.contains("fetched"),
+        "{err}"
+    );
+}

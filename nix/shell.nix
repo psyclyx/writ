@@ -6,6 +6,7 @@
   cargo-audit,
   pkg-config,
   curl,
+  openssl,
   clippy,
   marksman,
   nixd,
@@ -40,6 +41,7 @@ mkShell {
     # writ --fetch links the system libcurl (DESIGN.md §18.7)
     pkg-config
     curl
+    openssl # the --fetch TLS test serves a record with s_server
 
     # testing the completion scripts and man pages
     bashInteractive
