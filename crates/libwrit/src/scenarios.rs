@@ -380,9 +380,10 @@ fn revocation() {
     );
     let w = World::new(&a, [st(g.clone()), st(r2)].into_iter().chain(b.items()));
     assert!(w.check(Holder::Id(b.id), "()", 50).is_ok());
-    // A revocation not yet valid doesn't count.
+    // A revocation "from the future" counts all the same: rule 4 does not
+    // apply to revocations, so a clock set back cannot un-revoke.
     let w = World::new(&a, [st(g), st(r)]);
-    assert!(w.check(Holder::Id(b.id), "()", 10).is_ok());
+    assert!(w.check(Holder::Id(b.id), "()", 10).is_err());
 }
 
 #[test]
@@ -996,6 +997,83 @@ fn time_witness_is_not_starved_by_junk() {
     w.policy.max_signatures = 10;
     let v = Verifier::new(&w.roots, &w.material, &w.policy);
     assert_eq!(v.time_witness(), Some(70));
+}
+
+/// A clock set back (below a revocation's `issued`, above the floor) must
+/// not bring back what was revoked: rule 4 does not apply to revocations or
+/// to the revoking effect of records (SPEC §7, §5.6).
+#[test]
+fn a_clock_set_back_does_not_unrevoke() {
+    let me = Ident::new(1);
+    let alice = Ident::new(2);
+    let bob = Ident::new(3);
+    let to_alice = me.say(grant(Subject::Id(alice.id), "()", true), 10, None);
+    let to_bob = alice.say(grant(Subject::Id(bob.id), "(x)", false), 20, None);
+    let revoke = alice.say(
+        Claim::Revoke {
+            target: to_bob.body.hash(),
+        },
+        100,
+        None,
+    );
+    let mut items = vec![st(to_alice.clone()), st(to_bob.clone()), st(revoke)];
+    items.extend(alice.items());
+    let w = World::new(&me, items);
+    assert!(w.check(Holder::Id(bob.id), "(x)", 200).is_err());
+    // At 50 the revocation is "from the future", and still counts.
+    assert!(w.check(Holder::Id(bob.id), "(x)", 50).is_err());
+    // The same through a record.
+    let pub_alice = Ident::publishing(4, 3600);
+    let to_pub = me.say(grant(Subject::Id(pub_alice.id), "()", true), 10, None);
+    let to_bob = pub_alice.say(grant(Subject::Id(bob.id), "(x)", false), 20, Some(1000));
+    let record = pub_alice.record(vec![to_bob.body.hash()], 100);
+    let mut items = vec![st(to_pub), st(to_bob), Item::Record(record)];
+    items.extend(pub_alice.items());
+    let w = World::new(&me, items);
+    assert!(w.check(Holder::Id(bob.id), "(x)", 50).is_err());
+    // But a record from the future does not make anything fresh.
+    let long = pub_alice.say(grant(Subject::Id(bob.id), "(y)", false), 20, None);
+    let future = pub_alice.record(vec![], 5000);
+    let mut items = vec![
+        st(me.say(grant(Subject::Id(pub_alice.id), "()", true), 10, None)),
+        st(long.clone()),
+        Item::Record(future),
+    ];
+    items.extend(pub_alice.items());
+    let w = World::new(&me, items);
+    let d = w.check(Holder::Id(bob.id), "(y)", 50).unwrap_err();
+    assert!(matches!(
+        rejected_for(&d, long.body.hash()),
+        Some(Reason::NoFreshRecord { .. })
+    ));
+    let fresh = pub_alice.record(vec![], 40);
+    w_with(&w, Item::Record(fresh), |w| {
+        assert!(w.check(Holder::Id(bob.id), "(y)", 50).is_ok());
+    });
+}
+
+/// `w` plus one more item.
+fn w_with(w: &World, item: Item, f: impl FnOnce(&World)) {
+    let mut material = Material::new();
+    for (_, s) in w.material.statements() {
+        material.add(Item::Statement(s.clone()));
+    }
+    for (_, r) in w.material.records() {
+        material.add(Item::Record(r.clone()));
+    }
+    for id in w.material.ids().copied().collect::<Vec<_>>() {
+        if let Ok(log) = &*w.material.log(&id) {
+            for i in log.items() {
+                material.add(i);
+            }
+        }
+    }
+    material.add(item);
+    f(&World {
+        material,
+        roots: w.roots.clone(),
+        policy: w.policy.clone(),
+    });
 }
 
 #[test]

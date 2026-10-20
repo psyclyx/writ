@@ -74,7 +74,7 @@ impl Reference<'_> {
                         }
                     }
                     // Any valid record by the issuer that lists it (§18.4),
-                    // found by scanning every record.
+                    // found by scanning every record, whatever its `issued`.
                     let records: Vec<&Signed<Record>> = self
                         .m
                         .records()
@@ -84,13 +84,18 @@ impl Reference<'_> {
                     if records.iter().any(|r| r.body.revoked.contains(h)) {
                         return false;
                     }
-                    // Freshness (§18.6), unless the issuer is local.
+                    // Freshness (§18.6), unless the issuer is local: a record
+                    // from the last max-age, and not from the future.
                     if !self.local.contains(id) {
                         match log.head().publish() {
                             Some(p) => {
                                 let long = !s.expires.is_some_and(|e| e - s.issued <= p.max_age());
                                 let cutoff = self.now.saturating_sub(p.max_age());
-                                if long && !records.iter().any(|r| r.body.issued >= cutoff) {
+                                let fresh = records.iter().any(|r| {
+                                    r.body.issued >= cutoff
+                                        && r.body.issued <= self.now + self.policy.skew
+                                });
+                                if long && !fresh {
                                     return false;
                                 }
                             }
@@ -114,7 +119,9 @@ impl Reference<'_> {
                 }
             }
         }
-        if s.issued > self.now + self.policy.skew {
+        // Rule 4 does not apply to revocations: one from the future still
+        // revokes.
+        if !matches!(s.claim, Claim::Revoke { .. }) && s.issued > self.now + self.policy.skew {
             return false;
         }
         if s.expires.is_some_and(|e| self.now >= e) {
@@ -130,7 +137,7 @@ impl Reference<'_> {
     }
 
     /// A record counts when it is made under its issuer's head, names it,
-    /// is signed by the head's authority, and is not from the future.
+    /// and is signed by the head's authority; its time plays no part here.
     fn record_valid(&self, r: &Hash) -> bool {
         let Some(rec) = self.m.record(r) else {
             return false;
@@ -140,7 +147,6 @@ impl Reference<'_> {
         rec.body.event == log.head_n()
             && log.event_hash(log.head_n()) == Some(rec.body.head)
             && rec.verify_threshold(log.head().authority())
-            && rec.body.issued <= self.now + self.policy.skew
     }
 
     /// Jacobi iteration: `tables[d]` holds members with derivations of depth ≤ d.

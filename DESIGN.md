@@ -397,6 +397,10 @@ that need clock-attack resistance (anything using expiries or leaf keys):
 - Rolling the clock back can't go below the floor; freezing it can't stop
   monotonic time. Pushing the clock forward only expires things early (denial of service,
   never forgery).
+- Revocations, and what records list as revoked, count whatever the clock
+  says: a revocation "from the future" can only deny, so a clock set back
+  (above the floor, which only own-root statements raise) cannot bring back
+  what any issuer revoked (§16, 2026-10-19).
 - The caller persists the floor (the zuko daemon does; the CLI uses the wall clock
   unless given `--floor FILE`).
 - A fresh verifier seeds its floor from the build-time floor shipped in the binary

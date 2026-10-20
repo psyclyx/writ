@@ -572,8 +572,10 @@ impl<'a> Verifier<'a> {
         matches!(q.newest_record(*id), Ok(Some((_, t))) if t >= now.saturating_sub(max_age))
     }
 
-    /// Whether a revocation record in the material is valid at `now` (SPEC
-    /// §5.6): made under its issuer's head, and signed by its current keys.
+    /// Whether a revocation record in the material is valid (SPEC §5.6):
+    /// made under its issuer's head, and signed by its current keys. `now`
+    /// does not enter: a valid record revokes what it lists whatever the
+    /// clock says; see [`Verifier::has_fresh_record`] for freshness.
     pub fn record_status(&self, hash: &Hash, now: Time) -> Result<(), Reason> {
         Query::new(self, now).record_status(hash)
     }
@@ -827,7 +829,12 @@ impl<'v, 'a> Query<'v, 'a> {
             }
             Issuer::Leaf(k) => self.signed_by_leaf(st, hash, k)?,
         }
-        if body.issued > self.now.saturating_add(self.v.policy.skew) {
+        // A revocation from the future still revokes (SPEC §7 rule 4): it
+        // can only deny, and a clock set back must not bring back what its
+        // issuer revoked.
+        if !matches!(body.claim, Claim::Revoke { .. })
+            && body.issued > self.now.saturating_add(self.v.policy.skew)
+        {
             return Err(Reason::NotYetValid(body.issued));
         }
         if let Some(e) = body.expires
@@ -883,10 +890,11 @@ impl<'v, 'a> Query<'v, 'a> {
         Ok(())
     }
 
-    /// Whether a record is valid at `now` (DESIGN.md §18.4): made under its
-    /// issuer's head, naming it, signed by its current authority, and not
-    /// from the future. Memoized with statements (the labels differ, so the
-    /// hashes cannot collide).
+    /// Whether a record is valid (DESIGN.md §18.4): made under its issuer's
+    /// head, naming it, and signed by its current authority. Its `issued`
+    /// plays no part: what it revokes stays revoked whatever the clock says;
+    /// only freshness ([`Query::newest_record`]) reads the time. Memoized
+    /// with statements (the labels differ, so the hashes cannot collide).
     fn record_status(&mut self, h: &Hash) -> Result<(), Reason> {
         if let Some(s) = self.status.get(h) {
             return s.clone();
@@ -923,23 +931,23 @@ impl<'v, 'a> Query<'v, 'a> {
         })? {
             return Err(Reason::BadSignature);
         }
-        if rec.body.issued > self.now.saturating_add(self.v.policy.skew) {
-            return Err(Reason::NotYetValid(rec.body.issued));
-        }
         Ok(())
     }
 
-    /// The newest valid record by `id`: (hash, issued).
+    /// The newest valid record by `id` that is not from the future
+    /// (`issued ≤ now + skew`): (hash, issued). This is the record that
+    /// counts for freshness.
     fn newest_record(&mut self, id: Id) -> Result<Option<(Hash, Time)>, Reason> {
         if let Some(n) = self.newest.get(&id) {
             return Ok(*n);
         }
         let mut best: Option<(Hash, Time)> = None;
+        let latest = self.now.saturating_add(self.v.policy.skew);
         for r in self.v.material.records_by(&id).to_vec() {
             let Some(issued) = self.v.material.record(&r).map(|rec| rec.body.issued) else {
                 continue;
             };
-            if best.is_some_and(|(_, b)| issued <= b) {
+            if issued > latest || best.is_some_and(|(_, b)| issued <= b) {
                 continue;
             }
             match self.record_status(&r) {

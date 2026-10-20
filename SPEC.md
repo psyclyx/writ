@@ -294,12 +294,16 @@ record = "(" "record" "(" "issuer" id event ")" "(" "issued" time ")" "(" "head"
   whose hash is `head`, and the hashes in `revoked` are every statement and
   data signature it has revoked. `revoked` hashes MUST be strictly increasing.
 - The record **hash** is `H("writ/v1/record", canonical(record))`.
-- A record is **valid at `now`** when the identity's log is valid with head
-  `event`, `head` is that event's hash, the root suite is accepted, the
-  record is signed by `k` distinct keys of that event's authority, and
-  `issued ≤ now + skew`. A record under any other event is not valid.
-- Every hash a valid record lists is revoked by it. Valid records by one
-  identity are combined: a hash is revoked if any of them lists it.
+- A record is **valid** when the identity's log is valid with head `event`,
+  `head` is that event's hash, the root suite is accepted, and the record is
+  signed by `k` distinct keys of that event's authority. A record under any
+  other event is not valid. Its `issued` plays no part in validity.
+- Every hash a valid record lists is revoked by it, whatever the time: a
+  record "from the future" still revokes, so a clock set back cannot bring
+  back what it lists. Valid records by one identity are combined: a hash is
+  revoked if any of them lists it.
+- A record is **fresh at `now`** for max-age `D` when it is valid and
+  `now − D ≤ issued ≤ now + skew` (§7).
 
 ## 6. Identity logs
 
@@ -346,12 +350,16 @@ A statement with hash `h` is **valid at time `now`** under policy `P` when:
    - **freshness**, if the statement is not a revocation and `id` is not local
      (below): if the head sets `publish` with `max-age` = `D`, and the
      statement has no `expires` or `expires − issued > D`, the material MUST
-     hold a valid record by `id` with `issued ≥ now − D`. If the head sets no
-     `publish` and `P.require_records` is set, the statement is not valid.
+     hold a record by `id` that is fresh at `now` (§5.6: valid, with
+     `now − D ≤ issued ≤ now + skew`). If the head sets no `publish` and
+     `P.require_records` is set, the statement is not valid.
 3. If the issuer is a leaf key: the leaf suite is accepted by `P`, the material
    contains the leaf key with that id (§5.1), and a signature with index 0
    verifies under it.
-4. `issued ≤ now + P.skew`.
+4. `issued ≤ now + P.skew`, unless the statement is a revocation: a
+   revocation from the future still revokes. It can only deny, and a clock
+   set back must not bring back what its issuer revoked. (So a question asked
+   at a past `now` sees later revocations as in force.)
 5. If `expires` is present: `now < expires`.
 6. If it is a name or grant whose subject is a leaf key:
    `expires − issued ≤ min(P.leaf_ceiling, 86400)`.
