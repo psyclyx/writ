@@ -566,14 +566,22 @@ impl Event {
     }
 }
 
-/// A signed or hashed body: an event, statement, or data signature.
-pub trait Body: Sized {
+/// A signed or hashed body: an event, statement, data signature or record.
+pub trait Body: Sized + Clone {
     /// The label for hashing and signing.
     const LABEL: &'static str;
     /// The canonical tree.
     fn to_sexp(&self) -> Sexp;
     /// Parses a tree (syntax only).
     fn from_sexp(s: &Sexp) -> Result<Self>;
+    /// The signed body as a bundle item.
+    fn item(signed: &Signed<Self>) -> Item;
+
+    /// A rule an identity's signature on this body must respect, beyond
+    /// well-formedness: issuing refuses to sign otherwise.
+    fn check_signable(&self) -> core::result::Result<(), &'static str> {
+        Ok(())
+    }
 
     /// The canonical bytes.
     fn encode(&self) -> Vec<u8> {
@@ -593,6 +601,10 @@ pub trait Body: Sized {
 
 impl Body for Event {
     const LABEL: &'static str = label::EVENT;
+
+    fn item(signed: &Signed<Self>) -> Item {
+        Item::Event(signed.clone())
+    }
 
     fn to_sexp(&self) -> Sexp {
         match self {
@@ -938,6 +950,10 @@ impl Statement {
 impl Body for Statement {
     const LABEL: &'static str = label::STATEMENT;
 
+    fn item(signed: &Signed<Self>) -> Item {
+        Item::Statement(signed.clone())
+    }
+
     fn to_sexp(&self) -> Sexp {
         let mut items = vec![
             Sexp::atom(self.kind()),
@@ -1061,6 +1077,19 @@ pub struct DataSig {
 impl Body for DataSig {
     const LABEL: &'static str = label::SIGNATURE;
 
+    fn item(signed: &Signed<Self>) -> Item {
+        Item::Signature(signed.clone())
+    }
+
+    /// An identity never signs under writ's own contexts (SPEC §5.5): those
+    /// are for leaf keys, through [`crate::channel`].
+    fn check_signable(&self) -> core::result::Result<(), &'static str> {
+        if self.context.starts_with(crate::issue::RESERVED_CONTEXT) {
+            return Err("contexts starting with writ/ are reserved for writ");
+        }
+        Ok(())
+    }
+
     fn to_sexp(&self) -> Sexp {
         tagged(
             "signature",
@@ -1119,6 +1148,10 @@ impl Record {
 
 impl Body for Record {
     const LABEL: &'static str = label::RECORD;
+
+    fn item(signed: &Signed<Self>) -> Item {
+        Item::Record(signed.clone())
+    }
 
     fn to_sexp(&self) -> Sexp {
         tagged(

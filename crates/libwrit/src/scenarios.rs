@@ -1885,22 +1885,35 @@ fn channel_binding() {
     );
     // The key must hold the tag.
     assert!(ok(&e, Role::Initiator, "screen", "(screen control)").is_err());
-    // An identity can sign the same body, but that is not a binding.
+    // An identity refuses to sign the same body (SPEC §5.5); one signed
+    // behind the library's back is still not a binding.
     let mut d = DataHasher::new();
     d.update(&[1]);
     d.update(&e);
-    let by_identity = sign_with_authority(
-        DataSig {
-            signer: a.issuer(),
-            issued: 20,
-            context: b"writ/v1/channel/screen".to_vec(),
-            data: d.finish(),
-        },
-        a.log().head().authority(),
-        &[&a.keys[0]],
-        &mut TestRng::new(0),
-    )
-    .unwrap();
+    let body = DataSig {
+        signer: a.issuer(),
+        issued: 20,
+        context: b"writ/v1/channel/screen".to_vec(),
+        data: d.finish(),
+    };
+    assert!(matches!(
+        sign_with_authority(
+            body.clone(),
+            a.log().head().authority(),
+            &[&a.keys[0]],
+            &mut TestRng::new(0),
+        ),
+        Err(IssueError::Rule(_))
+    ));
+    let by_identity = Signed {
+        sigs: vec![Sig {
+            index: 0,
+            bytes: a.keys[0]
+                .sign(&body.message(), &mut TestRng::new(0))
+                .unwrap(),
+        }],
+        body,
+    };
     assert!(
         check(
             &v,

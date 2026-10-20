@@ -101,14 +101,28 @@ fn check_decodable<T: Body + PartialEq>(body: &T) -> Result<(), IssueError> {
     }
 }
 
+/// Checks, after signing, that the whole item decodes: the body checks of
+/// [`check_decodable`] cannot see that the signatures fit the issuer (a leaf
+/// issuer with root-sized signatures, say).
+fn check_item<T: Body>(signed: &Signed<T>) -> Result<(), IssueError> {
+    crate::model::Item::decode(&T::item(signed).encode())
+        .map(|_| ())
+        .map_err(IssueError::Encoding)
+}
+
 /// Signs `body` with `signers`, all of whose keys must be in `authority`,
-/// at least `k` of them distinct.
+/// at least `k` of them distinct. This is the raw entry point: it applies
+/// the encoding rules and [`Body::check_signable`], not the issuing rules
+/// of [`issue()`], [`rotate`] or [`sign_data`] (well-formedness, the
+/// log's head, `max-validity`), so it can also make the deliberately
+/// irregular items that tests and vectors need.
 pub fn sign_with_authority<T: Body + PartialEq>(
     body: T,
     authority: &Authority,
     signers: &[&dyn Signer],
     rng: &mut dyn Rng,
 ) -> Result<Signed<T>, IssueError> {
+    body.check_signable().map_err(IssueError::Rule)?;
     check_decodable(&body)?;
     let msg = body.message();
     let mut sigs: Vec<Sig> = Vec::new();
@@ -132,7 +146,9 @@ pub fn sign_with_authority<T: Body + PartialEq>(
         });
     }
     sigs.sort_by_key(|s| s.index);
-    Ok(Signed { body, sigs })
+    let signed = Signed { body, sigs };
+    check_item(&signed)?;
+    Ok(signed)
 }
 
 /// Creates an identity: event 0, signed by `k` of `authority`, committing
@@ -363,10 +379,12 @@ fn sign_leaf<T: Body + LeafIssued + PartialEq>(
         return Err(IssueError::WrongIssuer);
     }
     let bytes = signer.sign(&body.message(), rng)?;
-    Ok(Signed {
+    let signed = Signed {
         body,
         sigs: vec![Sig { index: 0, bytes }],
-    })
+    };
+    check_item(&signed)?;
+    Ok(signed)
 }
 
 trait LeafIssued {
