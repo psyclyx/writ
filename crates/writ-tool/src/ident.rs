@@ -76,7 +76,24 @@ impl IdentityDir {
         if lock.is_some() {
             finish_key_install(&path, &log)?;
         }
-        let issued = fs::read_bundle_file(&path.join(ISSUED))?;
+        // issued.writ holds what this identity issued, and is not trusted:
+        // anything else in it is left out of every use (keep, records,
+        // export, revocation lookup), and reported.
+        let (issued, foreign): (Vec<Item>, Vec<Item>) = fs::read_bundle_file(&path.join(ISSUED))?
+            .into_iter()
+            .partition(|item| match item {
+                Item::Statement(s) => s.body.issuer.id() == Some(id),
+                Item::Signature(s) => s.body.signer.id() == Some(id),
+                _ => false,
+            });
+        if !foreign.is_empty() {
+            crate::warn(format!(
+                "{dir}/{ISSUED} holds {} item{} that {dir} did not issue; they are ignored. \
+                 Read the file: someone else may have written to it",
+                foreign.len(),
+                if foreign.len() == 1 { "" } else { "s" }
+            ));
+        }
         crate::display::label(id, dir);
         Ok(IdentityDir {
             dir: path,

@@ -2262,3 +2262,55 @@ fn proofs_from_a_publishing_root_carry_its_record() {
     let (code, _, err) = s.run(&["check", "--as", &me_id, &alice, "(x)", "--in", "proof.writ"]);
     assert_eq!(code, 0, "{err}");
 }
+
+/// A record endorses only the identity's own revocations: a revocation by
+/// someone else, planted in issued.writ, must not be published as the
+/// owner's (review 2026-10-19).
+#[test]
+fn records_never_endorse_other_identities_revocations() {
+    let s = Sandbox::new("foreignrev");
+    s.ok(&[
+        "init",
+        "pub",
+        "--next-out",
+        "pub-next.key",
+        "--publish",
+        "http://127.0.0.1:9/x.writ",
+        "-q",
+    ]);
+    let victim = s.init("victim");
+    s.init("attacker");
+    s.ok(&["grant", "-i", "pub", &victim, "(money)"]);
+    let hash = s
+        .ok(&["show", "pub/issued.writ"])
+        .lines()
+        .find_map(|l| l.strip_prefix("grant "))
+        .unwrap()
+        .to_owned();
+    // The attacker revokes a hash that is not theirs, and plants their log
+    // and the revocation in pub's issuance log.
+    s.ok(&["revoke", "-q", "-i", "attacker", &hash]);
+    let planted = s.ok(&["export", "-i", "attacker", "--all"]);
+    s.append("pub/issued.writ", &planted);
+    let (code, out, err) = s.run(&["export", "-i", "pub", "--record"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("did not issue") && err.contains("ignored"),
+        "{err}"
+    );
+    std::fs::write(s.path("record.writ"), &out).unwrap();
+    let shown = s.ok(&["show", "record.writ"]);
+    assert!(
+        shown.contains("revokes   nothing") || shown.contains("nothing"),
+        "{shown}"
+    );
+    let pub_id = s.ok(&["id", "pub"]).trim().to_owned();
+    let bundle = s.ok(&["export", "-i", "pub"]) + &out;
+    std::fs::write(s.path("b.writ"), &bundle).unwrap();
+    let (code, _, err) = s.run(&[
+        "check", "--as", &pub_id, &victim, "(money)", "--in", "b.writ",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    // The planted items are left out of exports and of keep too.
+    assert!(!s.ok(&["export", "-i", "pub", "--all"]).contains(&planted));
+}

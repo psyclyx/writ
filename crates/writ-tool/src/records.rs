@@ -102,6 +102,10 @@ fn host(url: &str) -> String {
 
 /// A new record for the identity of `log`, signed now by `signers`:
 /// everything in `issued` that it has validly revoked under its head.
+///
+/// Only revocations by the identity itself count. issued.writ is not
+/// trusted: a revocation by anyone else planted there would otherwise be
+/// endorsed by the record, which revokes by hash whoever first said so.
 pub fn sign(log: &Log, issued: &[Item], signers: &[RootSigner]) -> Result<Signed<Record>> {
     let roots = [log.id()];
     let material = Material::from_items(log.items().chain(issued.iter().cloned()));
@@ -111,7 +115,7 @@ pub fn sign(log: &Log, issued: &[Item], signers: &[RootSigner]) -> Result<Signed
     let revoked = issued
         .iter()
         .filter_map(|item| match item {
-            Item::Statement(s) => match &s.body.claim {
+            Item::Statement(s) if s.body.issuer.id() == Some(log.id()) => match &s.body.claim {
                 Claim::Revoke { target }
                     if verifier.statement_status(&s.body.hash(), now).is_ok() =>
                 {
