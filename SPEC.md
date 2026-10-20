@@ -417,7 +417,9 @@ and `S` if it is an id), the grants of one chain, the name statements that put
 each holder in each subject, and the records that made its statements fresh. Its effective tag is `E`; its effective
 expiry is the minimum `expires` of its statements. The reference verifier
 finds a shortest chain by breadth-first search over (holder, effective tag),
-checking signatures only for statements on candidate paths. Because
+checking signatures only for statements on candidate paths. A grant to a name
+path is checked before the names are read, so a forged grant cannot lead the
+search to names that nothing valid points to. Because
 intersection only lengthens a tag, it never expands a node whose effective tag
 is not a prefix of `T`; so it visits at most `len(T) + 1` tags per holder.
 
@@ -442,7 +444,7 @@ A data signature `σ` over data `d` in context `c` is **good for `T`** when
 | `max_signatures`  | 2000           | signatures verified per query          |
 | `require_records` | off            | refuse issuers that publish no records |
 
-Every revocation of a statement counts as a statement examined, and every
+Every revocation and record examined counts as a statement examined, and every
 signature attached to an item counts toward `max_signatures` when the item's
 signatures are checked (cached results are free). A statement that cannot be
 decided within these limits is not valid; in particular, running out while

@@ -259,6 +259,11 @@ impl Material {
         self.records.get(hash)
     }
 
+    /// Every revocation record, by hash.
+    pub fn records(&self) -> impl Iterator<Item = (&Hash, &Signed<Record>)> {
+        self.records.iter()
+    }
+
     /// Hashes of the revocation records made by `id`.
     pub fn records_by(&self, id: &Id) -> &[Hash] {
         self.records_by

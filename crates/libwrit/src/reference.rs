@@ -17,10 +17,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Table = BTreeMap<(Id, Vec<u8>), BTreeSet<Holder>>;
 
+/// Generated times are small numbers scaled by this, so that the one-hour
+/// minimum max-age (§18.5) falls inside them: records can be too old, and
+/// statements can be inside or outside the short-lived exemption.
+const SCALE: u64 = 100;
+
 struct Reference<'a> {
     m: &'a Material,
     policy: &'a Policy,
     roots: &'a [Id],
+    /// Identities whose whole issuance the caller holds: need no records.
+    local: &'a [Id],
     now: Time,
 }
 
@@ -66,24 +73,29 @@ impl Reference<'_> {
                             return false;
                         }
                     }
-                    // Any valid record by the issuer that lists it (§18.4).
+                    // Any valid record by the issuer that lists it (§18.4),
+                    // found by scanning every record.
                     let records: Vec<&Signed<Record>> = self
                         .m
-                        .records_by(id)
-                        .iter()
-                        .filter(|r| self.record_valid(r))
-                        .filter_map(|r| self.m.record(r))
+                        .records()
+                        .filter(|(rh, r)| r.body.id == *id && self.record_valid(rh))
+                        .map(|(_, r)| r)
                         .collect();
-                    if records.iter().any(|r| r.body.revokes(h)) {
+                    if records.iter().any(|r| r.body.revoked.contains(h)) {
                         return false;
                     }
-                    // A publisher's long-lived statements need a record no
-                    // older than its max-age (§18.6).
-                    if let Some(p) = log.head().publish() {
-                        let long = !s.expires.is_some_and(|e| e - s.issued <= p.max_age());
-                        let cutoff = self.now.saturating_sub(p.max_age());
-                        if long && !records.iter().any(|r| r.body.issued >= cutoff) {
-                            return false;
+                    // Freshness (§18.6), unless the issuer is local.
+                    if !self.local.contains(id) {
+                        match log.head().publish() {
+                            Some(p) => {
+                                let long = !s.expires.is_some_and(|e| e - s.issued <= p.max_age());
+                                let cutoff = self.now.saturating_sub(p.max_age());
+                                if long && !records.iter().any(|r| r.body.issued >= cutoff) {
+                                    return false;
+                                }
+                            }
+                            None if self.policy.require_records => return false,
+                            None => {}
                         }
                     }
                 }
@@ -305,6 +317,9 @@ struct GenWorld {
     /// Which identities publish records (DESIGN.md §18.5).
     publish: [bool; IDS],
     records: Vec<GenRecord>,
+    /// The verifier holds the root's whole issuance (§18.6).
+    local_root: bool,
+    require_records: bool,
 }
 
 /// A record by identity `id`, revoking the statements at `revoke` (indices
@@ -323,7 +338,7 @@ fn arb_record() -> impl Strategy<Value = GenRecord> {
     (
         0..IDS,
         proptest::collection::vec(0..24usize, 0..3),
-        0..100u64,
+        0..50u64,
         proptest::bool::weighted(0.2),
         proptest::bool::weighted(0.9),
     )
@@ -408,6 +423,7 @@ fn arb_world() -> impl Strategy<Value = GenWorld> {
         1..4usize,
         proptest::array::uniform4(proptest::bool::weighted(0.3)),
         proptest::collection::vec(arb_record(), 0..8),
+        (proptest::bool::weighted(0.3), proptest::bool::weighted(0.2)),
     )
         .prop_map(
             |(
@@ -420,6 +436,7 @@ fn arb_world() -> impl Strategy<Value = GenWorld> {
                 max_name_depth,
                 publish,
                 records,
+                (local_root, require_records),
             )| {
                 GenWorld {
                     rotated,
@@ -431,6 +448,8 @@ fn arb_world() -> impl Strategy<Value = GenWorld> {
                     max_name_depth,
                     publish,
                     records,
+                    local_root,
+                    require_records,
                 }
             },
         )
@@ -439,6 +458,8 @@ fn arb_world() -> impl Strategy<Value = GenWorld> {
 struct Built {
     material: Material,
     ids: Vec<Id>,
+    /// The root, when the world treats it as local.
+    local: Vec<Id>,
     leaves: Vec<FakeLeaf>,
     opaque: OpaqueKey,
     policy: Policy,
@@ -449,7 +470,11 @@ fn build(w: &GenWorld) -> Built {
         let publish = w.publish[i]
             .then(|| Publish::new(MIN_MAX_AGE, vec![]))
             .flatten();
-        Ident::incept(i as u8 + 1, w.max_validity[i].then_some(30), publish)
+        Ident::incept(
+            i as u8 + 1,
+            w.max_validity[i].then_some(30 * SCALE),
+            publish,
+        )
     };
     let mut idents: Vec<Ident> = (0..IDS).map(make).collect();
     let ids: Vec<Id> = idents.iter().map(|i| i.id).collect();
@@ -503,13 +528,14 @@ fn build(w: &GenWorld) -> Built {
                 target: hashes.get(*i).copied().unwrap_or(Hash([0; 32])),
             },
         };
-        let expires = g.lifetime.map(|l| g.issued + l);
+        let expires = g.lifetime.map(|l| (g.issued + l) * SCALE);
+        let issued = g.issued * SCALE;
         let mut signed = match g.issuer {
             Ok((i, event)) => {
                 // Sign with the key of the claimed event (or event 0's for
                 // events that don't exist).
                 let key_event = if event == 1 && w.rotated[i] { 1 } else { 0 };
-                let mut s = idents[i].say_as(key_event, claim, g.issued, expires);
+                let mut s = idents[i].say_as(key_event, claim, issued, expires);
                 if event != key_event {
                     s.body.issuer = Issuer::Identity { id: ids[i], event };
                     let key = idents[i].key(key_event);
@@ -529,7 +555,7 @@ fn build(w: &GenWorld) -> Built {
             Err(l) => {
                 let body = Statement {
                     issuer: Issuer::Leaf(leaves[l].0.id()),
-                    issued: g.issued,
+                    issued,
                     expires,
                     note: None,
                     claim,
@@ -555,7 +581,7 @@ fn build(w: &GenWorld) -> Built {
             .iter()
             .filter_map(|j| hashes.get(*j).copied())
             .collect();
-        let mut rec = ident.record(revoked, r.issued);
+        let mut rec = ident.record(revoked, r.issued * SCALE);
         if !r.good_sig {
             rec.sigs[0].bytes[0] ^= 1;
         }
@@ -592,12 +618,18 @@ fn build(w: &GenWorld) -> Built {
     }
     Built {
         material: Material::from_items(items),
+        local: if w.local_root {
+            vec![ids[0]]
+        } else {
+            Vec::new()
+        },
         ids,
         leaves,
         opaque,
         policy: Policy {
-            skew: 5,
-            leaf_ceiling: 20,
+            skew: 5 * SCALE,
+            leaf_ceiling: 20 * SCALE,
+            require_records: w.require_records,
             max_chain: w.max_chain,
             max_name_depth: w.max_name_depth,
             ..Policy::default()
@@ -675,21 +707,21 @@ proptest! {
         w in arb_world(),
         q in arb_holder(),
         t in 0..TAGS.len(),
-        now in 0..100u64,
+        now in (0..100u64).prop_map(|n| n * SCALE),
     ) {
         let b = build(&w);
         let roots = [b.ids[0]];
         let want = holder(&b, &q);
         let tag = Tag::parse(TAGS[t]).unwrap();
-        let real = Verifier::new(&roots, &b.material, &b.policy).check(&want, &tag, now);
-        let r = Reference { m: &b.material, policy: &b.policy, roots: &roots, now };
+        let real = Verifier::new(&roots, &b.material, &b.policy).with_local(&b.local).check(&want, &tag, now);
+        let r = Reference { m: &b.material, policy: &b.policy, roots: &roots, local: &b.local, now };
         let expected = r.check(&want, &tag);
         prop_assert_eq!(real.is_ok(), expected, "real: {:?}", real);
         if let Ok(proof) = real {
             prop_assert!(proof_is_sound(&r, &proof, &want, &tag), "unsound proof {:?}", proof);
             // The proof alone convinces a fresh verifier.
             let alone = Material::from_items(proof.items(&b.material));
-            let again = Verifier::new(&roots, &alone, &b.policy).check(&want, &tag, now);
+            let again = Verifier::new(&roots, &alone, &b.policy).with_local(&b.local).check(&want, &tag, now);
             prop_assert!(again.is_ok(), "proof not self-contained: {:?}", again);
         }
     }
@@ -699,7 +731,7 @@ proptest! {
         w in arb_world(),
         base in 0..IDS,
         names in proptest::collection::vec(any::<bool>(), 1..3),
-        now in 0..100u64,
+        now in (0..100u64).prop_map(|n| n * SCALE),
     ) {
         let b = build(&w);
         let roots = [b.ids[0]];
@@ -707,8 +739,8 @@ proptest! {
             base: b.ids[base],
             names: names.iter().map(|x| if *x { b"x".to_vec() } else { b"y".to_vec() }).collect(),
         };
-        let real = Verifier::new(&roots, &b.material, &b.policy).resolve(&p, now);
-        let r = Reference { m: &b.material, policy: &b.policy, roots: &roots, now };
+        let real = Verifier::new(&roots, &b.material, &b.policy).with_local(&b.local).resolve(&p, now);
+        let r = Reference { m: &b.material, policy: &b.policy, roots: &roots, local: &b.local, now };
         let expected = eval(&Subject::Name(p.clone()), r.tables().last().unwrap());
         match real {
             Ok(members) => {
@@ -728,11 +760,11 @@ proptest! {
     }
 
     #[test]
-    fn statement_status_agrees(w in arb_world(), now in 0..100u64) {
+    fn statement_status_agrees(w in arb_world(), now in (0..100u64).prop_map(|n| n * SCALE)) {
         let b = build(&w);
         let roots = [b.ids[0]];
-        let v = Verifier::new(&roots, &b.material, &b.policy);
-        let r = Reference { m: &b.material, policy: &b.policy, roots: &roots, now };
+        let v = Verifier::new(&roots, &b.material, &b.policy).with_local(&b.local);
+        let r = Reference { m: &b.material, policy: &b.policy, roots: &roots, local: &b.local, now };
         for (h, _) in b.material.statements() {
             prop_assert_eq!(v.statement_status(h, now).is_ok(), r.valid(h));
         }
@@ -749,6 +781,7 @@ fn generator_coverage() {
     let (mut ok, mut multi_step, mut named, mut denied, mut compromised) = (0, 0, 0, 0, 0);
     let mut several = 0;
     let mut with_records = 0;
+    let mut stale = 0;
     for _ in 0..3000 {
         let w = arb_world().new_tree(&mut runner).unwrap().current();
         let q = arb_holder().new_tree(&mut runner).unwrap().current();
@@ -756,11 +789,10 @@ fn generator_coverage() {
         let roots = [b.ids[0]];
         let want = holder(&b, &q);
         for t in ["(a)", "(b)"] {
-            match Verifier::new(&roots, &b.material, &b.policy).check(
-                &want,
-                &Tag::parse(t).unwrap(),
-                40,
-            ) {
+            match Verifier::new(&roots, &b.material, &b.policy)
+                .with_local(&b.local)
+                .check(&want, &Tag::parse(t).unwrap(), 40 * SCALE)
+            {
                 Ok(p) => {
                     ok += 1;
                     multi_step += usize::from(p.steps.len() > 1);
@@ -774,13 +806,26 @@ fn generator_coverage() {
                     }));
                 }
                 Err(Denial::Compromised(_)) => compromised += 1,
+                Err(Denial::NotFound { rejected }) => {
+                    denied += 1;
+                    stale += usize::from(rejected.iter().any(|r| {
+                        matches!(r.reason, Reason::NoFreshRecord { .. } | Reason::NoRecords)
+                    }));
+                }
                 Err(_) => denied += 1,
             }
         }
     }
     eprintln!(
-        "ok {ok} (multi-step {multi_step}, via names {named}, several tags {several}, records {with_records}), denied {denied}, compromised {compromised}"
+        "ok {ok} (multi-step {multi_step}, via names {named}, several tags {several}, records {with_records}), denied {denied} (no fresh record {stale}), compromised {compromised}"
     );
     assert!(ok > 300 && denied > 300, "ok {ok} denied {denied}");
-    assert!(multi_step > 20 && named > 20 && compromised > 5 && several > 20 && with_records > 20);
+    assert!(
+        multi_step > 20
+            && named > 20
+            && compromised > 5
+            && several > 20
+            && with_records > 20
+            && stale > 20
+    );
 }

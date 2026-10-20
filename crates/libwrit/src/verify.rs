@@ -36,7 +36,8 @@ pub struct Policy {
     pub max_statements: usize,
     /// Most signatures verified per query (cached results are free).
     pub max_signatures: usize,
-    /// Refuse long-lived statements by identities that publish no records
+    /// Refuse statements and data signatures, short-lived ones included, by
+    /// identities that publish no records, unless they are local
     /// (DESIGN.md §18.6). Off by default.
     pub require_records: bool,
 }
@@ -337,8 +338,7 @@ impl Proof {
         items.extend(
             self.records
                 .iter()
-                .filter_map(|h| material.record(h))
-                .map(|r| Item::Record(r.clone())),
+                .filter_map(|h| material.shippable_record(h)),
         );
         items
     }
@@ -357,6 +357,17 @@ impl Material {
     pub fn shippable(&self, hash: &Hash) -> Option<Item> {
         let st = self.statement(hash)?;
         Some(Item::Statement(shippable(st, &st.body.issuer, self)))
+    }
+
+    /// The record `hash` as it should travel: only signatures that verify,
+    /// one per index, so junk merged alongside never makes it undecodable.
+    pub fn shippable_record(&self, hash: &Hash) -> Option<Item> {
+        let r = self.record(hash)?;
+        let issuer = Issuer::Identity {
+            id: r.body.id,
+            event: r.body.event,
+        };
+        Some(Item::Record(shippable(r, &issuer, self)))
     }
 }
 
@@ -539,6 +550,20 @@ impl<'a> Verifier<'a> {
     /// Whether a statement is valid at `now`, and if not, why.
     pub fn statement_status(&self, hash: &Hash, now: Time) -> Result<(), Reason> {
         Query::new(self, now).status(hash)
+    }
+
+    /// Whether `id` publishes records and the material holds a valid one
+    /// young enough at `now` for its long-lived statements (SPEC §7).
+    pub fn has_fresh_record(&self, id: &Id, now: Time) -> bool {
+        let max_age = match &*self.material.log(id) {
+            Ok(log) => log.head().publish().map(|p| p.max_age()),
+            Err(_) => None,
+        };
+        let Some(max_age) = max_age else {
+            return false;
+        };
+        let mut q = Query::new(self, now);
+        matches!(q.newest_record(*id), Ok(Some((_, t))) if t >= now.saturating_sub(max_age))
     }
 
     /// Whether a revocation record in the material is valid at `now` (SPEC
@@ -1096,6 +1121,10 @@ impl<'v, 'a> Query<'v, 'a> {
                 if effs.iter().any(|e| tag.is_within(e)) {
                     continue;
                 }
+                // As in the search: names only under a valid grant.
+                if matches!(subject, Subject::Name(_)) && self.status(&h).is_err() {
+                    continue;
+                }
                 let reaches = self
                     .denote(&subject, max_depth)
                     .is_ok_and(|m| m.contains_key(want));
@@ -1223,6 +1252,15 @@ impl<'v, 'a> Query<'v, 'a> {
                     continue;
                 };
                 if !tag.is_within(&eff) {
+                    continue;
+                }
+                // A name path is resolved only under a grant that is itself
+                // valid: otherwise a forged grant could make the search read
+                // (and report on) names by any identity it likes.
+                if matches!(gsubject, Subject::Name(_))
+                    && let Err(reason) = self.status(&h)
+                {
+                    self.reject(h, reason);
                     continue;
                 }
                 let members = self.denote(&gsubject, max_depth)?;

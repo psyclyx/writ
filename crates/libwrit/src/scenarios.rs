@@ -1749,6 +1749,34 @@ fn channel_binding() {
     );
     // The key must hold the tag.
     assert!(ok(&e, Role::Initiator, "screen", "(screen control)").is_err());
+    // An identity can sign the same body, but that is not a binding.
+    let mut d = DataHasher::new();
+    d.update(&[1]);
+    d.update(&e);
+    let by_identity = sign_with_authority(
+        DataSig {
+            signer: a.issuer(),
+            issued: 20,
+            context: b"writ/v1/channel/screen".to_vec(),
+            data: d.finish(),
+        },
+        a.log().head().authority(),
+        &[&a.keys[0]],
+        &mut TestRng::new(0),
+    )
+    .unwrap();
+    assert!(
+        check(
+            &v,
+            &by_identity,
+            &e,
+            Role::Initiator,
+            "screen",
+            &tag("()"),
+            30
+        )
+        .is_err()
+    );
     // Short exporters and writ's own contexts are refused when signing.
     assert!(
         bind(
@@ -1774,4 +1802,53 @@ fn channel_binding() {
             "contexts starting with writ/ are reserved for writ"
         ))
     );
+}
+
+/// A junk signature merged onto a genuine record must not travel: a proof
+/// carrying the record still decodes, and still verifies alone.
+#[test]
+fn proofs_ship_records_without_junk_signatures() {
+    let (a, b, c, g) = chain_through_publisher();
+    let rec = b.record(vec![], NOW - 60);
+    let mut junk = rec.clone();
+    junk.sigs[0].bytes[0] ^= 1;
+    let w = world_with(
+        &a,
+        &b,
+        &c,
+        vec![st(g), Item::Record(junk), Item::Record(rec)],
+    );
+    let proof = w.check(Holder::Id(c.id), "(x)", NOW).unwrap();
+    assert_eq!(proof.records.len(), 1);
+    let bundle: Vec<u8> = proof
+        .items(&w.material)
+        .iter()
+        .flat_map(Item::encode)
+        .collect();
+    let items = Item::decode_bundle(&bundle).unwrap();
+    let alone = World::new(&a, items);
+    assert!(alone.check(Holder::Id(c.id), "(x)", NOW).is_ok());
+}
+
+/// A forged grant (bad signature) to a name path must not make the search
+/// read that path's names: otherwise its rejections would name, as needing
+/// a record, an identity that nothing valid leads to (and --fetch would
+/// fetch from its URLs).
+#[test]
+fn forged_grants_do_not_lead_to_names() {
+    let a = Ident::new(1);
+    let x = Ident::publishing(2, HOUR);
+    let c = Ident::new(3);
+    let n = x.say(name("friends", Subject::Id(c.id)), 10, None);
+    let mut forged = a.say(grant(path(x.id, &["friends"]), "()", false), 10, None);
+    forged.sigs[0].bytes[0] ^= 1;
+    let w = World::new(
+        &a,
+        [st(forged), st(n.clone())]
+            .into_iter()
+            .chain(x.items())
+            .chain(c.items()),
+    );
+    let d = w.check(Holder::Id(c.id), "()", NOW).unwrap_err();
+    assert_eq!(rejected_for(&d, n.body.hash()), None, "{d:?}");
 }

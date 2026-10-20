@@ -14,10 +14,10 @@
 use crate::hash::{DataHasher, Hash};
 use crate::issue::{IssueError, sign_data_leaf_any};
 use crate::keys::{Rng, Signer};
-use crate::model::{DataSig, MAX_ATOM, Signed};
+use crate::model::{DataSig, Issuer, MAX_ATOM, Signed};
 use crate::tag::Tag;
 use crate::time::Time;
-use crate::verify::{Denial, Proof, Verifier};
+use crate::verify::{Denial, Proof, Reason, Verifier};
 
 /// Which side of the handshake a binding is for. Part of what is signed,
 /// so a binding cannot be reflected back to its signer.
@@ -77,15 +77,15 @@ pub fn bind(
     sign_data_leaf_any(data(exporter, role), &context, issued, signer, rng)
 }
 
-/// Checks the peer's binding `sig`: it binds this channel (`exporter`) for
-/// the peer's `role` and `app`, and its signer holds `tag` from the
-/// verifier's roots at `now`. Returns the proof, as [`Verifier::verify`]
-/// does.
+/// Checks the peer's binding `sig`: it was made by a leaf key, binds this
+/// channel (`exporter`) for `peer`, the role of the side that sent it, and
+/// `app`, and its signer holds `tag` from the verifier's roots at `now`.
+/// Returns the proof, as [`Verifier::verify`] does.
 pub fn check(
     verifier: &Verifier<'_>,
     sig: &Signed<DataSig>,
     exporter: &[u8],
-    role: Role,
+    peer: Role,
     app: &str,
     tag: &Tag,
     now: Time,
@@ -93,6 +93,13 @@ pub fn check(
     if exporter.len() < MIN_EXPORTER {
         return Err(Denial::Data);
     }
+    // Bindings are made by leaf keys (SPEC §14); an identity could sign this
+    // context with sign_with_authority, but that is not a binding.
+    if !matches!(sig.body.signer, Issuer::Leaf(_)) {
+        return Err(Denial::Signature(Reason::Malformed(
+            "a channel binding is made by a leaf key",
+        )));
+    }
     let context = context(app).ok_or(Denial::Context)?;
-    verifier.verify(sig, &data(exporter, role), &context, tag, now)
+    verifier.verify(sig, &data(exporter, peer), &context, tag, now)
 }
