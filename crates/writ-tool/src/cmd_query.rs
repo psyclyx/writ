@@ -291,16 +291,41 @@ impl Query {
             ));
         }
         for url in urls {
-            match crate::fetch::get(&url).and_then(|bytes| {
-                self.material
-                    .add_bundle(&bytes)
-                    .map_err(|e| format!("not a bundle: {e}"))
-            }) {
-                Ok(_) if self.verifier().has_fresh_record(&id, self.now) => {
+            let fetched = crate::fetch::get(&url).and_then(|bytes| {
+                Item::decode_bundle(&bytes).map_err(|e| format!("not a bundle: {e}"))
+            });
+            // Only this identity's own log and records are taken: a host, or
+            // whoever can impersonate one (TLS is not relied on), must not be
+            // able to put anything else into the material.
+            let added = fetched.map(|items| {
+                let total = items.len();
+                let mut taken = 0;
+                for item in items {
+                    let ours = match &item {
+                        Item::Record(r) => r.body.id == id,
+                        Item::Event(e) => e.body.id() == id,
+                        _ => false,
+                    };
+                    if ours {
+                        self.material.add(item);
+                        taken += 1;
+                    }
+                }
+                if taken < total {
+                    crate::note(format!(
+                        "{url}: ignored {} item{} that are not the log or records of {}",
+                        total - taken,
+                        plural(total - taken),
+                        display::id(&id)
+                    ));
+                }
+            });
+            match added {
+                Ok(()) if self.verifier().has_fresh_record(&id, self.now) => {
                     crate::note(format!("fetched {url}"));
                     return;
                 }
-                Ok(_) => crate::warn(format!("{url}: no fresh record there")),
+                Ok(()) => crate::warn(format!("{url}: no fresh record there")),
                 Err(e) => crate::warn(format!("{url}: {e}")),
             }
         }

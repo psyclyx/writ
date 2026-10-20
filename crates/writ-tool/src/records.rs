@@ -65,6 +65,11 @@ pub fn setting(parsed: &Parsed, current: Option<&Publish>) -> Result<Option<Publ
         if host(u).is_empty() {
             return err(format!("--publish {u:?}: the URL has no host"));
         }
+        if authority(u).contains('@') {
+            return err(format!(
+                "--publish {u:?}: a URL with a user name is not fetched; records are public"
+            ));
+        }
     }
     let publish = Publish::new(max_age, urls).ok_or_else(|| {
         Error::Msg(
@@ -87,10 +92,16 @@ pub fn setting(parsed: &Parsed, current: Option<&Publish>) -> Result<Option<Publ
     Ok(Some(publish))
 }
 
+/// The authority part of an http(s) URL: what lies between the scheme and
+/// the path.
+pub fn authority(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
+}
+
 /// The host of an http(s) URL, lower-cased, without user or port.
 fn host(url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority(url);
     let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = if host.starts_with('[') {
         host.find(']').and_then(|i| host.get(..=i)).unwrap_or(host)

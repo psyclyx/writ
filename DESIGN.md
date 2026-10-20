@@ -1059,8 +1059,9 @@ not needed for integrity.
   needs no network.
 - **The verifier** fills gaps: `check`, `verify`, `resolve` and `prove` take
   `--fetch`, which, for each issuer that needs a record and has none fresh
-  in the material, fetches its URLs in turn, adds what comes back, and
-  answers again.
+  in the material, fetches its URLs in turn, adds that issuer's log events
+  and records from what comes back (nothing else: a host has no say in the
+  rest of the material), and answers again.
 - `--fetch` uses libcurl (the `curl` crate), in writ-tool only; libwrit
   stays pure and only lists what to fetch. Limits: `http` and `https` only,
   redirects included, so a hostile URL cannot read `file:` paths or use
@@ -1081,7 +1082,10 @@ not needed for integrity.
   on a certificate error (expired, wrong name, self-signed) it retries
   without verification and says so in a warning. An expired certificate on
   the owner's host then costs privacy against an active attacker, not
-  revocation.
+  revocation. Since any active attacker can present a bad certificate to
+  force that retry, https in a publish URL protects against passive
+  observers only; records are public, so that is the whole cost. URLs with
+  a user name are refused.
 - `--state` keeps, per remembered id, the log, the revocation statements
   valid under the head (§16), the newest valid record, and up to 15 older
   ones that list revocations the rest don't (§18.4 combines them), judged at

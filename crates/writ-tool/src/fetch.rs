@@ -38,7 +38,7 @@ pub fn get(url: &str) -> Result<Vec<u8>, String> {
     let mut verify = true;
     let mut hops = 0;
     loop {
-        check_scheme(&url)?;
+        check_url(&url)?;
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(format!("took longer than {} s", TIMEOUT.as_secs()));
@@ -72,7 +72,10 @@ pub fn get(url: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-fn check_scheme(url: &str) -> Result<(), String> {
+/// Only `http` and `https`, and never a URL with a user name: records are
+/// public, and a URL carrying credentials would send them wherever an
+/// identity's log points.
+fn check_url(url: &str) -> Result<(), String> {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("https://") {
         if curl::Version::get().ssl_version().is_none() {
@@ -82,12 +85,13 @@ fn check_scheme(url: &str) -> Result<(), String> {
                     .into(),
             );
         }
-        Ok(())
-    } else if lower.starts_with("http://") {
-        Ok(())
-    } else {
-        Err("only http and https URLs are fetched".into())
+    } else if !lower.starts_with("http://") {
+        return Err("only http and https URLs are fetched".into());
     }
+    if crate::records::authority(url).contains('@') {
+        return Err("URLs with a user name are not fetched".into());
+    }
+    Ok(())
 }
 
 fn request(url: &str, verify: bool, left: Duration) -> Result<Response, curl::Error> {
@@ -135,15 +139,18 @@ mod tests {
 
     #[test]
     fn only_http_and_https() {
-        assert!(check_scheme("http://example.org/r").is_ok());
-        assert!(check_scheme("HTTP://example.org/r").is_ok());
+        assert!(check_url("http://example.org/r").is_ok());
+        assert!(check_url("HTTP://example.org/r").is_ok());
+        assert!(check_url("http://example.org/r?u=a@b").is_ok());
         for bad in [
             "file:///etc/passwd",
             "ftp://x/r",
             "gopher://x",
             "example.org",
+            "http://user:secret@example.org/r",
+            "http://example.org@evil.example/r",
         ] {
-            assert!(check_scheme(bad).is_err(), "{bad}");
+            assert!(check_url(bad).is_err(), "{bad}");
         }
     }
 }
