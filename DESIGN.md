@@ -868,11 +868,90 @@ Details in §18. In short:
   `--fetch` budget truncates a batch instead of dropping it; `--fetch`
   documents that libcurl honours the proxy environment variables.
 
+### Resolved after the security review (2026-10-19)
+
+Five audits (one per crate, plus the verification core) and a read of the
+whole. Three documented claims did not hold and are corrected above; the
+rest are fixes in the glue around the cryptography, which was found sound.
+
+- **A record endorsed other identities' revocations.** `records::sign` took
+  every valid revocation in `issued.writ` without checking its issuer, so
+  anyone who could write that file (DESIGN's own threat for it) could plant
+  their log and a revocation of the owner's grant, and the owner's next
+  `revoke`, `export --record` or `rotate` published a record revoking it, with
+  no key of the owner involved and no way back until a rotation. **Decision:**
+  a record lists only the identity's own revocations, and `issued.writ` is
+  read as what the identity issued: anything else in it is ignored
+  everywhere (keep, records, export, revocation lookup) and reported.
+- **The clock-floor witness was still starved by `max_signatures`**, through
+  junk signatures merged onto one copy of the root's newest statement rather
+  than onto separate bodies. **Decision:** the witness is not budgeted at
+  all; it verifies merged signatures until it finds `k` valid ones (one
+  SLH-DSA check per junk signature, linear in the material, SPEC §12).
+- **A clock set back un-revoked.** Rule 4 (`issued ≤ now + skew`) applied to
+  revocations and to the revoking effect of records, and the floor rises only
+  on own-root statements, so a verifier set back past a revocation accepted
+  the revoked chain again; §9.4 listed only expired leaf grants as the
+  rollback residual. **Decision:** revocations, and what a record lists, count
+  whatever the clock says; a record's time matters only for freshness, which
+  needs `now − D ≤ issued ≤ now + skew`. A consequence: `--at` in the past
+  shows later revocations as in force, which is the safe reading.
+- **Verify-after-sign does not stop the fault it was documented against.**
+  A fault in an SLH-DSA tree node off the signed leaf's path leaves the auth
+  path self-consistent, so the signature verifies and is released (confirmed
+  by flipping a bit in a scratch copy); Genêt (TCHES 2023) shows the check
+  is insufficient for exactly this. **Decision:** reword §3.2 rather than add
+  redundant tree computation. Hedging bounds the attack, and a host where an
+  attacker can induce faults in the signer can read the plaintext key file,
+  so doubling signing cost buys little. The check stays for what it does
+  catch.
+- **Adding rotations was quadratic**: the one index in `Material` not keyed
+  by hash re-hashed every candidate at `(id, n)` per insert. Now keyed by
+  body hash; and records are indexed by `(issuer, revoked hash)` so the
+  revocation check no longer scans every record per statement.
+- **`--fetch` takes only the identity's log and records** from what a URL
+  returns, so a host, or an active attacker on the path, puts nothing else
+  into the material. The retry without certificate verification stays: any
+  active attacker can force it by presenting a bad certificate, so https in a
+  publish URL gives privacy against passive observers only, and records are
+  public. URLs with a user name are refused at `init` and at fetch time.
+  Loopback and private hosts stay allowed (local setups); an identity a root
+  delegates to can thus make verifiers GET an internal URL, which is noted
+  rather than prevented, since DNS makes a host check unreliable anyway.
+- **`revoke TARGET`**: a file in the working directory named like a hash
+  prefix no longer silently wins; if the argument is both, the file's item
+  must have that prefix, else the error says to write `./TARGET`.
+- **`rotate`** reports key files it wrote before a later step failed as
+  void, and says the old next key still rotates; the staged current key is
+  removed. Key counts are capped at 16 before anything is generated; writ's
+  own files are read with the bundle bound; armor blocks are bounded before
+  base64 decoding; writing to a closed stderr no longer panics after the
+  work is done; `init` refuses a non-empty directory before creating `.lock`
+  in it.
+- **`sign_with_authority` is the documented raw entry point**: it applies
+  the encoding rules and, for data signatures, the reserved-context rule
+  (an identity never signs under `writ/`), and every signing path decodes
+  the whole signed item before returning it. The typed functions apply the
+  issuing rules.
+- **Not changed, now documented in SPEC**: a subject whose own log is missing
+  or broken still holds what valid chains grant it (only an equivocating
+  subject is refused); log building costs one check per signature attached to
+  a candidate, not per candidate; a kept statement keeps the `max-validity`
+  of its issuing event; a presenter can staple a thief-signed record and so
+  suppress the `--fetch` that would have found the owner's, which is the
+  warm-key theft of §10 until rotation.
+
 ## 17. Open questions
 
 None blocking. The resource limits and the default skew were set on 2026-10-19
 (§16); revisit them if real use runs into them. Whether applications need a freshness primitive that bounds a warm-key
 thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
+
+The brute-force reference verifier shares `Log::build`, well-formedness and
+threshold counting with the real one, and its generator makes only 1-of-1
+authorities, at most one rotation per identity, no data signatures and no key
+items; those paths rest on unit tests. Widening the generator is worthwhile
+work that the 2026-10-19 review left open.
 
 ## 18. Multi-tag grants, channel binding, published revocations
 

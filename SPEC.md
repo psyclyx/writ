@@ -422,7 +422,9 @@ leaf key, or an opaque key) **holds** tag `T` when:
      be within the other.)
 
 If `S` is an id whose log equivocates, the answer is no. A verifier SHOULD
-report equivocation it encountered when no chain exists.
+report equivocation it encountered when no chain exists. A subject's own log
+matters only in that case: an id whose log is missing or broken still holds
+what valid chains grant it (its log counts when it issues, or is a root).
 
 A **proof** is the logs of every identity involved (the root, every issuer,
 and `S` if it is an id), the grants of one chain, the name statements that put
@@ -463,7 +465,9 @@ decided within these limits is not valid; in particular, running out while
 looking for a valid revocation never means "not revoked".
 
 Outside these limits, building identity logs costs one signature check per
-rotation candidate, so a verifier's work grows linearly with the size of its
+signature attached to a rotation candidate (copies of one event merge their
+signatures, so junk merged onto a genuine event is tried until `k` valid ones
+are found), so a verifier's work grows linearly with the size of its
 material. Verifiers that take material from untrusted parties SHOULD bound its
 size (libwrit's bundle limit is in §3.1).
 
