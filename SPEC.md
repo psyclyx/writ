@@ -439,7 +439,7 @@ A data signature `σ` over data `d` in context `c` is **good for `T`** when
 | `max_chain`       | 16             | most grants in a chain                 |
 | `max_name_depth`  | 8              | `D` in §8                              |
 | `max_statements`  | 10000          | distinct statements examined per query |
-| `max_signatures`  | 10000          | signatures verified per query          |
+| `max_signatures`  | 2000           | signatures verified per query          |
 | `require_records` | off            | refuse issuers that publish no records |
 
 Every revocation of a statement counts as a statement examined, and every

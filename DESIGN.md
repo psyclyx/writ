@@ -810,17 +810,33 @@ Details in §18. In short:
   record), `publish` for the field, `max-age` for D (what it means to a
   verifier, and HTTP's word for it).
 
+### Numbers set 2026-10-19
+
+- **`--fetch`**: at most 5 redirects (http to https, then a CDN) and 16 MiB
+  (ten times the 1.4 MB worst case of §4.3); connections get 10 s, a transfer
+  under 1 KiB/s for 15 s stops, and none takes over 60 s, so a slow link can
+  still fetch a large file while a stalled server fails fast.
+- **Stale-record warning**: in the last fifth of max-age (1.4 days for the
+  7-day default). Earlier would nag owners who renew every 6 days, which D
+  allows.
+- **`max_signatures`**: 2000, down from 10000. A real chain needs dozens of
+  checks; 2000 cold SLH-DSA verifications take about 1.1 s, against about
+  5.6 s before.
+- **Unchanged**: skew 300 s (the usual tolerance, as in Kerberos),
+  `max_chain` 16, `max_name_depth` 8, `max_statements` 10000, max-age at
+  least 1 h and 7 days by default, at most 16 tags per grant and 4 URLs.
+
 ## 17. Open questions
 
-None blocking. Revisit after use: exact resource limits (§9.1) and the default
-skew. Whether applications need a freshness primitive that bounds a warm-key
+None blocking. The resource limits and the default skew were set on 2026-10-19
+(§16); revisit them if real use runs into them. Whether applications need a freshness primitive that bounds a warm-key
 thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
 
 ## 18. Multi-tag grants, channel binding, published revocations
 
 **Status: decided 2026-10-18 (§16); built 2026-10-19.** The byte-level rules
-are in SPEC.md (§5.3, §5.4, §5.6, §7, §10, §11, §14). Numbers marked _(tune)_
-are starting points, to revisit after use.
+are in SPEC.md (§5.3, §5.4, §5.6, §7, §10, §11, §14). Its numbers were set on
+2026-10-19 (§16).
 
 ### 18.1 Scope
 
@@ -1006,8 +1022,9 @@ not needed for integrity.
 - `--fetch` uses libcurl (the `curl` crate), in writ-tool only; libwrit
   stays pure and only lists what to fetch. Limits: `http` and `https` only,
   redirects included, so a hostile URL cannot read `file:` paths or use
-  libcurl's other protocols; at most 5 redirects, 10 seconds and 16 MiB per
-  URL _(tune)_. It fetches only for issuers on a candidate chain from the
+  libcurl's other protocols; at most 5 redirects and 16 MiB per URL; a
+  connection gets 10 seconds, a transfer stops if it moves under 1 KiB a
+  second for 15 seconds, and none takes more than 60 seconds. It fetches only for issuers on a candidate chain from the
   verifier's roots, never for every identity in the material, so a bundle
   cannot make a verifier fetch arbitrary URLs.
 - `--fetch` does not depend on TLS certificates. Records are checked by their
@@ -1019,8 +1036,8 @@ not needed for integrity.
 - `--state` keeps, per remembered id, the log, every valid record under its
   head (§18.4 combines them), and the revocation statements valid under the
   head (§16), so a record fetched once keeps serving until it is D old.
-- Answers say when a record a chain relies on is within a fifth of D
-  _(tune)_ of going stale, so a broken cron job is noticed before it fails.
+- Answers say when a record a chain relies on is within a fifth of D of
+  going stale, so a broken cron job is noticed before it fails.
 
 ### 18.8 Failure modes
 

@@ -50,7 +50,7 @@ impl Default for Policy {
             max_chain: 16,
             max_name_depth: 8,
             max_statements: 10_000,
-            max_signatures: 10_000,
+            max_signatures: 2_000,
             require_records: false,
         }
     }

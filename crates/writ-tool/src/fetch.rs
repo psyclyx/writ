@@ -11,9 +11,16 @@ use std::time::Duration;
 
 /// Largest response accepted.
 const MAX_SIZE: usize = 16 << 20;
-/// Most redirects followed.
+/// Most redirects followed: http to https, then a CDN, with room to spare.
 const MAX_REDIRECTS: usize = 5;
-const TIMEOUT: Duration = Duration::from_secs(10);
+/// Giving up on a connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A transfer slower than LOW_SPEED bytes a second for LOW_SPEED_TIME is
+/// stalled or trickling, and stops.
+const LOW_SPEED: u32 = 1024;
+const LOW_SPEED_TIME: Duration = Duration::from_secs(15);
+/// The longest a transfer may take, however steadily it moves.
+const TIMEOUT: Duration = Duration::from_secs(60);
 
 enum Response {
     Body(Vec<u8>),
@@ -78,7 +85,9 @@ fn request(url: &str, verify: bool) -> Result<Response, curl::Error> {
     easy.url(url)?;
     easy.follow_location(false)?;
     easy.timeout(TIMEOUT)?;
-    easy.connect_timeout(TIMEOUT)?;
+    easy.connect_timeout(CONNECT_TIMEOUT)?;
+    easy.low_speed_limit(LOW_SPEED)?;
+    easy.low_speed_time(LOW_SPEED_TIME)?;
     easy.max_filesize(MAX_SIZE as u64)?;
     easy.useragent(concat!("writ/", env!("CARGO_PKG_VERSION")))?;
     if !verify {
