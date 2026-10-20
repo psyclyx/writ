@@ -312,7 +312,11 @@ the subject of a grant (or name) from an identity.
   daemon holding its device identity's warm key. Anything that needs a longer
   life should be a regular identity; only speed and size differ.
 - A leaf key may issue grants only with `delegate: false`, and may sign data.
-  It may not issue names or revocations.
+  It may not issue names or revocations. Every statement it issues carries
+  `expires` within the same ceiling: what a stolen or forged leaf key says
+  dies with the day, rather than lasting as long as the same key keeps
+  being renewed with nothing able to revoke it (leaves cannot revoke, and
+  an identity revokes only its own statements).
 - Leaf keys never rotate; they expire and are reissued (daemons do this
   automatically).
 - What a leaf issues names it by id, a 32-byte hash, not by its 1984-byte key:
@@ -424,6 +428,7 @@ that need clock-attack resistance (anything using expiries or leaf keys):
 | Secret break of the leaf suite                                 | Forgery limited in scope to the tags of leaf grants (which can't be delegated, and which the identity's next rotation drops), for as long as leaf grants keep being issued; each one lasts at most the ceiling. Clock rollback or freezing is countered by the floor. |
 | Public break of the leaf suite                                 | Zero once verifiers drop the suite (software default). Leaves reissue under the new suite; no identity changes.                                                                                                                                                       |
 | Warm key stolen                                                | The thief signs as you until verifiers see your rotation. After that, only statements in `keep` survive. Verifiers that never see the rotation stay exposed; `max-validity` does not change that (§4.5).                                                              |
+| Leaf key stolen                                                | Forgery limited to the leaf's tags, non-delegable, each statement at most the ceiling. It ends when the owner stops renewing the grant to that key: at most a day after the theft is noticed, with no revocation needed.                                              |
 | Cold key lost                                                  | Recover via k-of-n next authority, if configured.                                                                                                                                                                                                                     |
 | Cold key (or ≥ k of it) stolen                                 | Identity lost; conflicting rotations are detectable evidence.                                                                                                                                                                                                         |
 | Fresh verifier, no persisted floor, hostile clock, partitioned | Expired leaf grants back to the floor (build-time, or newest own-root statement) are usable again. Accepted residual risk; enrollment grants keep it small in practice.                                                                                               |

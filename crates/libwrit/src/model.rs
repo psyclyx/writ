@@ -867,7 +867,7 @@ impl Claim {
         }
     }
 
-    /// Whether the subject is a leaf key, so the leaf ceiling applies.
+    /// Whether the subject is a leaf key.
     pub fn is_about_leaf(&self) -> bool {
         matches!(self.subject(), Some(Subject::Leaf(_)))
     }
@@ -902,6 +902,13 @@ impl Statement {
         }
     }
 
+    /// Whether the leaf ceiling applies: the subject is a leaf key, or a
+    /// leaf key issued it (DESIGN.md §7). Everything a leaf touches lives at
+    /// most a day, so what a stolen or forged leaf key says dies with it.
+    pub fn touches_leaf(&self) -> bool {
+        self.claim.is_about_leaf() || matches!(self.issuer, Issuer::Leaf(_))
+    }
+
     /// The rules every statement must satisfy regardless of who checks it or
     /// when: issuers and verifiers both apply them.
     pub fn check_wellformed(&self) -> core::result::Result<(), &'static str> {
@@ -923,11 +930,11 @@ impl Statement {
             (Issuer::Leaf(_), _) => return Err("a leaf key may only issue grants"),
             (Issuer::Identity { .. }, _) => {}
         }
-        if self.claim.is_about_leaf() {
+        if self.touches_leaf() {
             match self.expires {
-                None => return Err("a name or grant for a leaf key must expire"),
+                None => return Err("a statement for or by a leaf key must expire"),
                 Some(e) if e - self.issued > LEAF_CEILING => {
-                    return Err("a name or grant for a leaf key may last at most 24 hours");
+                    return Err("a statement for or by a leaf key may last at most 24 hours");
                 }
                 Some(_) => {}
             }

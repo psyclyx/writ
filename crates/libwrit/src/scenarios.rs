@@ -500,10 +500,36 @@ fn leaf_keys() {
     let body = Statement {
         issuer: Issuer::Leaf(leaf.0.id()),
         issued: 20,
-        expires: None,
+        expires: Some(20 + 7200),
         note: None,
         claim: grant(Subject::Opaque(app.clone()), "(svc read)", false),
     };
+    // What a leaf issues lives at most the ceiling too: otherwise a grant
+    // by a stolen leaf key would stay valid for as long as the same key
+    // kept being renewed, with no way to revoke it.
+    for expires in [None, Some(20 + 86_401)] {
+        let long = Statement {
+            expires,
+            ..body.clone()
+        };
+        assert!(matches!(
+            issue_leaf(long.clone(), &leaf, &mut TestRng::new(0)),
+            Err(IssueError::Rule(_))
+        ));
+        let bytes = leaf.sign(&long.message(), &mut TestRng::new(0)).unwrap();
+        let raw = Signed {
+            body: long,
+            sigs: vec![Sig { index: 0, bytes }],
+        };
+        let w = World::new(&a, [st(al.clone()), st(raw.clone())]);
+        let d = w
+            .check(Holder::Opaque(app.clone()), "(svc read)", 30)
+            .unwrap_err();
+        assert!(matches!(
+            rejected_for(&d, raw.body.hash()),
+            Some(Reason::Malformed(_))
+        ));
+    }
     let lk = issue_leaf(body, &leaf, &mut TestRng::new(0)).unwrap();
     let w = World::new(&a, [st(al.clone()), st(lk)]);
     let proof = w

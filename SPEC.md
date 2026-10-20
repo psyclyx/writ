@@ -269,7 +269,8 @@ A statement is **well-formed** when:
 1. if `expires` is present, `expires > issued`;
 2. a leaf issuer issues only grants, without `(delegate)`;
 3. a grant to an opaque key (`(key …)`) has no `(delegate)`;
-4. a name or grant whose subject is a leaf key has `expires` with
+4. a statement that touches a leaf key (a name or grant whose subject is
+   one, or any statement a leaf key issues) has `expires` with
    `expires − issued ≤ 86400`;
 5. a revocation has no `expires`.
 
@@ -365,7 +366,7 @@ A statement with hash `h` is **valid at time `now`** under policy `P` when:
    set back must not bring back what its issuer revoked. (So a question asked
    at a past `now` sees later revocations as in force.)
 5. If `expires` is present: `now < expires`.
-6. If it is a name or grant whose subject is a leaf key:
+6. If it touches a leaf key (§5.4 rule 4):
    `expires − issued ≤ min(P.leaf_ceiling, 86400)`.
 
 A data signature by `(id, e)` is valid under rule 2 (without the

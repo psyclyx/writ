@@ -127,7 +127,7 @@ impl Reference<'_> {
         if s.expires.is_some_and(|e| self.now >= e) {
             return false;
         }
-        if s.claim.is_about_leaf() {
+        if s.touches_leaf() {
             let ceiling = self.policy.leaf_ceiling.min(LEAF_CEILING);
             if !s.expires.is_some_and(|e| e - s.issued <= ceiling) {
                 return false;
@@ -517,8 +517,12 @@ fn build(w: &GenWorld) -> Built {
             {
                 *event = 0;
             }
-            if let GenClaim::Grant(GenSubject::Leaf(_), _, _)
-            | GenClaim::Name(_, GenSubject::Leaf(_)) = g.claim
+            // Whatever touches a leaf key lives at most the ceiling: statements
+            // about one, and statements by one.
+            if matches!(
+                g.claim,
+                GenClaim::Grant(GenSubject::Leaf(_), _, _) | GenClaim::Name(_, GenSubject::Leaf(_))
+            ) || g.issuer.is_err()
             {
                 g.lifetime = Some(g.lifetime.unwrap_or(10).min(20));
             }

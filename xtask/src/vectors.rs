@@ -304,7 +304,7 @@ fn world() -> World {
             Statement {
                 issuer: Issuer::Leaf(leaf.leaf_key().id()),
                 issued: T0 + 5,
-                expires: None,
+                expires: Some(T0 + 7200),
                 note: Some("vector".into()),
                 claim: grant(Subject::Opaque(app.clone()), "(svc read)", false),
             },
@@ -314,6 +314,26 @@ fn world() -> World {
         .unwrap(),
         &mut m,
     );
+    // What a leaf issues must expire within the ceiling too (SPEC §5.4):
+    // this one, signed by a leaf that ignored the rule, is never valid.
+    {
+        let body = Statement {
+            issuer: Issuer::Leaf(leaf.leaf_key().id()),
+            issued: T0 + 5,
+            expires: None,
+            note: None,
+            claim: grant(Subject::Opaque(app.clone()), "(svc forever)", false),
+        };
+        let bytes = libwrit::Signer::sign(&leaf, &body.message(), &mut rng).unwrap();
+        add(
+            "leaf-grants-app-forever",
+            Signed {
+                body,
+                sigs: vec![Sig { index: 0, bytes }],
+            },
+            &mut m,
+        );
+    }
     add(
         "me-grants-quinn",
         me.say(
@@ -686,6 +706,12 @@ fn items_and_chains(files: &mut Files) {
         ),
         ("leaf, then opaque key", "app", "(svc read x)", T0 + 100),
         ("leaf grant expired", "app", "(svc read)", T0 + 3600),
+        (
+            "leaf-issued grant without expiry",
+            "app",
+            "(svc forever)",
+            T0 + 100,
+        ),
         ("issued after rotation", "bob", "(ssh ftp)", T0 + 100),
         ("not kept by rotation", "bob", "(ssh old)", T0 + 100),
         ("signed by a next key", "bob", "(ssh next)", T0 + 100),

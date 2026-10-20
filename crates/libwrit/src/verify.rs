@@ -185,7 +185,7 @@ impl fmt::Display for Reason {
             Reason::LeafCeiling(c) => {
                 write!(
                     f,
-                    "a name or grant for a leaf key may last at most {}",
+                    "a statement for or by a leaf key may last at most {}",
                     Duration(*c)
                 )
             }
@@ -848,7 +848,7 @@ impl<'v, 'a> Query<'v, 'a> {
         {
             return Err(Reason::Expired(e));
         }
-        if body.claim.is_about_leaf() {
+        if body.touches_leaf() {
             let ceiling = self.v.policy.leaf_ceiling.min(LEAF_CEILING);
             match body.expires {
                 Some(e) if e - body.issued <= ceiling => {}

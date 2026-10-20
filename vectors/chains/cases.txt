@@ -98,6 +98,14 @@ result = denied
 reason = not-found
 rejected = me-grants-leaf:expired me-names-leaf-day:expired me-names-leaf-forever:malformed
 
+case = leaf-issued grant without expiry
+subject = app
+tag = (svc forever)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = leaf-grants-app-forever:malformed leaf-grants-app:covers me-names-leaf-forever:malformed
+
 case = issued after rotation
 subject = bob
 tag = (ssh ftp)
