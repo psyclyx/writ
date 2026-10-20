@@ -24,11 +24,16 @@ pub enum Principal {
 #[derive(Default)]
 pub struct Material {
     inceptions: BTreeMap<Id, Signed<Event>>,
-    rotations: BTreeMap<(Id, u64), Vec<Signed<Event>>>,
+    /// Rotation candidates per `(id, n)`, by body hash: every index here is
+    /// keyed by hash, so adding stays linear in the material.
+    rotations: BTreeMap<(Id, u64), BTreeMap<Hash, Signed<Event>>>,
     statements: BTreeMap<Hash, Signed<Statement>>,
     signatures: BTreeMap<Hash, Signed<DataSig>>,
     records: BTreeMap<Hash, Signed<Record>>,
     records_by: BTreeMap<Id, Vec<Hash>>,
+    /// Records by `(issuer, revoked hash)`, so checking whether a hash is
+    /// revoked by a record costs a lookup, not a scan of every record.
+    records_revoking: BTreeMap<(Id, Hash), Vec<Hash>>,
     names: BTreeMap<(Id, Vec<u8>), Vec<Hash>>,
     grants: BTreeMap<Principal, Vec<Hash>>,
     revocations: BTreeMap<(Id, Hash), Vec<Hash>>,
@@ -88,11 +93,13 @@ impl Material {
                     Event::Rotation(r) => {
                         let slot = self.rotations.entry((r.id, r.n)).or_default();
                         let h = ev.body.hash();
-                        match slot.iter_mut().find(|e| e.body.hash() == h) {
+                        match slot.get_mut(&h) {
                             Some(existing) => {
                                 merge_sigs(&mut self.merged, h, &mut existing.sigs, ev.sigs);
                             }
-                            None => slot.push(ev),
+                            None => {
+                                slot.insert(h, ev);
+                            }
                         }
                     }
                 }
@@ -154,6 +161,12 @@ impl Material {
                     }
                     None => {
                         self.records_by.entry(r.body.id).or_default().push(h);
+                        for target in &r.body.revoked {
+                            self.records_revoking
+                                .entry((r.body.id, *target))
+                                .or_default()
+                                .push(h);
+                        }
                         self.records.insert(h, r);
                     }
                 }
@@ -185,7 +198,7 @@ impl Material {
             Some(inception) => Log::build(inception, |n| {
                 self.rotations
                     .get(&(*id, n))
-                    .map(|v| v.iter().collect())
+                    .map(|v| v.values().collect())
                     .unwrap_or_default()
             }),
         };
@@ -268,6 +281,14 @@ impl Material {
     pub fn records_by(&self, id: &Id) -> &[Hash] {
         self.records_by
             .get(id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Hashes of the revocation records made by `id` that list `target`.
+    pub fn records_revoking(&self, id: &Id, target: &Hash) -> &[Hash] {
+        self.records_revoking
+            .get(&(*id, *target))
             .map(Vec::as_slice)
             .unwrap_or_default()
     }

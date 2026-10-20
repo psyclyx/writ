@@ -875,15 +875,7 @@ impl<'v, 'a> Query<'v, 'a> {
         }
         // Valid records list revocations too; they are combined, so any
         // one listing `hash` revokes it (DESIGN.md §18.4).
-        for r in self.v.material.records_by(&id).to_vec() {
-            if !self
-                .v
-                .material
-                .record(&r)
-                .is_some_and(|rec| rec.body.revokes(hash))
-            {
-                continue;
-            }
+        for r in self.v.material.records_revoking(&id, hash).to_vec() {
             match self.record_status(&r) {
                 Ok(()) => return Err(Reason::Revoked(r)),
                 Err(Reason::Limit) => return Err(Reason::Limit),
