@@ -161,9 +161,11 @@ impl IdentityDir {
             });
             return match retired {
                 Some(n) => err(format!(
-                    "the key in {path} is no longer a current key: rotation {} replaced it. \
-                     After a rotation, sign with the next key you gave to 'writ rotate'",
-                    n + 1
+                    "the key in {path} is no longer a current key: rotation {} replaced it \
+                     with the key 'writ rotate' wrote to --key-out (or to {}/{CURRENT_KEY}). \
+                     Sign with that one; the next key only rotates",
+                    n + 1,
+                    self.name()
                 )),
                 None => err(format!(
                     "the key in {path} is not a current key of {}",
@@ -242,12 +244,20 @@ impl NewDir {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
             Err(e) => return err(format!("creating {dir}: {e}")),
         };
+        let is_empty = || {
+            std::fs::read_dir(&path).map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .all(|e| e.file_name() == ".lock")
+            })
+        };
+        // A directory that is plainly taken is refused before the lock file
+        // is created in it; the lock then guards the final check.
+        if !created && let Ok(false) = is_empty() {
+            return err(format!("{dir} already exists and is not empty"));
+        }
         let lock = fs::lock_dir(&path, true);
-        let empty = std::fs::read_dir(&path).map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .all(|e| e.file_name() == ".lock")
-        });
+        let empty = is_empty();
         match (lock, empty) {
             (Ok(lock), Ok(true)) => Ok(NewDir {
                 path,

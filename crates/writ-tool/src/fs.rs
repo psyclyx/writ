@@ -370,15 +370,36 @@ pub fn sync_parent(path: &Path) -> Result<()> {
 /// and renamed into place, so a crash leaves either the old or the new
 /// contents, never a torn block.
 pub fn append_items(path: &Path, items: &[Item]) -> Result<()> {
-    let mut bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return err(format!("reading {}: {e}", path.display())),
+    let mut bytes = match read_file_bounded(path) {
+        Ok(Some(b)) => b,
+        Ok(None) => Vec::new(),
+        Err(e) => return Err(e),
     };
     for item in items {
         bytes.extend_from_slice(item.armor().as_bytes());
     }
     replace(path, &bytes)
+}
+
+/// Reads one of writ's own files whole, up to a bundle's limit (SPEC §3.1):
+/// `None` if it does not exist. Even a local file is read with a bound.
+fn read_file_bounded(path: &Path) -> Result<Option<Vec<u8>>> {
+    let limit = libwrit::model::MAX_BUNDLE;
+    let mut buf = Vec::new();
+    let read = File::open(path).and_then(|f| {
+        f.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+            .read_to_end(&mut buf)
+    });
+    match read {
+        Ok(_) if buf.len() > limit => err(format!(
+            "{} is larger than {} MiB, the most writ reads",
+            path.display(),
+            limit >> 20
+        )),
+        Ok(_) => Ok(Some(buf)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => err(format!("reading {}: {e}", path.display())),
+    }
 }
 
 /// Takes the lock file `DIR/.lock`, shared or exclusive, for as long as the
@@ -403,10 +424,9 @@ pub fn lock_file(path: &Path, exclusive: bool) -> Result<File> {
 
 /// Reads a bundle file; a missing file is an empty bundle.
 pub fn read_bundle_file(path: &Path) -> Result<Vec<Item>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Item::decode_bundle(&bytes).context(|| path.display().to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => err(format!("reading {}: {e}", path.display())),
+    match read_file_bounded(path)? {
+        Some(bytes) => Item::decode_bundle(&bytes).context(|| path.display().to_string()),
+        None => Ok(Vec::new()),
     }
 }
 

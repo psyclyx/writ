@@ -149,17 +149,17 @@ pub fn main() -> ExitCode {
                     let _ = fs::print(&help::command(spec, *long));
                 }
                 Error::Usage { spec, message } => {
-                    eprintln!(
+                    stderr_line(format!(
                         "{} {message}\n{} {}\nRun 'writ {} --help' for more.",
                         style::paint(Stream::Err, BAD, &format!("writ {}:", spec.name)),
                         style::paint(Stream::Err, BOLD, "Usage:"),
                         help::usage_line(spec),
                         spec.name
-                    );
+                    ));
                 }
                 Error::Msg(m) if m.is_empty() => {}
                 Error::Msg(m) => {
-                    eprintln!("{} {m}", style::paint(Stream::Err, BAD, "writ:"));
+                    stderr_line(format!("{} {m}", style::paint(Stream::Err, BAD, "writ:")));
                 }
                 Error::Denied => {}
             }
@@ -168,17 +168,28 @@ pub fn main() -> ExitCode {
     }
 }
 
+/// Writes a line to stderr. A closed stderr (`2>&1 | head`) is not a reason
+/// to panic after the work is done, as `eprintln!` would.
+pub(crate) fn stderr_line(line: impl std::fmt::Display) {
+    use std::io::Write;
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "{line}");
+}
+
 /// Prints a warning to stderr.
 pub(crate) fn warn(message: impl std::fmt::Display) {
-    eprintln!(
+    stderr_line(format!(
         "{} {message}",
         style::paint(Stream::Err, WARN, "writ: warning:")
-    );
+    ));
 }
 
 /// Prints a note to stderr.
 pub(crate) fn note(message: impl std::fmt::Display) {
-    eprintln!("{} {message}", style::paint(Stream::Err, BOLD, "writ:"));
+    stderr_line(format!(
+        "{} {message}",
+        style::paint(Stream::Err, BOLD, "writ:")
+    ));
 }
 
 /// The OS random number generator.
@@ -205,6 +216,6 @@ pub(crate) fn wall_clock() -> libwrit::Time {
 /// Prints a progress or summary line to stderr unless `--quiet`.
 pub(crate) fn say(parsed: &args::Parsed, line: impl std::fmt::Display) {
     if !parsed.flag("quiet") {
-        eprintln!("{line}");
+        stderr_line(line);
     }
 }

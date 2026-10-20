@@ -13,12 +13,17 @@ use libwrit::{
 };
 use std::collections::BTreeSet;
 
+/// A key count or threshold: at most an authority's size, checked before
+/// anything is allocated or generated.
 fn count(parsed: &Parsed, name: &str, default: usize) -> Result<usize> {
+    let max = libwrit::model::MAX_AUTHORITY_KEYS;
     match parsed.value(name) {
         None => Ok(default),
-        Some(v) => v
-            .parse()
-            .map_err(|_| Error::Msg(format!("--{name}: expected a number, got {v:?}"))),
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n <= max => Ok(n),
+            Ok(_) => err(format!("--{name}: at most {max}, got {v}")),
+            Err(_) => err(format!("--{name}: expected a number, got {v:?}")),
+        },
     }
 }
 
@@ -416,40 +421,72 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     // authority must be on disk before the log commits to them. next.writ
     // is append-only, so a crash before the log write leaves the old
     // commitment satisfiable.
-    if let Some(p) = next_out
-        && !next_seeds.is_empty()
-    {
-        fs::write_secret(
-            p,
-            &fs::seeds_text(&next_comment(ident.id(), &next_seeds), &next_seeds),
-        )?;
-    }
     let current_text = fs::seeds_text(
         &format!("current key for {} (event {n})", ident.id()),
         std::slice::from_ref(&current_seed),
     );
-    let key_shown = match &key_out {
-        KeyOut::Path(p) => {
-            fs::write_secret(p, &current_text)?;
-            p.clone()
+    let staged = ident.dir.join(format!("{CURRENT_KEY}.new"));
+    // Key files written before the log commits; if it never does, they are
+    // void, and the error must say so rather than leave them looking real.
+    let mut written: Vec<String> = Vec::new();
+    let committed = (|| -> Result<String> {
+        if let Some(p) = next_out
+            && !next_seeds.is_empty()
+        {
+            fs::write_secret(
+                p,
+                &fs::seeds_text(&next_comment(ident.id(), &next_seeds), &next_seeds),
+            )?;
+            written.push(p.to_owned());
         }
-        KeyOut::Replace => {
-            // Write it beside the old key first; the rename below, after the
-            // log commits, retires the old one.
-            current_path_str.clone()
+        let key_shown = match &key_out {
+            KeyOut::Path(p) => {
+                fs::write_secret(p, &current_text)?;
+                written.push(p.clone());
+                p.clone()
+            }
+            KeyOut::Replace => {
+                // Write it beside the old key first; the rename below, after
+                // the log commits, retires the old one.
+                fs::write_secret(&staged.display().to_string(), &current_text)?;
+                current_path_str.clone()
+            }
+        };
+        if !same_next {
+            fs::append_items(
+                &ident.dir.join(NEXT),
+                &[Item::Authority(next_authority.clone())],
+            )?;
+        }
+        fs::append_items(&ident.dir.join(LOG), &[Item::Event(event.clone())])?;
+        Ok(key_shown)
+    })();
+    let key_shown = match committed {
+        Ok(shown) => shown,
+        Err(e) => {
+            if matches!(key_out, KeyOut::Replace) {
+                // Never committed to: see finish_key_install.
+                let _ = std::fs::remove_file(&staged);
+            }
+            if written.is_empty() {
+                return Err(e);
+            }
+            let message = match e {
+                Error::Msg(m) => m,
+                other => format!("{other:?}"),
+            };
+            let files: Vec<String> = written.iter().map(|p| format!("'{p}'")).collect();
+            return err(format!(
+                "{message}\nThe rotation did not happen. The new key{} written to {} commit{} to \
+                 nothing: delete {}, and keep the next key you gave to --next-key, which \
+                 still rotates this identity",
+                if written.len() == 1 { "" } else { "s" },
+                files.join(" and "),
+                if written.len() == 1 { "s" } else { "" },
+                if written.len() == 1 { "it" } else { "them" },
+            ));
         }
     };
-    let staged = ident.dir.join(format!("{CURRENT_KEY}.new"));
-    if matches!(key_out, KeyOut::Replace) {
-        fs::write_secret(&staged.display().to_string(), &current_text)?;
-    }
-    if !same_next {
-        fs::append_items(
-            &ident.dir.join(NEXT),
-            &[Item::Authority(next_authority.clone())],
-        )?;
-    }
-    fs::append_items(&ident.dir.join(LOG), &[Item::Event(event.clone())])?;
     if matches!(key_out, KeyOut::Replace) {
         std::fs::rename(&staged, &current_path)
             .context(|| format!("replacing {current_path_str}"))?;

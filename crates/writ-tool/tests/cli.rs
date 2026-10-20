@@ -2360,3 +2360,21 @@ fn revoke_target_file_must_match_the_prefix() {
     );
     let _ = to_bob;
 }
+
+#[test]
+fn key_counts_are_bounded() {
+    let s = Sandbox::new("nextn");
+    let err = s.fails(
+        &[
+            "init",
+            "me",
+            "--next-out",
+            "n.key",
+            "--next-n",
+            "99999999999",
+        ],
+        2,
+    );
+    assert!(err.contains("at most 16"), "{err}");
+    assert!(!s.path("me").exists());
+}
