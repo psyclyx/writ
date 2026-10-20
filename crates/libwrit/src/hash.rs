@@ -225,6 +225,7 @@ mod tests {
             label::AUTHORITY,
             label::STATEMENT,
             label::SIGNATURE,
+            label::RECORD,
             label::DATA,
             label::LEAF_ID,
             label::ROOT_SUITE,

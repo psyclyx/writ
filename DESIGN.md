@@ -826,6 +826,36 @@ Details in §18. In short:
   `max_chain` 16, `max_name_depth` 8, `max_statements` 10000, max-age at
   least 1 h and 7 days by default, at most 16 tags per grant and 4 URLs.
 
+### Resolved after the pre-release review (2026-10-19)
+
+- **The clock-floor witness is not bounded by `max_signatures`.** It shared
+  a query's budget, scanning the root's statements in input order, so a
+  bundle holding 2000 junk statements that named the root as issuer used it
+  up before the real newest statement was checked, and the floor stayed
+  put: the one limit that ran out in the permissive direction. Now it costs
+  at most one check per root statement in the material, newest first (SPEC
+  §12), like building a log.
+- **Descriptor paths are exact.** `/dev/fd/N` and `/proc/self/fd/N` were
+  recognised by prefix, so `/dev/fd/../../../path` was opened for appending
+  without `O_EXCL`, mode 0600, or the "not inside DIR" check, and could put
+  a plaintext key into an existing file, the identity's own log included.
+  Only `/dev/fd/N` with N in plain digits is a descriptor; `/dev/stdin`,
+  `/dev/fd/0` and `/proc/self/fd/0` count as standard input, so they can't
+  be read twice either.
+- **The empty tag is spelled `()`.** An empty string parsed as the tag that
+  covers everything, so `writ grant … "$TAG"` with an unset variable granted
+  everything. An empty string is not a tag.
+- **In the readable form, every atom needs a delimiter**, quoted and hex
+  atoms included, so `("ssh""nas")` is an error rather than two words; and
+  characters that look like a space (no-break space and the other Unicode
+  spaces) print as hex, so two atoms can't display alike.
+- **`sign_pieces` in writ-slhdsa is `#[inline(never)]`**: the stack scrub
+  wipes the frames below `sign`'s, so the WOTS+ and FORS secrets must stay
+  in a frame of their own, whatever the inliner decides.
+- Key derivation destructures fixed-size arrays, with no zero fallback; the
+  `--fetch` budget truncates a batch instead of dropping it; `--fetch`
+  documents that libcurl honours the proxy environment variables.
+
 ## 17. Open questions
 
 None blocking. The resource limits and the default skew were set on 2026-10-19

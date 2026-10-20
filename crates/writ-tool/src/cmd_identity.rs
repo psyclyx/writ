@@ -572,7 +572,7 @@ fn current_keys(parsed: &Parsed) -> Result<(Seed, Authority)> {
 /// more than half of `total`.
 fn threshold(parsed: &Parsed, name: &str, total: usize) -> Result<usize> {
     let k = count(parsed, name, total / 2 + 1)?;
-    if total > 0 && 2 * k <= total {
+    if total > 0 && k <= total / 2 {
         return err(format!(
             "--{name} {k} is too low for {total} keys: it must be more than half, so at \
              least {}. Otherwise two separate groups of key holders could each act, and \

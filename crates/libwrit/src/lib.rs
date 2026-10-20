@@ -6,7 +6,7 @@
 //! - Ask a [`Verifier`] for your roots: [`Verifier::check`],
 //!   [`Verifier::resolve`], [`Verifier::verify`]. Answers come with a
 //!   [`Proof`]; denials with a [`Denial`] that says why.
-//! - Issue with [`incept`], [`rotate`], [`issue`], [`sign_data`].
+//! - Issue with [`incept`], [`rotate`], [`issue()`], [`sign_data`].
 
 pub mod bech32;
 pub mod channel;

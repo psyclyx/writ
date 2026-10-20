@@ -526,25 +526,31 @@ impl<'a> Verifier<'a> {
     /// The newest `issued` on a statement by one of the roots whose
     /// signatures (or keep endorsement) verify — a witness for the clock
     /// [`Floor`](crate::Floor). Expiry and revocation don't matter here.
+    ///
+    /// Unlike a query, this is not bounded by [`Policy::max_signatures`]:
+    /// running out would leave the floor where it was, which is the
+    /// permissive direction, and junk claiming to be from a root could
+    /// arrange that. Like building a log, the work is one signature check
+    /// per candidate, linear in the material (SPEC §11). Candidates are
+    /// tried newest first, so the usual cost is one check.
     pub fn time_witness(&self) -> Option<Time> {
         let mut q = Query::new(self, Time::MAX);
-        let mut best = None;
-        for root in self.roots {
-            for h in self.material.issued_by(root) {
-                let Some(st) = self.material.statement(h) else {
-                    continue;
-                };
-                if best.is_some_and(|b| st.body.issued <= b) {
-                    continue;
-                }
-                if let Issuer::Identity { id, event } = &st.body.issuer
-                    && q.signed_by_identity(st, h, *id, *event, None).is_ok()
-                {
-                    best = Some(st.body.issued);
-                }
+        let mut candidates: Vec<(&Hash, &Signed<Statement>)> = self
+            .roots
+            .iter()
+            .flat_map(|root| self.material.issued_by(root))
+            .filter_map(|h| Some((h, self.material.statement(h)?)))
+            .collect();
+        candidates.sort_by_key(|(_, st)| std::cmp::Reverse(st.body.issued));
+        for (h, st) in candidates {
+            q.signatures = 0;
+            if let Issuer::Identity { id, event } = &st.body.issuer
+                && q.signed_by_identity(st, h, *id, *event, None).is_ok()
+            {
+                return Some(st.body.issued);
             }
         }
-        best
+        None
     }
 
     /// Whether a statement is valid at `now`, and if not, why.

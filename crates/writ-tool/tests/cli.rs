@@ -963,6 +963,55 @@ fn secrets_are_never_steered() {
     assert!(!s.path("elsewhere").exists());
     s.fails(&["init", "me", "--next-out", "trap"], 2);
     assert!(!s.path("me").exists());
+    // Only `/dev/fd/N` itself is a descriptor: a path that merely starts
+    // that way gets the ordinary rules, so it can't reach an existing file.
+    std::fs::write(s.path("victim"), "existing\n").unwrap();
+    let victim = s.path("victim");
+    for prefix in ["/dev/fd/../../..", "/proc/self/fd/../../.."] {
+        let target = format!("{prefix}{}", victim.display());
+        let err = s.fails(&["keygen", "--out", &target], 2);
+        assert!(err.contains("never overwrites"), "{err}");
+    }
+    assert_eq!(s.read("victim"), "existing\n");
+    // Nor can such a path put a key inside an identity directory.
+    s.init("me");
+    let log = s.path("me/log.writ");
+    let before = s.read("me/log.writ");
+    let target = format!("/dev/fd/../../..{}", log.display());
+    let err = s.fails(&["init", "other", "--next-out", &target], 2);
+    assert!(err.contains("never overwrites"), "{err}");
+    assert_eq!(s.read("me/log.writ"), before);
+}
+
+#[test]
+fn standard_input_aliases_are_claimed_once() {
+    let s = Sandbox::new("stdin-alias");
+    s.init("me");
+    // The data and the key can't both be standard input, however it is
+    // spelled: the key would be signed as the data.
+    for key in ["-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"] {
+        let out = s.run_with(
+            &["sign", "-i", "me", "--context", "t/v1", "--key", key, "-"],
+            &std::fs::read(s.path("me/current.key")).unwrap(),
+        );
+        assert_eq!(out.status.code(), Some(2), "{key}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("read only once"), "{key}: {err}");
+    }
+}
+
+#[test]
+fn the_empty_tag_must_be_spelled_out() {
+    let s = Sandbox::new("empty-tag");
+    s.init("me");
+    let bob = s.init("bob");
+    // An unset shell variable must not grant everything.
+    let err = s.fails(&["grant", "-i", "me", &bob, ""], 2);
+    assert!(err.contains("is not a tag"), "{err}");
+    assert!(
+        s.ok(&["grant", "-i", "me", &bob, "()"])
+            .contains("BEGIN WRIT")
+    );
 }
 
 #[test]

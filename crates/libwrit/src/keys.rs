@@ -286,11 +286,11 @@ impl Seed {
 
     /// The root-suite signer derived from this seed.
     pub fn root(&self) -> RootSigner {
-        let mut okm = Zeroizing::new([0u8; 48]);
-        shake256_labelled(label::KEYGEN_ROOT, self.0.as_ref(), okm.as_mut());
-        let (sk_seed, rest) = okm.split_first_chunk::<16>().unwrap_or((&[0; 16], &[]));
-        let (sk_prf, rest) = rest.split_first_chunk::<16>().unwrap_or((&[0; 16], &[]));
-        let pk_seed = rest.first_chunk::<16>().unwrap_or(&[0; 16]);
+        let mut okm = Zeroizing::new([[0u8; 16]; 3]);
+        shake256_labelled(label::KEYGEN_ROOT, self.0.as_ref(), okm.as_flattened_mut());
+        // Fixed-size destructuring: there is no fallback that could derive a
+        // key from the wrong bytes.
+        let [sk_seed, sk_prf, pk_seed] = &*okm;
         let sk = writ_slhdsa::keygen_internal(sk_seed, sk_prf, pk_seed);
         let public = RootKey(sk.verifying_key().to_bytes());
         RootSigner { sk, public }
@@ -364,13 +364,12 @@ struct LeafKeys {
 
 impl LeafKeys {
     fn derive(seed: &[u8; 32]) -> LeafKeys {
-        let mut okm = Zeroizing::new([0u8; 64]);
-        shake256_labelled(label::KEYGEN_LEAF, seed, okm.as_mut());
-        let (xi, ed) = okm.split_first_chunk::<32>().unwrap_or((&[0; 32], &[]));
-        let ed: [u8; 32] = ed.first_chunk::<32>().copied().unwrap_or([0; 32]);
+        let mut okm = Zeroizing::new([[0u8; 32]; 2]);
+        shake256_labelled(label::KEYGEN_LEAF, seed, okm.as_flattened_mut());
+        let [xi, ed] = &*okm;
         LeafKeys {
             mldsa: libcrux_ml_dsa::ml_dsa_65::generate_key_pair(*xi),
-            ed25519: Zeroizing::new(ed),
+            ed25519: Zeroizing::new(*ed),
         }
     }
 

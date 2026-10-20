@@ -66,7 +66,7 @@ pub fn hash_input(path: &str, purpose: &'static str) -> Result<libwrit::Hash> {
             }
         }
     };
-    if path == "-" {
+    if is_stdin(path) {
         claim_stdin(purpose)?;
         feed(&mut std::io::stdin().lock()).context(|| "reading stdin".into())?;
     } else {
@@ -90,7 +90,7 @@ fn read_limited(path: &str, purpose: &'static str, limit: usize) -> Result<Vec<u
     // and leaves copies of the key behind.
     let mut buf = Vec::with_capacity(MAX_KEY_FILE + 1);
     let take = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
-    if path == "-" {
+    if is_stdin(path) {
         claim_stdin(purpose)?;
         std::io::stdin()
             .lock()
@@ -103,7 +103,11 @@ fn read_limited(path: &str, purpose: &'static str, limit: usize) -> Result<Vec<u
             .context(|| format!("reading {path}"))?;
     }
     if buf.len() > limit {
-        let name = if path == "-" { "standard input" } else { path };
+        let name = if is_stdin(path) {
+            "standard input"
+        } else {
+            path
+        };
         let size = if limit >= 1 << 20 {
             format!("{} MiB", limit >> 20)
         } else {
@@ -146,9 +150,30 @@ pub fn read_seeds(path: &str) -> Result<Vec<Seed>> {
     Ok(seeds)
 }
 
+/// The descriptor number `path` names, if it is exactly `/dev/fd/N` or
+/// `/proc/self/fd/N`: decimal digits, no leading zero, nothing after.
+/// Anything else under those directories, such as `/dev/fd/../x`, is an
+/// ordinary path and gets the ordinary rules (never overwrite, mode 0600,
+/// not inside an identity directory).
+fn descriptor_number(path: &str) -> Option<u32> {
+    let n = path
+        .strip_prefix("/dev/fd/")
+        .or_else(|| path.strip_prefix("/proc/self/fd/"))?;
+    let canonical = n == "0" || (!n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit()));
+    if !canonical || n.len() > 9 {
+        return None;
+    }
+    n.parse().ok()
+}
+
+/// Whether `path` names standard input.
+pub fn is_stdin(path: &str) -> bool {
+    path == "-" || path == "/dev/stdin" || descriptor_number(path) == Some(0)
+}
+
 /// Whether `path` names standard output.
 pub fn is_stdout(path: &str) -> bool {
-    matches!(path, "-" | "/dev/stdout" | "/dev/fd/1" | "/proc/self/fd/1")
+    path == "-" || path == "/dev/stdout" || descriptor_number(path) == Some(1)
 }
 
 /// Whether two output paths name the same destination.
@@ -159,7 +184,7 @@ pub fn same_output(a: &str, b: &str) -> bool {
 /// Whether `path` names a descriptor the caller handed us, other than
 /// stdout (`/dev/fd/N`, e.g. from process substitution).
 pub fn is_descriptor(path: &str) -> bool {
-    path.starts_with("/dev/fd/") || path.starts_with("/proc/self/fd/") || path == "/dev/stderr"
+    path == "/dev/stderr" || descriptor_number(path).is_some_and(|n| n >= 2)
 }
 
 /// Fails early, before any signing, if `write_secret(path, …)` would refuse.
@@ -416,6 +441,37 @@ pub fn emit(item: &Item, recorded_in: Option<&Path>) -> Result<()> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptor_paths_are_exact() {
+        for p in ["/dev/fd/3", "/proc/self/fd/3", "/dev/fd/10", "/dev/stderr"] {
+            assert!(is_descriptor(p), "{p}");
+        }
+        for p in [
+            "/dev/fd/../../../etc/passwd",
+            "/proc/self/fd/../x",
+            "/dev/fd/",
+            "/dev/fd/03",
+            "/dev/fd/3x",
+            "/dev/fd/-1",
+            "/dev/fd/3/",
+            "/dev/fd/1234567890",
+            "/dev/fd/0",
+            "/dev/fd/1",
+            "/dev/fdx/3",
+        ] {
+            assert!(!is_descriptor(p), "{p}");
+        }
+        for p in ["-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"] {
+            assert!(is_stdin(p), "{p}");
+            assert!(!is_stdout(p) || p == "-", "{p}");
+        }
+        for p in ["-", "/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"] {
+            assert!(is_stdout(p), "{p}");
+        }
+        assert!(!is_stdin("/dev/fd/00"));
+        assert!(!is_stdout("/dev/fd/01"));
+    }
 
     #[test]
     fn replace_never_reuses_a_planted_temporary_file() {

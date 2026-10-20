@@ -972,6 +972,32 @@ fn time_witness() {
     assert_eq!(v.time_witness(), Some(70));
 }
 
+/// Junk claiming to be from a root must not stop the floor from rising: the
+/// witness is not bounded by `max_signatures`, and the newest candidate is
+/// tried first.
+#[test]
+fn time_witness_is_not_starved_by_junk() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    let real = a.say(name("x", Subject::Id(b.id)), 70, None);
+    // Junk newer than the real statement, so it is tried first.
+    let mut items: Vec<Item> = (0..30u8)
+        .map(|i| {
+            let mut junk = a.say(name("j", Subject::Id(b.id)), 100 + u64::from(i), None);
+            junk.sigs = vec![Sig {
+                index: 0,
+                bytes: vec![i; crate::keys::ROOT_SIGNATURE_SIZE],
+            }];
+            st(junk)
+        })
+        .collect();
+    items.push(st(real));
+    let mut w = World::new(&a, items);
+    w.policy.max_signatures = 10;
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    assert_eq!(v.time_witness(), Some(70));
+}
+
 #[test]
 fn missing_root_log() {
     let a = Ident::new(1);

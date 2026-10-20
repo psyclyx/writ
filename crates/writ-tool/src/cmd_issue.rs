@@ -449,7 +449,7 @@ pub fn sign(parsed: &Parsed) -> Result<()> {
         parsed,
         format!(
             "signed {} as {by} in context {} [{}]",
-            if file == "-" { "stdin" } else { file },
+            if fs::is_stdin(file) { "stdin" } else { file },
             context,
             display::short(&s.body.hash())
         ),

@@ -139,7 +139,8 @@ const QUIET_QUERY: Opt = flag("quiet", "print nothing; only set the exit status"
 const FETCH: Opt = flag(
     "fetch",
     "when an answer needs a revocation record that is missing or too old, get \
-     it from the URLs its identity publishes, and ask again",
+     it from the URLs its identity publishes, and ask again; libcurl honours \
+     the http_proxy, https_proxy and no_proxy environment variables",
 );
 const REQUIRE_RECORDS: Opt = flag(
     "require-records",

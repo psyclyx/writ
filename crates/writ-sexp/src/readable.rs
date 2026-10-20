@@ -153,33 +153,41 @@ impl Parser<'_> {
                     }
                 }
             }
-            b'"' => self.quoted().map(Sexp::Atom),
+            b'"' => {
+                let atom = self.quoted()?;
+                self.delimiter()?;
+                Ok(Sexp::Atom(atom))
+            }
             b'#' => {
                 let body = self.delimited(b'#')?;
-                decode_hex(body)
-                    .map(Sexp::Atom)
-                    .ok_or(ReadableError::BadEncoding { at: start })
+                let atom = decode_hex(body).ok_or(ReadableError::BadEncoding { at: start })?;
+                self.delimiter()?;
+                Ok(Sexp::Atom(atom))
             }
             b'|' => {
                 let body = self.delimited(b'|')?;
-                base64::decode(body)
-                    .map(Sexp::Atom)
-                    .ok_or(ReadableError::BadEncoding { at: start })
+                let atom = base64::decode(body).ok_or(ReadableError::BadEncoding { at: start })?;
+                self.delimiter()?;
+                Ok(Sexp::Atom(atom))
             }
             b if is_token_byte(b) => {
                 while self.peek().is_some_and(is_token_byte) {
                     self.pos += 1;
                 }
                 let token = self.s.get(start..self.pos).unwrap_or_default();
-                // A token must be followed by a delimiter.
-                match self.peek() {
-                    None | Some(b' ' | b'\t' | b'\r' | b'\n' | b'(' | b')') => {
-                        Ok(Sexp::atom(token))
-                    }
-                    Some(_) => Err(ReadableError::Unexpected { at: self.pos }),
-                }
+                self.delimiter()?;
+                Ok(Sexp::atom(token))
             }
             _ => Err(ReadableError::Unexpected { at: start }),
+        }
+    }
+
+    /// Every atom must be followed by whitespace, a parenthesis or the end
+    /// of input, so `("a""b")` is an error rather than two atoms.
+    fn delimiter(&self) -> Result<(), ReadableError> {
+        match self.peek() {
+            None | Some(b' ' | b'\t' | b'\r' | b'\n' | b'(' | b')') => Ok(()),
+            Some(_) => Err(ReadableError::Unexpected { at: self.pos }),
         }
     }
 
@@ -277,13 +285,15 @@ fn write_sexp(out: &mut String, sexp: &Sexp) {
     }
 }
 
-/// Characters that print as nothing, or that change how the text around
-/// them is laid out (direction overrides, line separators): a quoted atom
-/// holding one could display as something else, so it prints as hex.
+/// Characters that print as nothing, that look like an ordinary space, or
+/// that change how the text around them is laid out (direction overrides,
+/// line separators): a quoted atom holding one could display as another
+/// atom, so it prints as hex.
 fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{ad}'
+    (c.is_whitespace() && !matches!(c, ' ' | '\n' | '\t' | '\r'))
+        || matches!(
+            c,
+            '\u{ad}'
             | '\u{34f}'
             | '\u{61c}'
             | '\u{115f}'..='\u{1160}'
@@ -297,9 +307,11 @@ fn is_invisible(c: char) -> bool {
             | '\u{feff}'
             | '\u{ffa0}'
             | '\u{fff0}'..='\u{fffb}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
             | '\u{1d173}'..='\u{1d17a}'
             | '\u{e0000}'..='\u{e0fff}'
-    )
+        )
 }
 
 fn write_atom(out: &mut String, atom: &[u8]) {
@@ -363,6 +375,41 @@ mod tests {
         );
         assert_eq!(parse("writ1abc"), Ok(a("writ1abc")));
         assert_eq!(parse("##"), Ok(a("")));
+    }
+
+    #[test]
+    fn every_atom_needs_a_delimiter() {
+        // Two atoms run together are an error, not a guess at two atoms.
+        for s in [
+            r#"("a""b")"#,
+            "(#00#abc)",
+            "(|AA==|x)",
+            "(a\"b\")",
+            r#""a"b"#,
+        ] {
+            assert!(
+                matches!(parse(s), Err(ReadableError::Unexpected { .. })),
+                "{s}"
+            );
+            assert!(parse_many(s).is_err(), "{s}");
+        }
+        assert_eq!(parse(r#"("a" "b")"#), Ok(Sexp::list(vec![a("a"), a("b")])));
+        assert_eq!(
+            parse("(#00#(x))"),
+            Ok(Sexp::list(vec![Sexp::atom([0]), Sexp::list(vec![a("x")])]))
+        );
+    }
+
+    #[test]
+    fn space_look_alikes_print_as_hex() {
+        // An atom with a no-break space must not display like one with a
+        // space.
+        assert_eq!(Sexp::atom("a b").to_readable(), "\"a b\"");
+        for s in ["a\u{a0}b", "a\u{2003}b", "a\u{3000}b", "a\u{1680}b"] {
+            let shown = Sexp::atom(s).to_readable();
+            assert!(shown.starts_with('#'), "{s:?} shows as {shown}");
+            assert_eq!(parse(&shown), Ok(Sexp::atom(s)));
+        }
     }
 
     #[test]

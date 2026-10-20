@@ -254,6 +254,10 @@ fn fors_adrs(idx_tree: u64, idx_leaf: u32) -> Adrs {
     adrs
 }
 
+/// Never inlined: `scrub_stack` wipes the frames *below* the caller's, so
+/// the WOTS+ and FORS secrets this function and its callees leave on the
+/// stack must live in a frame of their own, not in `sign`'s.
+#[inline(never)]
 fn sign_pieces(sk: &SigningKey, msg: &Pieces<'_>, addrnd: &Node) -> Signature {
     let h = Hasher::new(&sk.pk_seed);
     let mut sig = Signature::zero();

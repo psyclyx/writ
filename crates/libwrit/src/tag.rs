@@ -74,8 +74,14 @@ impl Tag {
     }
 
     /// Parses what a human types: `(zuko home)`, `zuko home`, or `()`.
+    ///
+    /// The tag that covers everything must be spelled `()`: an empty string
+    /// is not a tag, so an unset shell variable can't grant everything.
     pub fn parse(text: &str) -> Option<Tag> {
         let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
         let sexp = if trimmed.starts_with('(') {
             writ_sexp::readable::parse(trimmed).ok()?
         } else {
@@ -233,7 +239,8 @@ mod tests {
         assert_eq!(t("(zuko a)").intersect(&t("(zuko b)")), None);
         assert_eq!(t("zuko home"), t("(zuko home)"));
         assert_eq!(Tag::parse("()"), Some(Tag::everything()));
-        assert_eq!(Tag::parse(""), Some(Tag::everything()));
+        assert_eq!(Tag::parse(""), None);
+        assert_eq!(Tag::parse("  "), None);
         assert_eq!(Tag::parse("(a (b))"), None);
         assert_eq!(Tag::parse("(\"\")"), None);
         assert_eq!(t("(ssh \"my host\")").to_string(), "(ssh \"my host\")");

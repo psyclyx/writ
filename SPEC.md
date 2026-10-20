@@ -465,6 +465,12 @@ floor (libwrit: 2026-10-11T00:00:00Z). The time used is
 Moving the clock back cannot go below the floor; moving it forward only
 expires things early.
 
+Finding the floor is not bounded by `max_signatures` (§11): running out would
+leave the floor where it was, which is the permissive direction, and junk
+claiming to be from a root could arrange it. Like building a log, it costs at
+most one signature check per statement by a root in the material; candidates
+are tried newest first.
+
 ## 13. Files (informative)
 
 The `writ` tool keeps an identity in a directory:

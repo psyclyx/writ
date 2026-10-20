@@ -1,5 +1,6 @@
 [package]
 name = "writ-sexp"
+description = "Canonical S-expressions (csexp), a readable form, and strict armor, for writ"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

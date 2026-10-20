@@ -64,7 +64,7 @@ pub fn get(url: &str) -> Result<Vec<u8>, String> {
                 ));
                 verify = false;
             }
-            Err(e) if e.is_write_error() => {
+            Err(e) if e.is_write_error() || e.is_filesize_exceeded() => {
                 return Err(format!("larger than {} MiB", MAX_SIZE >> 20));
             }
             Err(e) => return Err(e.description().to_owned()),

@@ -2,19 +2,21 @@
 
 ## SLH-DSA-SHAKE-128s (`writ-slhdsa`)
 
-Measured 2026-10-11.
+Measured 2026-10-19.
 
 | operation                  | writ-slhdsa | RustCrypto `slh-dsa` 0.2.0-rc.5 |
 | -------------------------- | ----------: | ------------------------------: |
-| keygen (`keygen_internal`) |     79.1 ms |                        162.2 ms |
-| sign (pure, hedged)        |    601.8 ms |                          1.24 s |
-| `sign_internal`            |    601.2 ms |                          1.24 s |
-| verify (pure)              |     0.56 ms |                         1.15 ms |
+| keygen (`keygen_internal`) |     81.8 ms |                        166.1 ms |
+| sign (pure, hedged)        |    620.7 ms |                          1.26 s |
+| `sign_internal`            |    620.0 ms |                          1.27 s |
+| verify (pure)              |     0.58 ms |                         1.18 ms |
 
-`sign` includes writ's self-verification of the signature before release
-(< 0.1% of the cost); RustCrypto's `try_sign_with_context` does not
-self-verify. The `sign_internal` row was measured before it also
-self-verified (2026-10-16); add about 0.56 ms. Both produce byte-identical signatures (checked by the bench).
+`sign` and `sign_internal` include writ's self-verification of the signature
+before release (< 0.1% of the cost) and the stack scrub; RustCrypto's
+`try_sign_with_context` does neither. Both produce byte-identical signatures
+(checked by the bench). The 2026-10-11 measurement was about 3% faster
+(601.8 ms sign); the difference is within what the machine's state accounts
+for.
 
 **Method.** `cargo run --release -p writ-slhdsa --example bench 21`
 (`crates/writ-slhdsa/examples/bench.rs`). Default release profile

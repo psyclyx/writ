@@ -76,7 +76,11 @@ impl Query {
         }
         for src in &sources {
             let bytes = fs::read_input(src, "the bundle")?;
-            let name = if src == "-" { "stdin" } else { src.as_str() };
+            let name = if fs::is_stdin(src) {
+                "stdin"
+            } else {
+                src.as_str()
+            };
             material
                 .add_bundle(&bytes)
                 .map_err(|e| Error::Msg(format!("{name}: {e}")))?;
@@ -213,21 +217,28 @@ impl Query {
             if !self.fetch {
                 return answer;
             }
-            let wanted: Vec<Id> = self
+            let mut wanted: Vec<Id> = self
                 .stale_issuers(d, signer.as_ref())
                 .into_iter()
-                .filter(|id| tried.insert(*id))
+                .filter(|id| !tried.contains(id))
                 .collect();
             if wanted.is_empty() {
                 return answer;
             }
-            if tried.len() > MAX_FETCHES {
+            // Fetch up to the budget; what is left over is reported, not
+            // silently skipped.
+            let room = MAX_FETCHES.saturating_sub(tried.len());
+            if wanted.len() > room {
+                wanted.truncate(room);
                 crate::warn(format!(
                     "stopped fetching after records for {MAX_FETCHES} identities"
                 ));
-                return answer;
+                if wanted.is_empty() {
+                    return answer;
+                }
             }
             for id in wanted {
+                tried.insert(id);
                 self.fetch_record(id);
             }
         }
@@ -503,7 +514,11 @@ pub fn verify(parsed: &Parsed) -> Result<()> {
         }
     };
     let hash = fs::hash_input(file, "the signed data")?;
-    let mut q = Query::setup(parsed, &VERIFY, file != "-" && sig_path != "-")?;
+    let mut q = Query::setup(
+        parsed,
+        &VERIFY,
+        !fs::is_stdin(file) && !fs::is_stdin(sig_path),
+    )?;
     let signer = match &sig.body.signer {
         libwrit::Issuer::Identity { id, .. } => display::id(id),
         libwrit::Issuer::Leaf(k) => format!("leaf:{}", k.fingerprint()),
@@ -554,7 +569,7 @@ pub fn show(parsed: &Parsed) -> Result<()> {
     let mut out = String::new();
     for f in &files {
         let bytes = fs::read_input(f, "a bundle")?;
-        let name = if f == "-" { "stdin" } else { f.as_str() };
+        let name = if fs::is_stdin(f) { "stdin" } else { f.as_str() };
         let items = Item::decode_bundle(&bytes).map_err(|e| Error::Msg(format!("{name}: {e}")))?;
         for item in &items {
             if !out.is_empty() {

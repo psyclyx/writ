@@ -41,7 +41,7 @@ accept grants to leaf keys only if they last at most DUR (at most 24h)
 also print the statements behind each answer
 .TP
 \fB\-\-fetch\fR
-when an answer needs a revocation record that is missing or too old, get it from the URLs its identity publishes, and ask again
+when an answer needs a revocation record that is missing or too old, get it from the URLs its identity publishes, and ask again; libcurl honours the http_proxy, https_proxy and no_proxy environment variables
 .TP
 \fB\-\-require\-records\fR
 refuse statements by identities that publish no revocation records, except roots given as directories
