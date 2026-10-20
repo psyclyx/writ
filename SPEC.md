@@ -160,8 +160,11 @@ sig = ML-DSA-65.Sign(sk_ml, M', ctx = "writ/v1/leaf/mldsa65-ed25519")   ; 3309 b
 - Ed25519 verification MUST be strict: the cofactorless equation
   `[S]B = R + [k]A`; A, R and S canonically encoded (y < p; x = 0 only with
   the sign bit clear; S < L); A and R not of small order. The edge cases of
-  `ed25519-speccheck` (vectors/ed25519-speccheck) pin this: only case 3
-  verifies.
+  `ed25519-speccheck` (vectors/ed25519-speccheck) pin the small-order and
+  cofactor rules: only case 3 verifies. They hold no point with `y ≥ p`
+  (their non-canonical points encode `p − 1` with the sign bit set, which
+  is also of small order), so libwrit's own tests pin that rejection for
+  A and R.
 - Signers SHOULD verify the composite signature before releasing it.
 - Key derivation from a 32-byte seed `s`:
   `SHAKE256(msg("writ/v1/keygen/mldsa65-ed25519", s), 64)` is split into

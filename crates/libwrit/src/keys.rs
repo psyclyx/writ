@@ -488,6 +488,38 @@ mod tests {
         }
     }
 
+    /// Non-canonical encodings of A and R (y ≥ p) are rejected. No speccheck
+    /// case has one: their "non-canonical" points encode p − 1 with the sign
+    /// bit set, which the small-order check catches anyway. These pin the
+    /// rejection to the imported code, so a dependency bump can't lose it.
+    #[test]
+    fn ed25519_rejects_noncanonical_y() {
+        let sk = [7u8; 32];
+        let mut pk = [0u8; 32];
+        libcrux_ed25519::secret_to_public(&mut pk, &sk);
+        let msg = b"writ";
+        let sig = libcrux_ed25519::sign(msg, &sk).unwrap_or([0; 64]);
+        assert!(ed25519_verify_strict(&pk, msg, &sig));
+        // p = 2^255 − 19 and p + 1, little-endian.
+        let mut p = [0xffu8; 32];
+        *p.first_mut().unwrap() = 0xed;
+        *p.last_mut().unwrap() = 0x7f;
+        let mut p1 = p;
+        *p1.first_mut().unwrap() = 0xee;
+        for enc in [p, p1] {
+            for sign in [0u8, 0x80] {
+                let mut bad = enc;
+                *bad.last_mut().unwrap() |= sign;
+                assert!(!has_small_order(&bad));
+                let hex = crate::hash::hex(&bad);
+                assert!(!ed25519_verify_strict(&bad, msg, &sig), "A = {hex}");
+                let mut forged = sig;
+                forged.iter_mut().zip(bad).for_each(|(f, b)| *f = b);
+                assert!(!ed25519_verify_strict(&pk, msg, &forged), "R = {hex}");
+            }
+        }
+    }
+
     /// RFC 8032 §7.1 test 1 and 2: plain Ed25519 still works.
     #[test]
     fn ed25519_rfc8032() {
