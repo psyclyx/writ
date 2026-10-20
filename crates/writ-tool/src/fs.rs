@@ -176,9 +176,27 @@ pub fn is_stdout(path: &str) -> bool {
     path == "-" || path == "/dev/stdout" || descriptor_number(path) == Some(1)
 }
 
-/// Whether two output paths name the same destination.
+/// The descriptor an output path names, by number or by one of its names:
+/// `-`, `/dev/stdout` and `/dev/fd/1` are all descriptor 1; `/dev/fd/3`
+/// and `/proc/self/fd/3` are both 3.
+fn output_descriptor(path: &str) -> Option<u32> {
+    if is_stdout(path) {
+        Some(1)
+    } else if path == "/dev/stderr" {
+        Some(2)
+    } else {
+        descriptor_number(path)
+    }
+}
+
+/// Whether two output paths name the same destination, so that two secrets
+/// meant for different places can't end up in one.
 pub fn same_output(a: &str, b: &str) -> bool {
-    a == b || (is_stdout(a) && is_stdout(b))
+    a == b
+        || matches!(
+            (output_descriptor(a), output_descriptor(b)),
+            (Some(x), Some(y)) if x == y
+        )
 }
 
 /// Whether `path` names a descriptor the caller handed us, other than
@@ -461,6 +479,30 @@ pub fn emit(item: &Item, recorded_in: Option<&Path>) -> Result<()> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Two spellings of one descriptor are one output: a cold key and a
+    /// warm key must never land in the same pipe.
+    #[test]
+    fn same_output_sees_through_descriptor_spellings() {
+        for (a, b) in [
+            ("-", "/dev/stdout"),
+            ("-", "/dev/fd/1"),
+            ("/dev/fd/3", "/proc/self/fd/3"),
+            ("/dev/stderr", "/dev/fd/2"),
+            ("x.key", "x.key"),
+        ] {
+            assert!(same_output(a, b), "{a} {b}");
+            assert!(same_output(b, a), "{b} {a}");
+        }
+        for (a, b) in [
+            ("/dev/fd/3", "/dev/fd/4"),
+            ("-", "/dev/fd/3"),
+            ("x.key", "y.key"),
+            ("x.key", "./x.key"),
+        ] {
+            assert!(!same_output(a, b), "{a} {b}");
+        }
+    }
 
     #[test]
     fn descriptor_paths_are_exact() {

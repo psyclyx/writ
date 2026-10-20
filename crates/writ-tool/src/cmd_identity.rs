@@ -349,6 +349,18 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
     } else {
         (next_seeds, next_authority) = new_next(parsed)?;
     }
+    // Replacing the current key renames over DIR/current.key. Through a
+    // symbolic link that would replace the link and leave the retired key
+    // at its target, contradicting what rotate then reports.
+    if parsed.value("key-out").is_none()
+        && std::fs::symlink_metadata(&current_path).is_ok_and(|m| m.file_type().is_symlink())
+    {
+        return err(format!(
+            "{current_path_str} is a symbolic link; rotate replaces that file with the new \
+             current key and retires the old one, so make it a regular file, or give \
+             --key-out PATH for the new key"
+        ));
+    }
     let key_out = match parsed.value("key-out") {
         Some(p) => {
             if next_out.is_some_and(|n| fs::same_output(n, p)) {

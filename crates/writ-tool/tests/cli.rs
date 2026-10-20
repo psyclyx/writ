@@ -2420,3 +2420,41 @@ fn outputs_never_land_in_the_identity_directory() {
     // Nothing was issued either.
     assert!(s.read("me/issued.writ").is_empty());
 }
+
+/// rotate replaces DIR/current.key by renaming over it; through a symbolic
+/// link that would leave the retired key at the link's target.
+#[test]
+fn rotate_refuses_a_symlinked_current_key() {
+    let s = Sandbox::new("symlinkkey");
+    s.init("me");
+    std::fs::rename(s.path("me/current.key"), s.path("real.key")).unwrap();
+    std::os::unix::fs::symlink(s.path("real.key"), s.path("me/current.key")).unwrap();
+    let err = s.fails(
+        &[
+            "rotate",
+            "-i",
+            "me",
+            "--next-key",
+            "me-next.key",
+            "--next-out",
+            "n2.key",
+        ],
+        2,
+    );
+    assert!(err.contains("symbolic link"), "{err}");
+    assert!(s.path("real.key").is_file());
+    // With --key-out the file is left alone.
+    let (code, _, err) = s.run(&[
+        "rotate",
+        "-i",
+        "me",
+        "--next-key",
+        "me-next.key",
+        "--next-out",
+        "n2.key",
+        "--key-out",
+        "c2.key",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(s.path("real.key").is_file());
+}
