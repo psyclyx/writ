@@ -173,8 +173,13 @@ pub fn grant(parsed: &Parsed) -> Result<()> {
     Ok(())
 }
 
-/// Finds the hash a revocation should target.
+/// Finds the hash a revocation should target: a file holding the item, or
+/// a prefix of its hash. A word that is both must agree with itself: a
+/// file planted in the working directory under a hash-like name must not
+/// turn `writ revoke -i me d4f737ff` into the revocation of something else.
 fn revocation_target(ident: &IdentityDir, text: &str) -> Result<(Hash, String)> {
+    let prefix = text.to_ascii_lowercase();
+    let hashlike = prefix.len() >= 6 && prefix.bytes().all(|b| b.is_ascii_hexdigit());
     let path = std::path::Path::new(text);
     if path.is_file() {
         let bytes = fs::read_input(text, "an item to revoke")?;
@@ -195,10 +200,16 @@ fn revocation_target(ident: &IdentityDir, text: &str) -> Result<(Hash, String)> 
                 ident.name()
             ));
         }
+        if hashlike && !hash.to_hex().starts_with(&prefix) {
+            return err(format!(
+                "{text} is a file in the current directory, but it holds {}, whose hash \
+                 does not start with {text}; give the file as ./{text}, or the hash in full",
+                display::short(&hash)
+            ));
+        }
         return Ok((hash, describe_item(item)));
     }
-    let prefix = text.to_ascii_lowercase();
-    if prefix.len() < 6 || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !hashlike {
         return err(format!(
             "{text:?}: expected a statement hash (at least 6 hex digits) or a file"
         ));

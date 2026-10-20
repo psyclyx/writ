@@ -2314,3 +2314,49 @@ fn records_never_endorse_other_identities_revocations() {
     // The planted items are left out of exports and of keep too.
     assert!(!s.ok(&["export", "-i", "pub", "--all"]).contains(&planted));
 }
+
+/// A file in the working directory named like a hash prefix cannot steer
+/// `writ revoke` to another statement.
+#[test]
+fn revoke_target_file_must_match_the_prefix() {
+    let s = Sandbox::new("revshadow");
+    let me = s.init("me");
+    let alice = s.init("alice");
+    let bob = s.init("bob");
+    let to_alice = s.ok(&["grant", "-i", "me", &alice, "(a)"]);
+    let to_bob = s.ok(&["grant", "-i", "me", &bob, "(b)"]);
+    let hashes: Vec<String> = s
+        .ok(&["show", "me/issued.writ"])
+        .lines()
+        .filter_map(|l| l.strip_prefix("grant ").map(str::to_owned))
+        .collect();
+    let prefix = &hashes[0][..8];
+    // A planted file under that name holds the other grant.
+    std::fs::write(s.path(prefix), &to_bob).unwrap();
+    let err = s.fails(&["revoke", "-i", "me", prefix], 2);
+    assert!(
+        err.contains("does not start with") && err.contains("./"),
+        "{err}"
+    );
+    // Named as a path, the file is what it is.
+    let (code, _, out) = s.run(&["revoke", "-i", "me", &format!("./{prefix}")]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(&hashes[1][..16]), "{out}");
+    // The intended statement is still live.
+    std::fs::write(
+        s.path("b.writ"),
+        to_alice + &s.ok(&["export", "-i", "me", "--all"]),
+    )
+    .unwrap();
+    assert_eq!(
+        s.run(&["check", "--as", &me, &alice, "(a)", "--in", "b.writ"])
+            .0,
+        0
+    );
+    assert_eq!(
+        s.run(&["check", "--as", &me, &bob, "(b)", "--in", "b.writ"])
+            .0,
+        1
+    );
+    let _ = to_bob;
+}
