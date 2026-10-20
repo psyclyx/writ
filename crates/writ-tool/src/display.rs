@@ -25,9 +25,13 @@ pub fn label(id: Id, name: &str) {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(trimmed);
+    // A label must not look like what it stands in for: an id in either
+    // case (bech32 is case-insensitive), or a leaf fingerprint.
+    let lower = name.to_ascii_lowercase();
     if name.is_empty()
         || name.starts_with('.')
-        || name.starts_with("writ1")
+        || lower.starts_with("writ1")
+        || lower.starts_with("leaf:")
         || !name.bytes().all(writ_sexp::readable::is_token_byte)
     {
         return;
