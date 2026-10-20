@@ -323,8 +323,12 @@ fn pure_prefix(ctx: &[u8]) -> Option<[u8; 2]> {
 /// FIPS 205 Alg. 22 `slh_sign` (pure, hedged), with context string `ctx`
 /// (at most 255 bytes). The caller supplies 16 bytes of fresh randomness.
 ///
-/// The signature is verified before it is returned, so a fault during
-/// signing cannot release a malformed signature.
+/// The signature is verified before it is returned, so a fault or bug that
+/// makes it invalid is caught. A fault that leaves it self-consistent (a
+/// wrong tree node off the signed leaf's path) is not: the verifier
+/// recomputes the same wrong root. Fresh `addrnd` is what bounds that case,
+/// by making a second signature on the same hypertree path unlikely
+/// (DESIGN.md §3.2).
 ///
 /// # Errors
 ///

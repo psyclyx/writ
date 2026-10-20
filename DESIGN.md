@@ -83,8 +83,13 @@ is a silent total compromise; stateful signatures don't belong in a human tool).
 
 - Every hashed or signed input begins with a domain-separation label of the form
   `writ/v1/<purpose>`.
-- SLH-DSA signing uses the hedged variant (fresh randomness) and **verifies its
-  own signature before releasing it** (fault-attack mitigation).
+- SLH-DSA signing uses the hedged variant (fresh randomness) and verifies its
+  own signature before releasing it. The check catches faults and bugs that
+  make the signature invalid. It does not catch a fault in a tree node off
+  the signed leaf's path: that yields a signature that is wrong but
+  self-consistent, which verifies (the grafting attack of Castelnovi,
+  Martinelli and Prest). Hedging is what bounds that case, by making a second
+  signature on the same hypertree path unlikely (§16, 2026-10-19).
 - Composite leaf signatures: the label binds the suite and role, so a component
   signature cannot be stripped out and presented as a single-algorithm one. ML-DSA
   uses the FIPS 204 context string.
