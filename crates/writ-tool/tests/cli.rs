@@ -2378,3 +2378,45 @@ fn key_counts_are_bounded() {
     assert!(err.contains("at most 16"), "{err}");
     assert!(!s.path("me").exists());
 }
+
+/// No output of leaf or sign may land among the identity's own files: the
+/// next command would take a key there for a stale rotation and remove it,
+/// or a record and replace it (review 2026-10-20).
+#[test]
+fn outputs_never_land_in_the_identity_directory() {
+    let s = Sandbox::new("insidedir");
+    s.init("me");
+    std::fs::write(s.path("d"), b"x").unwrap();
+    for args in [
+        vec!["leaf", "-i", "me", "(svc)", "--out", "me/current.key.new"],
+        vec!["leaf", "-i", "me", "(svc)", "--out", "me/record.writ"],
+        vec![
+            "leaf",
+            "-i",
+            "me",
+            "(svc)",
+            "--out",
+            "l.key",
+            "--grant-out",
+            "me/record.writ",
+        ],
+        vec![
+            "sign",
+            "-i",
+            "me",
+            "-c",
+            "c",
+            "d",
+            "--out",
+            "me/record.writ",
+        ],
+    ] {
+        let err = s.fails(&args, 2);
+        assert!(err.contains("inside"), "{args:?}: {err}");
+    }
+    for f in ["me/current.key.new", "me/record.writ", "l.key"] {
+        assert!(!s.path(f).exists(), "{f}");
+    }
+    // Nothing was issued either.
+    assert!(s.read("me/issued.writ").is_empty());
+}

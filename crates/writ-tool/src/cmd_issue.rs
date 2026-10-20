@@ -3,7 +3,7 @@
 use crate::args::{Parsed, Spec};
 use crate::cmd_identity::expiry;
 use crate::error::{Error, Result, err};
-use crate::ident::IdentityDir;
+use crate::ident::{self, IdentityDir};
 use crate::specs::{GRANT, LEAF, NAME, REVOKE, SIGN};
 use crate::{OsRng, display, fs, records, say, subject, wall_clock};
 use libwrit::keys::RootSigner;
@@ -304,13 +304,20 @@ pub fn leaf(parsed: &Parsed) -> Result<()> {
     let mut ident = identity(parsed, &LEAF)?;
     let tags = subject::tags(tag_texts)?;
     fs::check_secret_target(out)?;
+    // Neither output may land among the identity's own files, where the
+    // next command would take it for a stale rotation or a record and
+    // remove or replace it.
+    ident::check_key_path(&ident.dir, out, false)?;
     let grant_out = match parsed.value("grant-out") {
         Some(p) if fs::same_output(p, out) => {
             return err(
                 "--out and --grant-out must differ: one gets the secret key, the other the grant",
             );
         }
-        Some(p) => Some(fs::Output::open(p, false)?),
+        Some(p) => {
+            ident::check_key_path(&ident.dir, p, false)?;
+            Some(fs::Output::open(p, false)?)
+        }
         None => None,
     };
     let (issuer, issued) = base(&ident, wall_clock());
@@ -401,6 +408,10 @@ pub fn sign(parsed: &Parsed) -> Result<()> {
         SIGN.usage_error("--context CONTEXT is required, e.g. --context example/release/v1".into())
     })?;
     // Opened first: if it can't be created, nothing is signed or recorded.
+    // And never inside the identity's directory, among its own files.
+    if let (Some(p), Some(dir)) = (parsed.value("out"), parsed.value("identity")) {
+        ident::check_key_path(std::path::Path::new(dir), p, false)?;
+    }
     let out = parsed
         .value("out")
         .map(|p| fs::Output::open(p, false))
