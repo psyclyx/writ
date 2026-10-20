@@ -999,6 +999,38 @@ fn time_witness_is_not_starved_by_junk() {
     assert_eq!(v.time_witness(), Some(70));
 }
 
+/// Junk signatures merged onto one copy of the newest statement must not
+/// push it over the signature budget and out of the witness search either
+/// (the permissive direction, SPEC §12).
+#[test]
+fn time_witness_is_not_starved_by_merged_junk() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    let older = a.say(name("x", Subject::Id(b.id)), 10, None);
+    let newest = a.say(name("y", Subject::Id(b.id)), 70, None);
+    let newest_hash = newest.body.hash();
+    let mut items = vec![st(older)];
+    // The genuine copy, buried under 30 copies with different junk
+    // signatures; Material merges them all onto one body.
+    for i in 0..30u8 {
+        let mut junk = newest.clone();
+        junk.sigs = vec![Sig {
+            index: 0,
+            bytes: vec![i; crate::keys::ROOT_SIGNATURE_SIZE],
+        }];
+        items.push(st(junk));
+    }
+    items.push(st(newest));
+    let mut w = World::new(&a, items);
+    w.policy.max_signatures = 10;
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    // A query is budgeted: that statement is undecided, and nothing is
+    // cached for it.
+    assert_eq!(v.statement_status(&newest_hash, 100), Err(Reason::Limit));
+    // The witness is not.
+    assert_eq!(v.time_witness(), Some(70));
+}
+
 /// A clock set back (below a revocation's `issued`, above the floor) must
 /// not bring back what was revoked: rule 4 does not apply to revocations or
 /// to the revoking effect of records (SPEC §7, §5.6).

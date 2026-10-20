@@ -535,6 +535,9 @@ impl<'a> Verifier<'a> {
     /// tried newest first, so the usual cost is one check.
     pub fn time_witness(&self) -> Option<Time> {
         let mut q = Query::new(self, Time::MAX);
+        // Not budgeted: a candidate carrying thousands of merged junk
+        // signatures must be checked, not skipped (skipping is permissive).
+        q.budgeted = false;
         let mut candidates: Vec<(&Hash, &Signed<Statement>)> = self
             .roots
             .iter()
@@ -543,7 +546,6 @@ impl<'a> Verifier<'a> {
             .collect();
         candidates.sort_by_key(|(_, st)| std::cmp::Reverse(st.body.issued));
         for (h, st) in candidates {
-            q.signatures = 0;
             if let Issuer::Identity { id, event } = &st.body.issuer
                 && q.signed_by_identity(st, h, *id, *event, None).is_ok()
             {
@@ -598,6 +600,9 @@ struct Query<'v, 'a> {
     names: HashMap<(Id, Vec<u8>, usize), Rc<Members>>,
     steps: usize,
     signatures: usize,
+    /// Whether signature checks stop at [`Policy::max_signatures`]. Off only
+    /// for the clock-floor witness, where running out would be permissive.
+    budgeted: bool,
     rejected: Vec<Rejection>,
     evidence: Option<Box<Evidence>>,
     /// Per identity, its newest valid record, if any: (hash, issued).
@@ -674,6 +679,7 @@ impl<'v, 'a> Query<'v, 'a> {
             names: HashMap::new(),
             steps: 0,
             signatures: 0,
+            budgeted: true,
             rejected: Vec::new(),
             evidence: None,
             newest: HashMap::new(),
@@ -767,7 +773,7 @@ impl<'v, 'a> Query<'v, 'a> {
             return Ok(ok);
         }
         self.signatures = self.signatures.saturating_add(sigs.len());
-        if self.signatures > self.v.policy.max_signatures {
+        if self.budgeted && self.signatures > self.v.policy.max_signatures {
             return Err(Reason::Limit);
         }
         let ok = check();
