@@ -1007,17 +1007,97 @@ outlasts the rotation. One design gap, one CLI defect, and small items.
   and one fails with a spurious error; availability only. State growth is
   bounded per query, not across queries, as §16 (2026-10-16) accepts.
 
+### Resolved after the third security review (2026-10-20)
+
+Six audits (SLH-DSA against FIPS 205, the encoders, the cryptographic glue,
+the model and logs, the verification core, the CLI) and a read of the
+whole. The cryptography and the decoders held; the verifier gave no wrong
+positive answer. The defects were in the glue around verifier state, and in
+a test that had not followed the spec.
+
+- **A bundle could make `--state` forget a revocation.** What to remember
+  was judged with a query's signature budget, which is charged by the
+  number of attached signatures before any is verified. A bundle merging
+  about two thousand junk signatures onto a remembered revocation (126
+  copies, 16 signatures each, 16 MB) left it undecided, so the state file
+  was rewritten without it, and the next clean bundle got the revoked grant
+  accepted again; the query itself failed closed, as designed. The same
+  judgement chose which records to remember, so remembered records could be
+  erased the same way; and the owner's own record and `export` left out a
+  revocation that junk in `issued.writ` made undecidable, where `rotate`
+  already refused. **Decision:** deciding what to remember, publish or keep
+  is never budgeted (`statement_status_unbudgeted`,
+  `record_status_unbudgeted`), as building a log and finding the clock-floor
+  witness already were: the permissive direction must not be reachable by
+  spending the verifier's budget (SPEC §6). Only verified signatures are
+  written, as before.
+- **An equivocating root fails every query.** The search skipped a root
+  whose log equivocated and answered from another root, dropping the
+  evidence; §4.4 says every query involving the identity fails, and a root
+  is involved in all of them. **Decision:** `Denial::Compromised` with the
+  evidence, whatever the other roots could say (SPEC §10). An equivocating
+  intermediate issuer still only invalidates the chains through it.
+- **The reference verifier had not followed the 2026-10-20 `resolve`
+  change**, so the property test was red for worlds where a name member
+  equivocates; the generator reached one only during this review, and the
+  seed is recorded. The reference now excludes equivocating members and
+  fails on an equivocating root, as the verifier does.
+- **`Verifier::verify` refuses reserved contexts.** Only the signing side
+  refused `writ/`; an identity-signed data signature under a channel
+  context verified as application data. Now `verify` refuses them and
+  `channel::check` uses an internal entry point (SPEC §5.5).
+- **`incept` and `rotate` refuse `next` equal to the current authority**, which
+  would have let a warm-key thief rotate (§4.3). The CLI never made such an
+  event; libwrit is the API. Verifiers do not check it (SPEC §5.3).
+- **`writ keygen --out` could put a key inside an identity directory**, which
+  the next command deleted as a stale staged key, or the record writer
+  replaced; and `sign --leaf --out` had no identity to check against.
+  **Decision:** every output path is refused inside any directory holding a
+  `log.writ` (`check_output_path`); `init` keeps its own check, since its
+  directory has no log yet.
+- **Lock files do not follow symbolic links**: `DIR/.lock`, `.issued.lock`
+  and the state lock are created with `O_EXCL` or, when present, shown to
+  be the regular file at that path, so a planted link cannot make writ
+  create or hold a file elsewhere.
+- **A foreign file at `DIR/current.key.new`** is named, with what it is for,
+  and left alone, rather than failing every command with a parse error or
+  being deleted; a staged key is installed only if `DIR/current.key` is not
+  a link, as `rotate` already required.
+- **`init` opens both key outputs before writing either**, so a path that
+  can't be created leaves no key behind; a key written before a later
+  failure is named as void, as `rotate` does. Two spellings of one file to
+  be created (`a` and `./a`) now count as the same output.
+- **Smaller items.** `valid_sigs` stops at `k` valid signatures, so a log
+  or proof ships exactly `k` and junk after them is never checked (SPEC
+  §11); the signature cache is no longer swept on every merge, since its key
+  digests the signatures. writ-slhdsa wipes a signature that fails its
+  self-check instead of dropping it, and its stack scrub is exposed
+  (`scrub_stack_below`) so the leaf suite's key derivation and signing scrub
+  128 KiB under their libcrux frames too. The armor fuzzer now also checks
+  that accepted input _is_ the canonical text, which a round-trip alone
+  cannot see. SPEC §10 says a proof's expiry says nothing about when its
+  records go stale.
+- **Not changed.** `--state` keeps the newest record and up to 15 older ones
+  that add revocations; a warm-key thief could sign 16 newer records and
+  push the owner's out, but the warm key already lets the thief re-issue
+  what that record revoked, and everything ends at the rotation.
+  `Log::build` stays linear in the material and unbudgeted (SPEC §11).
+  Leaf-suite stack hygiene stays best effort: libcrux takes ξ and the
+  hedging randomness by value and builds the signing key in its own frames.
+
 ## 17. Open questions
 
 None blocking. The resource limits and the default skew were set on 2026-10-19
 (§16); revisit them if real use runs into them. Whether applications need a freshness primitive that bounds a warm-key
 thief toward cut-off verifiers (see above) is a question for zuko, not for v1.
 
-The brute-force reference verifier shares `Log::build`, well-formedness and
-threshold counting with the real one, and its generator makes only 1-of-1
-authorities, at most one rotation per identity, no data signatures and no key
-items; those paths rest on unit tests. Widening the generator is worthwhile
-work that the 2026-10-19 review left open.
+The brute-force reference verifier shares `Log::build`, well-formedness,
+threshold counting, `Tag` and the `Material` indexes with the real one, and
+its generator makes only 1-of-1 authorities, at most one rotation per
+identity, no data signatures, no key items, no multi-root worlds, no
+junk-merged signatures or budget pressure, and equivocation for one identity
+only; those paths rest on unit tests. Widening the generator is worthwhile
+work that the 2026-10-19 and 2026-10-20 reviews left open.
 
 ## 18. Multi-tag grants, channel binding, published revocations
 
