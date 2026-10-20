@@ -176,6 +176,14 @@ impl Reference<'_> {
         {
             return false;
         }
+        // An equivocating root fails every query (SPEC §10).
+        if self
+            .roots
+            .iter()
+            .any(|r| matches!(&*self.m.log(r), Err(LogError::Equivocation(_))))
+        {
+            return false;
+        }
         let names = self.tables().pop().unwrap();
         for root in self.roots {
             if self.m.log(root).is_err() {
@@ -751,7 +759,12 @@ proptest! {
         };
         let real = Verifier::new(&roots, &b.material, &b.policy).with_local(&b.local).resolve(&p, now);
         let r = Reference { m: &b.material, policy: &b.policy, roots: &roots, local: &b.local, now };
-        let expected = eval(&Subject::Name(p.clone()), r.tables().last().unwrap());
+        // Members that equivocate are left out (SPEC §10).
+        let mut expected = eval(&Subject::Name(p.clone()), r.tables().last().unwrap());
+        expected.retain(|h| match h {
+            Holder::Id(id) => !matches!(&*b.material.log(id), Err(LogError::Equivocation(_))),
+            _ => true,
+        });
         match real {
             Ok(members) => {
                 let got: BTreeSet<Holder> = members.iter().map(|(h, _)| h.clone()).collect();

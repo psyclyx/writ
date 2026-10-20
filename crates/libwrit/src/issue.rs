@@ -151,6 +151,18 @@ pub fn sign_with_authority<T: Body + PartialEq>(
     Ok(signed)
 }
 
+/// `next` must not be the current authority: only the cold keys may extend
+/// the log (DESIGN.md §4.3), so a warm authority that is also the next one
+/// would let a thief holding it rotate.
+fn check_next(current: &Authority, next: &Authority) -> Result<(), IssueError> {
+    if next.hash() == current.hash() {
+        return Err(IssueError::Rule(
+            "the next authority must differ from the current one",
+        ));
+    }
+    Ok(())
+}
+
 /// Creates an identity: event 0, signed by `k` of `authority`, committing
 /// to `next` (DESIGN.md §4.2).
 pub fn incept(
@@ -164,6 +176,7 @@ pub fn incept(
     if max_validity == Some(0) {
         return Err(IssueError::Rule("max-validity must be positive"));
     }
+    check_next(&authority, next)?;
     let event = Event::Inception(Inception {
         authority: authority.clone(),
         next: next.hash(),
@@ -214,6 +227,7 @@ pub fn rotate(
     if max_validity == Some(0) {
         return Err(IssueError::Rule("max-validity must be positive"));
     }
+    check_next(&authority, &next)?;
     keep.sort();
     keep.dedup();
     let prev = log

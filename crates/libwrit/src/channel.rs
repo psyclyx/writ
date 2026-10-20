@@ -101,5 +101,5 @@ pub fn check(
         )));
     }
     let context = context(app).ok_or(Denial::Context)?;
-    verifier.verify(sig, &data(exporter, peer), &context, tag, now)
+    verifier.verify_any_context(sig, &data(exporter, peer), &context, tag, now)
 }

@@ -1268,6 +1268,11 @@ impl<T: Body> Signed<T> {
         let msg = self.body.message();
         let mut out: Vec<Sig> = Vec::new();
         for sig in &self.sigs {
+            // `k` valid signatures are all a reader needs (SPEC §11): junk
+            // merged after them is left unchecked.
+            if out.len() >= authority.k() {
+                break;
+            }
             if out.iter().any(|s| s.index == sig.index) {
                 continue;
             }

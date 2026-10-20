@@ -239,7 +239,10 @@ publish   = "(" "publish" "(" "max-age" secs ")" *4url ")"
   authority's key count.
 - A rotation's `revealed` authority signs only the rotation. Its `authority`
   is the current authority: it signs statements and data signatures issued
-  under this event. `next` may commit to the `revealed` authority again.
+  under this event. `next` may commit to the `revealed` authority again. It
+  MUST NOT commit to the event's own (current) authority: only cold keys may
+  extend the log, so a signer refuses to make such an event. Verifiers do
+  not check this.
 - The **id** of an identity is `H("writ/v1/id", canonical(inception))`.
 - The **hash** of an event is `H("writ/v1/event", canonical(event))`.
 
@@ -290,7 +293,10 @@ The signature **hash** is `H("writ/v1/sig", canonical(signature))`.
 
 Contexts that start with `writ/` are reserved for writ's own uses, such as
 channel binding (§14). Signers MUST NOT sign application data under them, so
-that no application signature can pass for one of writ's.
+that no application signature can pass for one of writ's; and a verifier
+asked about application data MUST refuse such a context, so that none of
+writ's signatures can pass for an application's. Reserved contexts are
+checked only through their own rules (§14).
 
 ### 5.6 Records
 
@@ -334,7 +340,11 @@ An identity's log is valid when:
 The **head** is the last event. A verifier SHOULD persist the logs it accepts,
 and the valid revocations by those identities, and add them to future
 material, so it never accepts an older head (equivocation, once seen, stays
-seen) and never forgets a revocation.
+seen) and never forgets a revocation. What it persists MUST be judged without
+the signature budget of §11 (as logs are built): a revocation or record left
+undecided would be dropped, the permissive direction, and material merging
+junk signatures onto a remembered one could arrange that. It SHOULD persist
+only the signatures that verify.
 
 ## 7. Validity of a statement
 
@@ -425,7 +435,9 @@ leaf key, or an opaque key) **holds** tag `T` when:
      can serve: two that both did would both be prefixes of `T`, so one would
      be within the other.)
 
-If `S` is an id whose log equivocates, the answer is no. A verifier SHOULD
+If `S` is an id whose log equivocates, or any root's log does, the answer is
+no: a root is a trust anchor, and its compromise must reach the caller even
+when another root could answer. A verifier SHOULD
 report equivocation it encountered when no chain exists. A subject's own log
 matters only in that case: an id whose log is missing or broken still holds
 what valid chains grant it (its log counts when it issues, or is a root).
@@ -436,7 +448,8 @@ report the equivocation if no member remains.
 A **proof** is the logs of every identity involved (the root, every issuer,
 and `S` if it is an id), the grants of one chain, the name statements that put
 each holder in each subject, and the records that made its statements fresh. Its effective tag is `E`; its effective
-expiry is the minimum `expires` of its statements. The reference verifier
+expiry is the minimum `expires` of its statements, which says nothing about
+when the records it relied on go stale (§7). The reference verifier
 finds a shortest chain by breadth-first search over (holder, effective tag),
 checking signatures only for statements on candidate paths. A grant to a name
 path is checked before the names are read, so a forged grant cannot lead the
@@ -471,11 +484,11 @@ signatures are checked (cached results are free). A statement that cannot be
 decided within these limits is not valid; in particular, running out while
 looking for a valid revocation never means "not revoked".
 
-Outside these limits, building identity logs costs one signature check per
-signature attached to a rotation candidate (copies of one event merge their
-signatures, so junk merged onto a genuine event is tried until `k` valid ones
-are found), so a verifier's work grows linearly with the size of its
-material. Verifiers that take material from untrusted parties SHOULD bound its
+Outside these limits, building identity logs costs at most one signature
+check per signature attached to a rotation candidate (copies of one event
+merge their signatures; junk merged onto a genuine event is tried until `k`
+valid ones are found, and what follows them is not checked), so a
+verifier's work grows linearly with the size of its material. Verifiers that take material from untrusted parties SHOULD bound its
 size (libwrit's bundle limit is in §3.1).
 
 ## 12. Time

@@ -6,6 +6,7 @@
 //! [`Material`].
 
 use crate::hash::{Hash, Id, LeafId};
+use crate::issue::RESERVED_CONTEXT;
 use crate::keys::{LeafKey, Suite};
 use crate::log::{Evidence, Log, LogError};
 use crate::material::{Material, Principal};
@@ -505,7 +506,29 @@ impl<'a> Verifier<'a> {
 
     /// Is `sig` a valid signature over `data` in `context` by someone who
     /// holds `tag` at `now`?
+    ///
+    /// Contexts starting with `writ/` are reserved (SPEC §5.5) and refused
+    /// here: a channel binding is checked with
+    /// [`channel::check`](crate::channel::check), which knows what the
+    /// context and data must be.
     pub fn verify(
+        &self,
+        sig: &Signed<DataSig>,
+        data: &Hash,
+        context: &[u8],
+        tag: &Tag,
+        now: Time,
+    ) -> Result<Proof, Denial> {
+        if context.starts_with(RESERVED_CONTEXT) {
+            return Err(Denial::Signature(Reason::Malformed(
+                "contexts starting with writ/ are reserved for writ's own uses",
+            )));
+        }
+        self.verify_any_context(sig, data, context, tag, now)
+    }
+
+    /// [`Verifier::verify`] for writ's own contexts too.
+    pub(crate) fn verify_any_context(
         &self,
         sig: &Signed<DataSig>,
         data: &Hash,
@@ -580,6 +603,20 @@ impl<'a> Verifier<'a> {
         Query::new(self, now).status(hash)
     }
 
+    /// [`Verifier::statement_status`] without the signature budget
+    /// ([`Policy::max_signatures`]), for deciding what to remember or
+    /// publish: a revocation to persist in verifier state, to list in a
+    /// record, or to keep across a rotation. There, running out would drop
+    /// the item, which is the permissive direction, and junk signatures
+    /// merged onto a genuine revocation could arrange it (SPEC §11). The
+    /// cost is one check per attached signature until `k` verify, as when
+    /// building a log.
+    pub fn statement_status_unbudgeted(&self, hash: &Hash, now: Time) -> Result<(), Reason> {
+        let mut q = Query::new(self, now);
+        q.budgeted = false;
+        q.status(hash)
+    }
+
     /// Whether `id` publishes records and the material holds a valid one
     /// young enough at `now` for its long-lived statements (SPEC §7).
     pub fn has_fresh_record(&self, id: &Id, now: Time) -> bool {
@@ -600,6 +637,15 @@ impl<'a> Verifier<'a> {
     /// clock says; see [`Verifier::has_fresh_record`] for freshness.
     pub fn record_status(&self, hash: &Hash, now: Time) -> Result<(), Reason> {
         Query::new(self, now).record_status(hash)
+    }
+
+    /// [`Verifier::record_status`] without the signature budget, for
+    /// deciding which records to remember; see
+    /// [`Verifier::statement_status_unbudgeted`].
+    pub fn record_status_unbudgeted(&self, hash: &Hash, now: Time) -> Result<(), Reason> {
+        let mut q = Query::new(self, now);
+        q.budgeted = false;
+        q.record_status(hash)
     }
 
     /// Whether a data signature in the material is valid at `now` (SPEC §7),
@@ -1226,11 +1272,16 @@ impl<'v, 'a> Query<'v, 'a> {
         let mut visited: BTreeSet<(Principal, Tag)> = BTreeSet::new();
         let mut queue = VecDeque::new();
         let mut root_error = None;
+        // An equivocating root fails every query (DESIGN.md §4.4): a trust
+        // anchor is compromised, and the evidence must reach the caller even
+        // when another root could still answer.
+        for root in self.v.roots {
+            if let Err(LogError::Equivocation(e)) = &*self.v.material.log(root) {
+                return Err(Denial::Compromised(e.clone()));
+            }
+        }
         for root in self.v.roots {
             if let Err(e) = &*self.v.material.log(root) {
-                if let LogError::Equivocation(ev) = e {
-                    self.evidence.get_or_insert_with(|| ev.clone());
-                }
                 root_error.get_or_insert((*root, e.clone()));
                 continue;
             }

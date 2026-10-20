@@ -2093,3 +2093,159 @@ fn forged_grants_do_not_lead_to_names() {
     let d = w.check(Holder::Id(c.id), "()", NOW).unwrap_err();
     assert_eq!(rejected_for(&d, n.body.hash()), None, "{d:?}");
 }
+
+/// An equivocating root fails every query, even one another root could
+/// answer (DESIGN.md §4.4): a trust anchor is compromised, and the evidence
+/// must reach the caller.
+#[test]
+fn an_equivocating_root_fails_every_query() {
+    let a = Ident::new(1);
+    let mut b = Ident::new(2);
+    let c = Ident::new(3);
+    let ac = a.say(grant(Subject::Id(c.id), "(x)", false), 10, None);
+    b.rotate(vec![], None);
+    let mut b2 = Ident::new(2);
+    let r1b = b2.rotate(vec![], Some(99));
+    let mut w = World::new(
+        &a,
+        [st(ac), Item::Event(r1b)]
+            .into_iter()
+            .chain(b.items())
+            .chain(c.items()),
+    );
+    assert!(w.check(Holder::Id(c.id), "(x)", 50).is_ok());
+    w.roots.push(b.id);
+    assert!(matches!(
+        w.check(Holder::Id(c.id), "(x)", 50),
+        Err(Denial::Compromised(e)) if e.id() == b.id
+    ));
+    // The root itself, and a subject no chain reaches, get the same answer.
+    assert!(matches!(
+        w.check(Holder::Id(a.id), "()", 50),
+        Err(Denial::Compromised(_))
+    ));
+    assert!(matches!(
+        w.check(Holder::Id(b.id), "()", 50),
+        Err(Denial::Compromised(_))
+    ));
+}
+
+/// `Verifier::verify` refuses writ's reserved contexts (SPEC §5.5): a
+/// channel binding is checked through `channel::check`, which still works.
+#[test]
+fn verify_refuses_reserved_contexts() {
+    use crate::channel::{Role, bind, check};
+    let a = Ident::new(1);
+    let leaf = FakeLeaf::new(7);
+    let g = a.say(
+        grant(Subject::Leaf(leaf.0.clone()), "(screen)", false),
+        10,
+        Some(10 + 3600),
+    );
+    let w = World::new(&a, [st(g)]);
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    let e = [0x42u8; 32];
+    let sig = bind(
+        &e,
+        Role::Initiator,
+        "screen",
+        20,
+        &leaf,
+        &mut TestRng::new(0),
+    )
+    .unwrap();
+    assert!(
+        check(
+            &v,
+            &sig,
+            &e,
+            Role::Initiator,
+            "screen",
+            &tag("(screen)"),
+            30
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        v.verify(
+            &sig,
+            &sig.body.data,
+            &sig.body.context,
+            &tag("(screen)"),
+            30
+        ),
+        Err(Denial::Signature(Reason::Malformed(_)))
+    ));
+}
+
+/// The next authority may not be the current one (DESIGN.md §4.3): a warm
+/// key that could also rotate would let a thief holding it extend the log.
+#[test]
+fn next_must_differ_from_current() {
+    let k = FakeRoot::new(50);
+    let same = Authority::single(k.0);
+    let mut rng = TestRng::new(0);
+    assert!(matches!(
+        incept(same.clone(), &same, None, None, &[&k], &mut rng),
+        Err(IssueError::Rule(_))
+    ));
+    let mut b = Ident::new(2);
+    let revealed = b.next[0];
+    let plan = RotationPlan {
+        revealed: Authority::single(revealed.0),
+        authority: Authority::single(k.0),
+        next: Authority::single(k.0),
+        max_validity: None,
+        publish: None,
+        keep: vec![],
+    };
+    assert!(matches!(
+        rotate(&b.log(), plan, &[&revealed], &mut rng),
+        Err(IssueError::Rule(_))
+    ));
+    // Committing to the revealed authority again is allowed (§4.3).
+    let plan = RotationPlan {
+        revealed: Authority::single(revealed.0),
+        authority: Authority::single(k.0),
+        next: Authority::single(revealed.0),
+        max_validity: None,
+        publish: None,
+        keep: vec![],
+    };
+    assert!(rotate(&b.log(), plan, &[&revealed], &mut rng).is_ok());
+    let _ = b.rotate(vec![], None);
+}
+
+/// `k` valid signatures are enough: junk merged after them is never checked,
+/// and what a log or proof ships is exactly those `k` (SPEC §11).
+#[test]
+fn k_valid_signatures_are_enough() {
+    let a = Ident::new(1);
+    let b = Ident::new(2);
+    let g = a.say(grant(Subject::Id(b.id), "(x)", false), 10, None);
+    let junk = |n: u8| Sig {
+        index: 0,
+        bytes: vec![n; crate::keys::ROOT_SIGNATURE_SIZE],
+    };
+    let mut copies = Vec::new();
+    for n in 1..4 {
+        let mut c = g.clone();
+        c.sigs = vec![junk(n)];
+        copies.push(st(c));
+    }
+    let mut ev = a.events[0].clone();
+    ev.sigs = vec![junk(1), junk(2)];
+    let w = World::new(
+        &a,
+        copies.into_iter().chain([st(g.clone()), Item::Event(ev)]),
+    );
+    assert_eq!(w.material.statement(&g.body.hash()).unwrap().sigs.len(), 4);
+    let proof = w.check(Holder::Id(b.id), "(x)", 50).unwrap();
+    for item in proof.items(&w.material) {
+        match item {
+            Item::Statement(s) => assert_eq!(s.sigs, g.sigs),
+            Item::Event(e) => assert_eq!(e.sigs, a.events[0].sigs),
+            _ => {}
+        }
+    }
+}

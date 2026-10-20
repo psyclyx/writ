@@ -48,7 +48,9 @@ pub struct Material {
 }
 
 /// What a signature check is cached under: body hash, signer (authority
-/// hash or leaf id), and a digest of the signatures.
+/// hash or leaf id), and a digest of the signatures. A result is a fact
+/// about exactly those signatures, so it never goes stale: a copy that
+/// arrives with more signatures is checked afresh under a new key.
 pub(crate) type SigKey = (Hash, Hash, Hash);
 
 impl Material {
@@ -107,9 +109,7 @@ impl Material {
             Item::Statement(st) => {
                 let h = st.body.hash();
                 if let Some(existing) = self.statements.get_mut(&h) {
-                    if merge_sigs(&mut self.merged, h, &mut existing.sigs, st.sigs) {
-                        self.sig_cache.get_mut().retain(|(b, _, _), _| *b != h);
-                    }
+                    merge_sigs(&mut self.merged, h, &mut existing.sigs, st.sigs);
                     return;
                 }
                 if let Some(Subject::Leaf(k)) = st.body.claim.subject() {
@@ -142,9 +142,7 @@ impl Material {
                 let h = sig.body.hash();
                 match self.signatures.get_mut(&h) {
                     Some(existing) => {
-                        if merge_sigs(&mut self.merged, h, &mut existing.sigs, sig.sigs) {
-                            self.sig_cache.get_mut().retain(|(b, _, _), _| *b != h);
-                        }
+                        merge_sigs(&mut self.merged, h, &mut existing.sigs, sig.sigs);
                     }
                     None => {
                         self.signatures.insert(h, sig);
@@ -155,9 +153,7 @@ impl Material {
                 let h = r.body.hash();
                 match self.records.get_mut(&h) {
                     Some(existing) => {
-                        if merge_sigs(&mut self.merged, h, &mut existing.sigs, r.sigs) {
-                            self.sig_cache.get_mut().retain(|(b, _, _), _| *b != h);
-                        }
+                        merge_sigs(&mut self.merged, h, &mut existing.sigs, r.sigs);
                     }
                     None => {
                         self.records_by.entry(r.body.id).or_default().push(h);
@@ -325,7 +321,7 @@ impl Material {
 }
 
 /// Adds signatures not already present (same index and bytes) to the copy
-/// of `body` held in `into`. Returns whether any were added. Merged
+/// of `body` held in `into`. Merged
 /// signatures are appended unsorted, possibly several per index; readers
 /// pick the valid ones ([`Signed::valid_sigs`]).
 fn merge_sigs(
@@ -333,19 +329,17 @@ fn merge_sigs(
     body: Hash,
     into: &mut Vec<Sig>,
     from: Vec<Sig>,
-) -> bool {
+) {
     let seen = merged.entry(body).or_insert_with(|| {
         into.iter()
             .map(|s| (s.index, Hash::of_data(&s.bytes)))
             .collect()
     });
-    let before = into.len();
     for sig in from {
         if seen.insert((sig.index, Hash::of_data(&sig.bytes))) {
             into.push(sig);
         }
     }
-    into.len() != before
 }
 
 impl core::fmt::Debug for Material {
