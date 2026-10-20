@@ -289,11 +289,22 @@ fn write_sexp(out: &mut String, sexp: &Sexp) {
 /// that change how the text around them is laid out (direction overrides,
 /// line separators): a quoted atom holding one could display as another
 /// atom, so it prints as hex.
+///
+/// The first test is the standard library's: `escape_debug` escapes every
+/// character it does not consider printable (controls, format characters,
+/// surrogates, private use, unassigned, separators and grapheme extenders),
+/// so those tables don't have to be kept here. The list after it adds
+/// characters that are "printable" but render blank in common fonts.
 fn is_invisible(c: char) -> bool {
-    (c.is_whitespace() && !matches!(c, ' ' | '\n' | '\t' | '\r'))
+    if matches!(c, ' ' | '\n' | '\t' | '\r' | '"' | '\\' | '\'') {
+        return false;
+    }
+    c.escape_debug().count() > 1
+        || c.is_whitespace()
         || matches!(
             c,
-            '\u{ad}'
+            '\u{2800}'
+            | '\u{ad}'
             | '\u{34f}'
             | '\u{61c}'
             | '\u{115f}'..='\u{1160}'
@@ -451,12 +462,24 @@ mod tests {
     /// like something else, or rearrange what follows it: they print as hex.
     #[test]
     fn invisible_characters_print_as_hex() {
-        for s in ["alice\u{202e}gnp", "a\u{200b}b", "x\u{2066}", "\u{feff}y"] {
+        for s in [
+            "alice\u{202e}gnp",
+            "a\u{200b}b",
+            "x\u{2066}",
+            "\u{feff}y",
+            // Blank-rendering: braille blank, a private-use character, an
+            // Arabic format character, a combining mark on its own.
+            "a\u{2800}b",
+            "a\u{e000}b",
+            "a\u{600}b",
+            "cafe\u{301}",
+        ] {
             let text = print_atom(s.as_bytes());
-            assert!(text.starts_with('#'), "{text}");
+            assert!(text.starts_with('#'), "{s:?} printed as {text}");
             assert_eq!(parse(&text), Ok(a(s)));
         }
         assert_eq!(print_atom("café".as_bytes()), "\"café\"");
+        assert_eq!(print_atom("日本".as_bytes()), "\"日本\"");
     }
 
     #[test]

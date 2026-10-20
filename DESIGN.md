@@ -852,7 +852,10 @@ Details in §18. In short:
 - **In the readable form, every atom needs a delimiter**, quoted and hex
   atoms included, so `("ssh""nas")` is an error rather than two words; and
   characters that look like a space (no-break space and the other Unicode
-  spaces) print as hex, so two atoms can't display alike.
+  spaces) print as hex. What this guarantees is that a bare token is pure
+  ASCII and anything else is quoted or hexed, so an ASCII name can never be
+  impersonated by a non-ASCII atom; inside quoted atoms, lookalikes remain
+  possible (§16, 2026-10-19).
 - **`sign_pieces` in writ-slhdsa is `#[inline(never)]`**: the stack scrub
   wipes the frames below `sign`'s, so the WOTS+ and FORS secrets must stay
   in a frame of their own, whatever the inliner decides.

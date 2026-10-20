@@ -303,7 +303,9 @@ fn statement(out: &mut String, s: &Signed<Statement>) {
         Claim::Revoke { target } => row(out, "revokes", target),
     }
     if let Some(n) = &b.note {
-        row(out, "note", format!("{n:?}"));
+        // The same escaping as every other atom, so a note can't look like
+        // anything but a quoted string.
+        row(out, "note", print_atom(n.as_bytes()));
     }
     row(out, "signed", sig_count(s.sigs.len()));
 }
