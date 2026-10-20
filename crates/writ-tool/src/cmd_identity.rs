@@ -95,6 +95,7 @@ pub fn init(parsed: &Parsed) -> Result<()> {
         Authority::single(current.root_key()),
         &next,
         max_validity,
+        None,
         &[&current],
         &mut OsRng,
     )
@@ -178,7 +179,8 @@ fn compute_keep(
     let roots = [ident.id()];
     let material = ident.material();
     let policy = Policy::default();
-    let verifier = Verifier::new(&roots, &material, &policy);
+    // The identity's own issuance log is all here: it needs no records.
+    let verifier = Verifier::new(&roots, &material, &policy).with_local(&roots);
     let mut stats = KeepStats::default();
     let mut keep = BTreeSet::new();
     for item in &ident.issued {
@@ -372,6 +374,7 @@ pub fn rotate(parsed: &Parsed) -> Result<()> {
             authority: current.clone(),
             next: next_authority.clone(),
             max_validity,
+            publish: None,
             keep: keep.clone(),
         },
         &signer_refs,
@@ -533,7 +536,7 @@ pub fn export(parsed: &Parsed) -> Result<()> {
         let roots = [ident.id()];
         let material = ident.material();
         let policy = Policy::default();
-        let v = Verifier::new(&roots, &material, &policy);
+        let v = Verifier::new(&roots, &material, &policy).with_local(&roots);
         let now = wall_clock();
         for item in &ident.issued {
             if let Item::Statement(s) = item

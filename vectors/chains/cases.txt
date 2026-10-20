@@ -10,6 +10,7 @@ subject app = (key ssh-ed25519 ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ
 subject bob = (id #eab4912c6426329f1d84853ea7441b7d7ef44072f49c20f34d5a9ce0ad6f5459#)
 subject leaf = (mldsa65-ed25519 |+m2FpQv8YZalCalpQrwoEIduuASKrQKv+nvGeJyouCmr7/nAr3yqwywPFd+en0fu520RbvIsLYJOxetrbM…
 subject me = (id #ad0eabf9b9458c550a18c79433112f2961f356d8b611b118c4954f8b4c803743#)
+subject pat = (id #575d6aa753880930094f30f53330a8d23c0bbaf629ef92373eb10b6f97399994#)
 subject quinn = (id #cdaf269787d89410aee9d54ede382bb83a24d7b2d23077f028675a25eefdf0b6#)
 
 case = root holds everything
@@ -221,3 +222,38 @@ now = 1800000100
 result = denied
 reason = not-found
 rejected = bob-grants-app-team-b:outside-issuer me-names-leaf-forever:malformed
+
+case = publisher: fresh record
+subject = bob
+tag = (pat long)
+now = 1800000100
+result = allowed
+chain = me-grants-pat pat-grants-bob-long
+effective-tag = (pat long)
+expires = never
+records = pat-record
+
+case = publisher: record too old
+subject = bob
+tag = (pat long)
+now = 1800003651
+result = denied
+reason = not-found
+rejected = me-grants-bob-files:covers me-grants-bob-teams:covers me-names-leaf-day:expired me-names-leaf-forever:malformed pat-grants-bob-long:no-fresh-record
+
+case = publisher: short-lived, no record needed
+subject = bob
+tag = (pat short)
+now = 1800000100
+result = allowed
+chain = me-grants-pat pat-grants-bob-short
+effective-tag = (pat short)
+expires = 1800003600
+
+case = publisher: revoked by its record
+subject = bob
+tag = (pat revoked)
+now = 1800000100
+result = denied
+reason = not-found
+rejected = me-grants-bob-files:covers me-grants-bob-teams:covers me-names-leaf-forever:malformed pat-grants-bob-long:covers pat-grants-bob-revoked:revoked pat-grants-bob-short:covers

@@ -36,6 +36,9 @@ pub struct Policy {
     pub max_statements: usize,
     /// Most signatures verified per query (cached results are free).
     pub max_signatures: usize,
+    /// Refuse long-lived statements by identities that publish no records
+    /// (DESIGN.md §18.6). Off by default.
+    pub require_records: bool,
 }
 
 impl Default for Policy {
@@ -48,6 +51,7 @@ impl Default for Policy {
             max_name_depth: 8,
             max_statements: 10_000,
             max_signatures: 10_000,
+            require_records: false,
         }
     }
 }
@@ -139,6 +143,14 @@ pub enum Reason {
     /// Not decided: the query's resource limits ran out first. Treated as
     /// invalid.
     Limit,
+    /// Its issuer publishes records, and none in the material is younger
+    /// than `max_age` seconds (DESIGN.md §18.6).
+    NoFreshRecord {
+        /// The issuer's `max-age`.
+        max_age: u64,
+    },
+    /// Its issuer publishes no records, and the policy requires them.
+    NoRecords,
 }
 
 impl fmt::Display for Reason {
@@ -188,6 +200,15 @@ impl fmt::Display for Reason {
                 "grants {granted}, but its issuer holds only {held} on this chain"
             ),
             Reason::Limit => write!(f, "not checked: the query hit its resource limits"),
+            Reason::NoFreshRecord { max_age } => write!(
+                f,
+                "its issuer requires a record no older than {}, and there is none",
+                Duration(*max_age)
+            ),
+            Reason::NoRecords => write!(
+                f,
+                "its issuer publishes no records, and this verifier requires them"
+            ),
         }
     }
 }
@@ -278,6 +299,9 @@ pub struct Proof {
     pub ids: BTreeSet<Id>,
     /// Data signature, for `verify` proofs.
     pub signature: Option<Hash>,
+    /// Revocation records the answer relied on for freshness (DESIGN.md
+    /// §18.6): shipped with the proof, so its holder can staple them.
+    pub records: BTreeSet<Hash>,
 }
 
 impl Proof {
@@ -310,6 +334,12 @@ impl Proof {
         if let Some(st) = self.signature.and_then(|h| material.signature(&h)) {
             items.push(Item::Signature(shippable(st, &st.body.signer, material)));
         }
+        items.extend(
+            self.records
+                .iter()
+                .filter_map(|h| material.record(h))
+                .map(|r| Item::Record(r.clone())),
+        );
         items
     }
 
@@ -370,6 +400,7 @@ fn shippable<T: Body + Clone>(s: &Signed<T>, issuer: &Issuer, material: &Materia
 /// Answers questions about the material from the point of view of `roots`.
 pub struct Verifier<'a> {
     roots: &'a [Id],
+    local: &'a [Id],
     material: &'a Material,
     policy: &'a Policy,
 }
@@ -383,9 +414,18 @@ impl<'a> Verifier<'a> {
     pub fn new(roots: &'a [Id], material: &'a Material, policy: &'a Policy) -> Self {
         Verifier {
             roots,
+            local: &[],
             material,
             policy,
         }
+    }
+
+    /// Identities whose whole issuance log the caller supplied (usually its
+    /// own roots, given as directories): their revocations are all in the
+    /// material, so they need no records (DESIGN.md §18.6).
+    pub fn with_local(mut self, local: &'a [Id]) -> Self {
+        self.local = local;
+        self
     }
 
     /// Does `subject` hold `tag` at `now`?
@@ -421,10 +461,12 @@ impl<'a> Verifier<'a> {
                     expires: None,
                     ids: BTreeSet::from([path.base]),
                     signature: None,
+                    records: BTreeSet::new(),
                 };
                 for h in &names {
                     q.note_statement(&mut proof, h);
                 }
+                q.attach_records(&mut proof);
                 (holder, proof)
             })
             .collect())
@@ -466,6 +508,7 @@ impl<'a> Verifier<'a> {
             proof.ids.insert(*id);
         }
         proof.signature = Some(hash);
+        q.attach_records(&mut proof);
         Ok(proof)
     }
 
@@ -518,6 +561,10 @@ struct Query<'v, 'a> {
     signatures: usize,
     rejected: Vec<Rejection>,
     evidence: Option<Box<Evidence>>,
+    /// Per identity, its newest valid record, if any: (hash, issued).
+    newest: HashMap<Id, Option<(Hash, Time)>>,
+    /// Records that made something fresh, by issuer.
+    fresh_by: BTreeMap<Id, Hash>,
 }
 
 /// Holders a name refers to, each with its derivation.
@@ -590,6 +637,8 @@ impl<'v, 'a> Query<'v, 'a> {
             signatures: 0,
             rejected: Vec::new(),
             evidence: None,
+            newest: HashMap::new(),
+            fresh_by: BTreeMap::new(),
         }
     }
 
@@ -715,6 +764,7 @@ impl<'v, 'a> Query<'v, 'a> {
             Issuer::Identity { id, event } => {
                 self.signed_by_identity(sig, hash, *id, *event, None)?;
                 self.check_revoked(*id, hash)?;
+                self.fresh(*id, sig.body.issued, None)?;
             }
             Issuer::Leaf(k) => self.signed_by_leaf(sig, hash, k)?,
         }
@@ -735,6 +785,7 @@ impl<'v, 'a> Query<'v, 'a> {
                 self.signed_by_identity(st, hash, *id, *event, Some(body))?;
                 if !matches!(body.claim, Claim::Revoke { .. }) {
                     self.check_revoked(*id, hash)?;
+                    self.fresh(*id, body.issued, body.expires)?;
                 }
             }
             Issuer::Leaf(k) => self.signed_by_leaf(st, hash, k)?,
@@ -772,7 +823,137 @@ impl<'v, 'a> Query<'v, 'a> {
                 return Err(Reason::Limit);
             }
         }
+        // Valid records list revocations too; they are combined, so any
+        // one listing `hash` revokes it (DESIGN.md §18.4).
+        for r in self.v.material.records_by(&id).to_vec() {
+            if !self
+                .v
+                .material
+                .record(&r)
+                .is_some_and(|rec| rec.body.revokes(hash))
+            {
+                continue;
+            }
+            match self.record_status(&r) {
+                Ok(()) => return Err(Reason::Revoked(r)),
+                Err(Reason::Limit) => return Err(Reason::Limit),
+                Err(_) => {}
+            }
+            if self.over_budget() {
+                return Err(Reason::Limit);
+            }
+        }
         Ok(())
+    }
+
+    /// Whether a record is valid at `now` (DESIGN.md §18.4): made under its
+    /// issuer's head, naming it, signed by its current authority, and not
+    /// from the future. Memoized with statements (the labels differ, so the
+    /// hashes cannot collide).
+    fn record_status(&mut self, h: &Hash) -> Result<(), Reason> {
+        if let Some(s) = self.status.get(h) {
+            return s.clone();
+        }
+        let result = self.compute_record_status(h);
+        self.status.insert(*h, result.clone());
+        result
+    }
+
+    fn compute_record_status(&mut self, h: &Hash) -> Result<(), Reason> {
+        let Some(rec) = self.v.material.record(h) else {
+            return Err(Reason::Malformed("unknown record"));
+        };
+        let log = self.log(&rec.body.id)?;
+        let Ok(log) = &*log else {
+            return Err(Reason::BadSignature);
+        };
+        let head = log.head_n();
+        if rec.body.event != head {
+            return Err(Reason::UnknownEvent {
+                event: rec.body.event,
+                head,
+            });
+        }
+        if log.event_hash(head) != Some(rec.body.head) {
+            return Err(Reason::Malformed("record names another head event"));
+        }
+        if !self.v.policy.accepts(Suite::SlhDsaShake128s) {
+            return Err(Reason::Suite(Suite::SlhDsaShake128s));
+        }
+        let authority = log.head().authority();
+        if !self.sig_check(*h, authority.hash(), &rec.sigs, || {
+            rec.verify_threshold(authority)
+        })? {
+            return Err(Reason::BadSignature);
+        }
+        if rec.body.issued > self.now.saturating_add(self.v.policy.skew) {
+            return Err(Reason::NotYetValid(rec.body.issued));
+        }
+        Ok(())
+    }
+
+    /// The newest valid record by `id`: (hash, issued).
+    fn newest_record(&mut self, id: Id) -> Result<Option<(Hash, Time)>, Reason> {
+        if let Some(n) = self.newest.get(&id) {
+            return Ok(*n);
+        }
+        let mut best: Option<(Hash, Time)> = None;
+        for r in self.v.material.records_by(&id).to_vec() {
+            let Some(issued) = self.v.material.record(&r).map(|rec| rec.body.issued) else {
+                continue;
+            };
+            if best.is_some_and(|(_, b)| issued <= b) {
+                continue;
+            }
+            match self.record_status(&r) {
+                Ok(()) => best = Some((r, issued)),
+                Err(Reason::Limit) => return Err(Reason::Limit),
+                Err(_) => {}
+            }
+        }
+        self.newest.insert(id, best);
+        Ok(best)
+    }
+
+    /// The freshness rule (DESIGN.md §18.6) for something `id` issued at
+    /// `issued`, expiring at `expires`: if `id` publishes records with
+    /// max-age D, anything that lives longer than D needs a valid record by
+    /// `id` no older than D. Local identities are exempt; so are
+    /// revocations, which callers don't pass here.
+    fn fresh(&mut self, id: Id, issued: Time, expires: Option<Time>) -> Result<(), Reason> {
+        if self.v.local.contains(&id) {
+            return Ok(());
+        }
+        let log = self.log(&id)?;
+        let Ok(log) = &*log else {
+            return Err(Reason::BadSignature);
+        };
+        let Some(max_age) = log.head().publish().map(|p| p.max_age()) else {
+            return if self.v.policy.require_records {
+                Err(Reason::NoRecords)
+            } else {
+                Ok(())
+            };
+        };
+        if expires.is_some_and(|e| e.saturating_sub(issued) <= max_age) {
+            return Ok(());
+        }
+        match self.newest_record(id)? {
+            Some((h, t)) if t >= self.now.saturating_sub(max_age) => {
+                self.fresh_by.insert(id, h);
+                Ok(())
+            }
+            _ => Err(Reason::NoFreshRecord { max_age }),
+        }
+    }
+
+    /// Adds to `proof` the records its identities' freshness relied on.
+    fn attach_records(&self, proof: &mut Proof) {
+        for id in &proof.ids {
+            if let Some(h) = self.fresh_by.get(id) {
+                proof.records.insert(*h);
+            }
+        }
     }
 
     fn reject(&mut self, statement: Hash, reason: Reason) {
@@ -981,6 +1162,7 @@ impl<'v, 'a> Query<'v, 'a> {
                     expires: None,
                     ids: BTreeSet::from([*root]),
                     signature: None,
+                    records: BTreeSet::new(),
                 });
             }
             if visited.insert((Principal::Id(*root), Tag::everything())) {
@@ -1123,6 +1305,7 @@ impl<'v, 'a> Query<'v, 'a> {
             expires: None,
             ids: BTreeSet::from([root]),
             signature: None,
+            records: BTreeSet::new(),
         };
         for h in proof.statements() {
             self.note_statement(&mut proof, &h);
@@ -1132,6 +1315,7 @@ impl<'v, 'a> Query<'v, 'a> {
         if let Holder::Id(id) = subject {
             proof.ids.insert(*id);
         }
+        self.attach_records(&mut proof);
         Ok(proof)
     }
 }

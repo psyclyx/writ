@@ -166,6 +166,31 @@ pub fn item(item: &Item) -> String {
         Item::Event(e) => event(&mut out, e),
         Item::Statement(s) => statement(&mut out, s),
         Item::Signature(s) => data_sig(&mut out, s),
+        Item::Record(r) => {
+            let b = &r.body;
+            let _ = writeln!(
+                out,
+                "{} by {} (event {})",
+                style::paint(Stream::Out, style::BOLD, "record"),
+                id_full(&b.id),
+                b.event
+            );
+            row(&mut out, "issued", time(b.issued));
+            row(&mut out, "head", b.head);
+            row(
+                &mut out,
+                "revokes",
+                match b.revoked.len() {
+                    0 => "nothing".to_owned(),
+                    1 => "1 statement or signature".to_owned(),
+                    n => format!("{n} statements or signatures"),
+                },
+            );
+            for h in &b.revoked {
+                row(&mut out, "", short(h));
+            }
+            row(&mut out, "hash", b.hash());
+        }
         Item::PublicKey(PublicKey::Root(k)) => {
             let _ = writeln!(out, "key slh-dsa-shake-128s");
             row(&mut out, "public", libwrit::Hash(k.0).to_hex());
@@ -203,6 +228,16 @@ fn event(out: &mut String, e: &Signed<Event>) {
     row(out, "next", body.next());
     if let Some(mv) = body.max_validity() {
         row(out, "max-validity", Duration(mv));
+    }
+    if let Some(p) = body.publish() {
+        row(
+            out,
+            "publish",
+            format!("records at least every {}", Duration(p.max_age())),
+        );
+        for u in p.urls() {
+            row(out, "", u);
+        }
     }
     if let Event::Rotation(r) = body {
         row(

@@ -15,6 +15,9 @@ use std::path::Path;
 /// Everything a question needs.
 struct Query {
     roots: Vec<Id>,
+    /// Roots given as directories: their whole issuance log is in the
+    /// material, so they need no records (DESIGN.md §18.6).
+    local: Vec<Id>,
     material: Material,
     policy: Policy,
     now: Time,
@@ -31,6 +34,7 @@ impl Query {
         }
         let mut material = Material::new();
         let mut roots = Vec::new();
+        let mut local = Vec::new();
         for who in parsed.values("as") {
             // An id is taken as written, before any directory of that name:
             // otherwise whoever can write to the working directory could
@@ -40,6 +44,7 @@ impl Query {
             } else if ident::is_identity_dir(Path::new(who)) {
                 let dir = IdentityDir::open(who)?;
                 roots.push(dir.id());
+                local.push(dir.id());
                 for item in dir.log.items().chain(dir.issued.iter().cloned()) {
                     material.add(item);
                 }
@@ -88,6 +93,7 @@ impl Query {
         };
         Ok(Query {
             roots,
+            local,
             material,
             policy,
             now,
@@ -98,7 +104,7 @@ impl Query {
     }
 
     fn verifier(&self) -> Verifier<'_> {
-        Verifier::new(&self.roots, &self.material, &self.policy)
+        Verifier::new(&self.roots, &self.material, &self.policy).with_local(&self.local)
     }
 
     /// Updates `--state`: raise the floor, remember the logs involved.

@@ -42,6 +42,7 @@ The labels are:
 | `writ/v1/authority`                 | authority hash (`next` commitments)                     |
 | `writ/v1/stmt`                      | statement hash; message signed for statements           |
 | `writ/v1/sig`                       | data-signature hash; message signed for data signatures |
+| `writ/v1/record`                    | record hash; message signed for records                 |
 | `writ/v1/data`                      | hash of signed application data: `D(data)`              |
 | `writ/v1/leaf-id`                   | leaf key id: `H(·, canonical(leafkey))`                 |
 | `writ/v1/root/slh-dsa-shake-128s`   | root suite: SLH-DSA context string                      |
@@ -52,7 +53,8 @@ The labels are:
 No label is a prefix of another, and the `0x00` terminator makes
 `msg(label, data)` unambiguous regardless.
 
-For a body `B` (an event, statement or data signature, §5) with label `L`:
+For a body `B` (an event, statement, data signature or record, §5) with label
+`L`:
 
 ```
 hash(B)    = H(L, canonical(B))
@@ -176,8 +178,8 @@ item = "(" "writ/v1" body *sig ")"
 sig  = "(" "sig" index bytes ")"        ; index: decimal 0–15
 ```
 
-Signatures MUST be in strictly increasing index order. Events, statements and
-data signatures MUST have at least one signature; key and authority items MUST
+Signatures MUST be in strictly increasing index order. Events, statements, data
+signatures and records MUST have at least one signature; key and authority items MUST
 have none. `index` is the position of the signing key in the signer's
 authority (§5.2), and 0 for leaf keys. The signature length MUST be 7856 for
 identity signers and 3373 for leaf signers.
@@ -211,15 +213,20 @@ identity's pending next authority.
 ### 5.3 Log events
 
 ```
-inception = "(" "inception" authority "(" "next" hash ")" [ "(" "max-validity" secs ")" ] ")"
+inception = "(" "inception" authority "(" "next" hash ")" [ "(" "max-validity" secs ")" ] [ publish ] ")"
 rotation  = "(" "rotation" "(" "id" id ")" "(" "n" n ")" "(" "prev" hash ")"
                 "(" "revealed" authority ")"
-                authority "(" "next" hash ")" [ "(" "max-validity" secs ")" ]
+                authority "(" "next" hash ")" [ "(" "max-validity" secs ")" ] [ publish ]
                 "(" "keep" *hash ")" ")"
+publish   = "(" "publish" "(" "max-age" secs ")" *4url ")"
 ```
 
 - `id`, `hash`: 32 bytes. `n` ≥ 1. `secs` ≥ 1.
 - `keep` hashes MUST be strictly increasing (bytewise).
+- `publish`: the identity signs a record (§5.6) at least every `max-age`
+  seconds, at least 3600, and puts it at the URLs, if any. A `url` is 1–255
+  bytes of printable ASCII (0x21–0x7e). The head's `publish` is the one in
+  force; an event without it publishes nothing.
 - An event's signers are its own authority (inception) or its `revealed`
   authority (rotation). Its signature indices MUST be less than that
   authority's key count.
@@ -273,6 +280,23 @@ signature = "(" "signature" issuer "(" "issued" time ")" "(" "context" context "
 `context` is 1–255 bytes chosen by the application. `data` is `D(data)` (§2).
 The signature **hash** is `H("writ/v1/sig", canonical(signature))`.
 
+### 5.6 Records
+
+```
+record = "(" "record" "(" "issuer" id event ")" "(" "issued" time ")" "(" "head" hash ")" "(" "revoked" *hash ")" ")"
+```
+
+- A record says: as of `issued`, the identity's log head is event `event`,
+  whose hash is `head`, and the hashes in `revoked` are every statement and
+  data signature it has revoked. `revoked` hashes MUST be strictly increasing.
+- The record **hash** is `H("writ/v1/record", canonical(record))`.
+- A record is **valid at `now`** when the identity's log is valid with head
+  `event`, `head` is that event's hash, the root suite is accepted, the
+  record is signed by `k` distinct keys of that event's authority, and
+  `issued ≤ now + skew`. A record under any other event is not valid.
+- Every hash a valid record lists is revoked by it. Valid records by one
+  identity are combined: a hash is revoked if any of them lists it.
+
 ## 6. Identity logs
 
 An identity's log is valid when:
@@ -313,6 +337,13 @@ A statement with hash `h` is **valid at time `now`** under policy `P` when:
    - if the statement is not a revocation: no valid revocation by `id` targets
      `h` (a revocation's own validity is checked by these rules, without
      this revocation step — revocations cannot be revoked).
+   - if the statement is not a revocation: no valid record by `id` (§5.6)
+     lists `h`;
+   - **freshness**, if the statement is not a revocation and `id` is not local
+     (below): if the head sets `publish` with `max-age` = `D`, and the
+     statement has no `expires` or `expires − issued > D`, the material MUST
+     hold a valid record by `id` with `issued ≥ now − D`. If the head sets no
+     `publish` and `P.require_records` is set, the statement is not valid.
 3. If the issuer is a leaf key: the leaf suite is accepted by `P`, the material
    contains the leaf key with that id (§5.1), and a signature with index 0
    verifies under it.
@@ -323,7 +354,12 @@ A statement with hash `h` is **valid at time `now`** under policy `P` when:
 
 A data signature by `(id, e)` is valid under rule 2 (without the
 `max-validity` check: data signatures do not expire) and rule 4, with `h` its
-signature hash; by a leaf key, under rules 3 and 4.
+signature hash; by a leaf key, under rules 3 and 4. A data signature has no
+`expires`, so freshness applies to it whenever its signer publishes.
+
+An identity is **local** to a verifier when the verifier holds everything it
+issued, revocations included: typically the verifier's own root, given with
+its issuance log. Local identities need no records.
 
 ## 8. Names
 
@@ -373,8 +409,8 @@ If `S` is an id whose log equivocates, the answer is no. A verifier SHOULD
 report equivocation it encountered when no chain exists.
 
 A **proof** is the logs of every identity involved (the root, every issuer,
-and `S` if it is an id), the grants of one chain, and the name statements that
-put each holder in each subject. Its effective tag is `E`; its effective
+and `S` if it is an id), the grants of one chain, the name statements that put
+each holder in each subject, and the records that made its statements fresh. Its effective tag is `E`; its effective
 expiry is the minimum `expires` of its statements. The reference verifier
 finds a shortest chain by breadth-first search over (holder, effective tag),
 checking signatures only for statements on candidate paths. Because
@@ -391,15 +427,16 @@ A data signature `σ` over data `d` in context `c` is **good for `T`** when
 
 ## 11. Policy
 
-| parameter        | default        | meaning                                |
-| ---------------- | -------------- | -------------------------------------- |
-| suites           | both v1 suites | accepted suites                        |
-| `leaf_ceiling`   | 86400 s        | longest accepted leaf grant (≤ 86400)  |
-| `skew`           | 300 s          | tolerance for `issued` in the future   |
-| `max_chain`      | 16             | most grants in a chain                 |
-| `max_name_depth` | 8              | `D` in §8                              |
-| `max_statements` | 10000          | distinct statements examined per query |
-| `max_signatures` | 10000          | signatures verified per query          |
+| parameter         | default        | meaning                                |
+| ----------------- | -------------- | -------------------------------------- |
+| suites            | both v1 suites | accepted suites                        |
+| `leaf_ceiling`    | 86400 s        | longest accepted leaf grant (≤ 86400)  |
+| `skew`            | 300 s          | tolerance for `issued` in the future   |
+| `max_chain`       | 16             | most grants in a chain                 |
+| `max_name_depth`  | 8              | `D` in §8                              |
+| `max_statements`  | 10000          | distinct statements examined per query |
+| `max_signatures`  | 10000          | signatures verified per query          |
+| `require_records` | off            | refuse issuers that publish no records |
 
 Every revocation of a statement counts as a statement examined, and every
 signature attached to an item counts toward `max_signatures` when the item's

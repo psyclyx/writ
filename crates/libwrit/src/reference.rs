@@ -8,7 +8,7 @@
     clippy::indexing_slicing
 )]
 
-use crate::model::LEAF_CEILING;
+use crate::model::{LEAF_CEILING, MIN_MAX_AGE};
 use crate::scenarios::{Ident, grant_tags, name, path};
 use crate::testing::{FakeLeaf, TestRng};
 use crate::*;
@@ -66,6 +66,26 @@ impl Reference<'_> {
                             return false;
                         }
                     }
+                    // Any valid record by the issuer that lists it (§18.4).
+                    let records: Vec<&Signed<Record>> = self
+                        .m
+                        .records_by(id)
+                        .iter()
+                        .filter(|r| self.record_valid(r))
+                        .filter_map(|r| self.m.record(r))
+                        .collect();
+                    if records.iter().any(|r| r.body.revokes(h)) {
+                        return false;
+                    }
+                    // A publisher's long-lived statements need a record no
+                    // older than its max-age (§18.6).
+                    if let Some(p) = log.head().publish() {
+                        let long = !s.expires.is_some_and(|e| e - s.issued <= p.max_age());
+                        let cutoff = self.now.saturating_sub(p.max_age());
+                        if long && !records.iter().any(|r| r.body.issued >= cutoff) {
+                            return false;
+                        }
+                    }
                 }
             }
             Issuer::Leaf(k) => {
@@ -95,6 +115,20 @@ impl Reference<'_> {
             }
         }
         true
+    }
+
+    /// A record counts when it is made under its issuer's head, names it,
+    /// is signed by the head's authority, and is not from the future.
+    fn record_valid(&self, r: &Hash) -> bool {
+        let Some(rec) = self.m.record(r) else {
+            return false;
+        };
+        let log = self.m.log(&rec.body.id);
+        let Ok(log) = &*log else { return false };
+        rec.body.event == log.head_n()
+            && log.event_hash(log.head_n()) == Some(rec.body.head)
+            && rec.verify_threshold(log.head().authority())
+            && rec.body.issued <= self.now + self.policy.skew
     }
 
     /// Jacobi iteration: `tables[d]` holds members with derivations of depth ≤ d.
@@ -268,6 +302,40 @@ struct GenWorld {
     statements: Vec<GenStatement>,
     max_chain: usize,
     max_name_depth: usize,
+    /// Which identities publish records (DESIGN.md §18.5).
+    publish: [bool; IDS],
+    records: Vec<GenRecord>,
+}
+
+/// A record by identity `id`, revoking the statements at `revoke` (indices
+/// into the generated statements), made before the identity's rotation (so
+/// it no longer counts) or after, with a good or broken signature.
+#[derive(Clone, Debug)]
+struct GenRecord {
+    id: usize,
+    revoke: Vec<usize>,
+    issued: u64,
+    before_rotation: bool,
+    good_sig: bool,
+}
+
+fn arb_record() -> impl Strategy<Value = GenRecord> {
+    (
+        0..IDS,
+        proptest::collection::vec(0..24usize, 0..3),
+        0..100u64,
+        proptest::bool::weighted(0.2),
+        proptest::bool::weighted(0.9),
+    )
+        .prop_map(
+            |(id, revoke, issued, before_rotation, good_sig)| GenRecord {
+                id,
+                revoke,
+                issued,
+                before_rotation,
+                good_sig,
+            },
+        )
 }
 
 const TAGS: [&str; 5] = ["()", "(a)", "(a b)", "(b)", "(a b c)"];
@@ -338,6 +406,8 @@ fn arb_world() -> impl Strategy<Value = GenWorld> {
         proptest::collection::vec(arb_statement(), 0..24),
         2..5usize,
         1..4usize,
+        proptest::array::uniform4(proptest::bool::weighted(0.3)),
+        proptest::collection::vec(arb_record(), 0..8),
     )
         .prop_map(
             |(
@@ -348,6 +418,8 @@ fn arb_world() -> impl Strategy<Value = GenWorld> {
                 statements,
                 max_chain,
                 max_name_depth,
+                publish,
+                records,
             )| {
                 GenWorld {
                     rotated,
@@ -357,6 +429,8 @@ fn arb_world() -> impl Strategy<Value = GenWorld> {
                     statements,
                     max_chain,
                     max_name_depth,
+                    publish,
+                    records,
                 }
             },
         )
@@ -371,9 +445,13 @@ struct Built {
 }
 
 fn build(w: &GenWorld) -> Built {
-    let mut idents: Vec<Ident> = (0..IDS)
-        .map(|i| Ident::with_policy(i as u8 + 1, w.max_validity[i].then_some(30)))
-        .collect();
+    let make = |i: usize| {
+        let publish = w.publish[i]
+            .then(|| Publish::new(MIN_MAX_AGE, vec![]))
+            .flatten();
+        Ident::incept(i as u8 + 1, w.max_validity[i].then_some(30), publish)
+    };
+    let mut idents: Vec<Ident> = (0..IDS).map(make).collect();
     let ids: Vec<Id> = idents.iter().map(|i| i.id).collect();
     let leaves: Vec<FakeLeaf> = (0..LEAVES).map(|i| FakeLeaf::new(i as u8 + 50)).collect();
     let opaque = OpaqueKey {
@@ -471,7 +549,26 @@ fn build(w: &GenWorld) -> Built {
         hashes.push(signed.body.hash());
         items.push(Item::Statement(signed));
     }
+    let record = |ident: &Ident, r: &GenRecord| {
+        let revoked = r
+            .revoke
+            .iter()
+            .filter_map(|j| hashes.get(*j).copied())
+            .collect();
+        let mut rec = ident.record(revoked, r.issued);
+        if !r.good_sig {
+            rec.sigs[0].bytes[0] ^= 1;
+        }
+        Item::Record(rec)
+    };
     for i in 0..IDS {
+        let mine: Vec<&GenRecord> = w.records.iter().filter(|r| r.id == i).collect();
+        // Records made before a rotation no longer count after it.
+        items.extend(
+            mine.iter()
+                .filter(|r| r.before_rotation)
+                .map(|r| record(&idents[i], r)),
+        );
         if w.rotated[i] {
             let keep: Vec<Hash> = by_issuer[i]
                 .iter()
@@ -482,10 +579,15 @@ fn build(w: &GenWorld) -> Built {
             let mv = idents[i].events[0].body.max_validity();
             idents[i].rotate(keep, mv);
         }
+        items.extend(
+            mine.iter()
+                .filter(|r| !r.before_rotation)
+                .map(|r| record(&idents[i], r)),
+        );
         items.extend(idents[i].items());
     }
     if w.equivocate {
-        let mut twin = Ident::with_policy(2, w.max_validity[1].then_some(30));
+        let mut twin = make(1);
         items.push(Item::Event(twin.rotate(vec![Hash([1; 32])], Some(12_345))));
     }
     Built {
@@ -646,6 +748,7 @@ fn generator_coverage() {
     let mut runner = TestRunner::deterministic();
     let (mut ok, mut multi_step, mut named, mut denied, mut compromised) = (0, 0, 0, 0, 0);
     let mut several = 0;
+    let mut with_records = 0;
     for _ in 0..3000 {
         let w = arb_world().new_tree(&mut runner).unwrap().current();
         let q = arb_holder().new_tree(&mut runner).unwrap().current();
@@ -662,6 +765,7 @@ fn generator_coverage() {
                     ok += 1;
                     multi_step += usize::from(p.steps.len() > 1);
                     named += usize::from(p.steps.iter().any(|s| !s.names.is_empty()));
+                    with_records += usize::from(!p.records.is_empty());
                     several += usize::from(p.steps.iter().any(|s| {
                         matches!(
                             b.material.statement(&s.grant).map(|st| &st.body.claim),
@@ -675,8 +779,8 @@ fn generator_coverage() {
         }
     }
     eprintln!(
-        "ok {ok} (multi-step {multi_step}, via names {named}, several tags {several}), denied {denied}, compromised {compromised}"
+        "ok {ok} (multi-step {multi_step}, via names {named}, several tags {several}, records {with_records}), denied {denied}, compromised {compromised}"
     );
     assert!(ok > 300 && denied > 300, "ok {ok} denied {denied}");
-    assert!(multi_step > 20 && named > 20 && compromised > 5 && several > 20);
+    assert!(multi_step > 20 && named > 20 && compromised > 5 && several > 20 && with_records > 20);
 }

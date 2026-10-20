@@ -7,7 +7,8 @@ use crate::hash::{Hash, Id};
 use crate::keys::{PublicKey, Rng, SignError, Signer};
 use crate::log::Log;
 use crate::model::{
-    Authority, Body, Claim, DataSig, Event, Inception, Issuer, Rotation, Sig, Signed, Statement,
+    Authority, Body, Claim, DataSig, Event, Inception, Issuer, Publish, Record, Rotation, Sig,
+    Signed, Statement,
 };
 use core::fmt;
 
@@ -140,6 +141,7 @@ pub fn incept(
     authority: Authority,
     next: &Authority,
     max_validity: Option<u64>,
+    publish: Option<Publish>,
     signers: &[&dyn Signer],
     rng: &mut dyn Rng,
 ) -> Result<(Id, Signed<Event>), IssueError> {
@@ -150,6 +152,7 @@ pub fn incept(
         authority: authority.clone(),
         next: next.hash(),
         max_validity,
+        publish,
     });
     let id = event.id();
     Ok((id, sign_with_authority(event, &authority, signers, rng)?))
@@ -167,6 +170,8 @@ pub struct RotationPlan {
     pub next: Authority,
     /// The statement lifetime limit from now on.
     pub max_validity: Option<u64>,
+    /// Where the identity publishes revocation records from now on.
+    pub publish: Option<Publish>,
     /// Earlier statements and signatures that stay valid.
     pub keep: Vec<Hash>,
 }
@@ -184,6 +189,7 @@ pub fn rotate(
         authority,
         next,
         max_validity,
+        publish,
         mut keep,
     } = plan;
     if revealed.hash() != *log.head().next() {
@@ -205,6 +211,7 @@ pub fn rotate(
         authority,
         next: next.hash(),
         max_validity,
+        publish,
         keep,
     });
     sign_with_authority(event, &revealed, signers, rng)
@@ -261,6 +268,31 @@ pub fn sign_data(
         issued,
         context: context.to_vec(),
         data,
+    };
+    sign_with_authority(body, log.head().authority(), signers, rng)
+}
+
+/// Signs a revocation record (DESIGN.md §18.4) as the identity of `log`,
+/// under its head: everything in `revoked` is revoked, and the record is
+/// fresh from `issued`. `revoked` may be in any order; duplicates are dropped.
+pub fn sign_record(
+    log: &Log,
+    mut revoked: Vec<Hash>,
+    issued: crate::Time,
+    signers: &[&dyn Signer],
+    rng: &mut dyn Rng,
+) -> Result<Signed<Record>, IssueError> {
+    revoked.sort();
+    revoked.dedup();
+    let head = log
+        .event_hash(log.head_n())
+        .ok_or(IssueError::Rule("empty log"))?;
+    let body = Record {
+        id: log.id(),
+        event: log.head_n(),
+        issued,
+        head,
+        revoked,
     };
     sign_with_authority(body, log.head().authority(), signers, rng)
 }

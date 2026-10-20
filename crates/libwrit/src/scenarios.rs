@@ -25,12 +25,26 @@ impl Ident {
     }
 
     pub fn with_policy(seed: u8, max_validity: Option<u64>) -> Ident {
+        Ident::incept(seed, max_validity, None)
+    }
+
+    /// An identity that publishes records with max-age `max_age` (§18.5).
+    pub fn publishing(seed: u8, max_age: u64) -> Ident {
+        Ident::incept(
+            seed,
+            None,
+            Publish::new(max_age, vec!["https://example.org/r".into()]),
+        )
+    }
+
+    pub(crate) fn incept(seed: u8, max_validity: Option<u64>, publish: Option<Publish>) -> Ident {
         let k0 = FakeRoot::new(seed.wrapping_mul(16));
         let k1 = FakeRoot::new(seed.wrapping_mul(16) + 1);
         let (id, ev) = incept(
             Authority::single(k0.0),
             &Authority::single(k1.0),
             max_validity,
+            publish,
             &[&k0],
             &mut TestRng::new(0),
         )
@@ -76,6 +90,7 @@ impl Ident {
                 authority: Authority::single(current.0),
                 next: Authority::single(next.0),
                 max_validity,
+                publish: self.log().head().publish().cloned(),
                 keep,
             },
             &[&revealed],
@@ -128,6 +143,18 @@ impl Ident {
 
     pub fn items(&self) -> Vec<Item> {
         self.events.iter().cloned().map(Item::Event).collect()
+    }
+
+    /// A record under the head, signed by the head's key (§18.4).
+    pub fn record(&self, revoked: Vec<Hash>, issued: Time) -> Signed<Record> {
+        sign_record(
+            &self.log(),
+            revoked,
+            issued,
+            &[&self.key(self.head())],
+            &mut TestRng::new(0),
+        )
+        .unwrap()
     }
 }
 
@@ -809,7 +836,7 @@ fn k_of_n() {
     let next = Authority::single(FakeRoot::new(110).0);
     let mut rng = TestRng::new(0);
     assert_eq!(
-        incept(authority.clone(), &next, None, &[&keys[0]], &mut rng).map(|_| ()),
+        incept(authority.clone(), &next, None, None, &[&keys[0]], &mut rng).map(|_| ()),
         Err(IssueError::BelowThreshold { k: 2, have: 1 })
     );
     // Signing twice with one key doesn't count twice.
@@ -817,6 +844,7 @@ fn k_of_n() {
         incept(
             authority.clone(),
             &next,
+            None,
             None,
             &[&keys[0], &keys[0]],
             &mut rng
@@ -826,6 +854,7 @@ fn k_of_n() {
     let (id, ev) = incept(
         authority.clone(),
         &next,
+        None,
         None,
         &[&keys[0], &keys[2]],
         &mut rng,
@@ -1207,6 +1236,7 @@ fn next_keys_only_rotate() {
                 authority: Authority::single(current.0),
                 next: Authority::single(recovery.0),
                 max_validity: None,
+                publish: None,
                 keep: vec![],
             },
             &[&recovery],
@@ -1363,6 +1393,7 @@ fn undecodable_items_are_not_signed() {
         authority: Authority::single(FakeRoot::new(40).0),
         next: Authority::single(FakeRoot::new(41).0),
         max_validity: None,
+        publish: None,
         keep,
     };
     assert_eq!(
@@ -1461,4 +1492,217 @@ fn several_tags_encode_canonically() {
         Tags::new(vec![tag("(a)"), tag("(a)")]).map(|t| t.as_slice().len()),
         Ok(1)
     );
+}
+
+// -- records and freshness (DESIGN.md §18.4–§18.6) ------------------------
+
+const HOUR: u64 = 3600;
+const NOW: Time = 100_000;
+
+/// a (root) grants b `()` to delegate; b publishes with max-age one hour
+/// and grants c `(x)`. Freshness is about b's grant to c.
+fn chain_through_publisher() -> (Ident, Ident, Ident, Signed<Statement>) {
+    let a = Ident::new(1);
+    let b = Ident::publishing(2, HOUR);
+    let c = Ident::new(3);
+    let g = b.say(grant(Subject::Id(c.id), "(x)", false), 10, None);
+    (a, b, c, g)
+}
+
+fn world_with(a: &Ident, b: &Ident, c: &Ident, extra: Vec<Item>) -> World {
+    let ab = a.say(grant(Subject::Id(b.id), "()", true), 10, None);
+    World::new(
+        a,
+        [st(ab)]
+            .into_iter()
+            .chain(b.items())
+            .chain(c.items())
+            .chain(extra),
+    )
+}
+
+#[test]
+fn a_publishing_issuer_needs_a_fresh_record() {
+    let (a, b, c, g) = chain_through_publisher();
+    let carol = Holder::Id(c.id);
+    // No record: refused, and the reason says why.
+    let w = world_with(&a, &b, &c, vec![st(g.clone())]);
+    let d = w.check(carol.clone(), "(x)", NOW).unwrap_err();
+    assert_eq!(
+        rejected_for(&d, g.body.hash()),
+        Some(Reason::NoFreshRecord { max_age: HOUR })
+    );
+    // A record younger than the max-age: allowed, and the proof carries it.
+    let fresh = b.record(vec![], NOW - HOUR + 1);
+    let w = world_with(&a, &b, &c, vec![st(g.clone()), Item::Record(fresh.clone())]);
+    let proof = w.check(carol.clone(), "(x)", NOW).unwrap();
+    assert!(proof.records.contains(&fresh.body.hash()));
+    // Too old: refused again.
+    let stale = b.record(vec![], NOW - HOUR - 1);
+    let w = world_with(&a, &b, &c, vec![st(g), Item::Record(stale)]);
+    assert!(w.check(carol, "(x)", NOW).is_err());
+}
+
+#[test]
+fn short_lived_statements_need_no_record() {
+    let (a, b, c, _) = chain_through_publisher();
+    let short = b.say(
+        grant(Subject::Id(c.id), "(x)", false),
+        NOW - 10,
+        Some(NOW - 10 + HOUR),
+    );
+    let w = world_with(&a, &b, &c, vec![st(short)]);
+    assert!(w.check(Holder::Id(c.id), "(x)", NOW).is_ok());
+    // One second longer than the max-age, and it needs one.
+    let long = b.say(
+        grant(Subject::Id(c.id), "(x)", false),
+        NOW - 10,
+        Some(NOW - 10 + HOUR + 1),
+    );
+    let w = world_with(&a, &b, &c, vec![st(long)]);
+    assert!(w.check(Holder::Id(c.id), "(x)", NOW).is_err());
+}
+
+#[test]
+fn records_revoke_and_are_combined() {
+    let (a, b, c, g) = chain_through_publisher();
+    let carol = Holder::Id(c.id);
+    let revoking = b.record(vec![g.body.hash()], NOW - 100);
+    let w = world_with(
+        &a,
+        &b,
+        &c,
+        vec![st(g.clone()), Item::Record(revoking.clone())],
+    );
+    let d = w.check(carol.clone(), "(x)", NOW).unwrap_err();
+    assert_eq!(
+        rejected_for(&d, g.body.hash()),
+        Some(Reason::Revoked(revoking.body.hash()))
+    );
+    // A newer record that leaves it out does not bring it back.
+    let newer = b.record(vec![], NOW - 10);
+    let w = world_with(
+        &a,
+        &b,
+        &c,
+        vec![st(g), Item::Record(revoking), Item::Record(newer)],
+    );
+    assert!(w.check(carol, "(x)", NOW).is_err());
+}
+
+#[test]
+fn a_record_counts_only_under_the_head() {
+    let a = Ident::new(1);
+    let mut b = Ident::publishing(2, HOUR);
+    let c = Ident::new(3);
+    let old = b.record(vec![], NOW - 10);
+    b.rotate(vec![], None);
+    let g = b.say(grant(Subject::Id(c.id), "(x)", false), 10, None);
+    // The record from before the rotation says nothing now.
+    let w = world_with(&a, &b, &c, vec![st(g.clone()), Item::Record(old)]);
+    assert_eq!(
+        rejected_for(
+            &w.check(Holder::Id(c.id), "(x)", NOW).unwrap_err(),
+            g.body.hash()
+        ),
+        Some(Reason::NoFreshRecord { max_age: HOUR })
+    );
+    let new = b.record(vec![], NOW - 10);
+    let w = world_with(&a, &b, &c, vec![st(g), Item::Record(new)]);
+    assert!(w.check(Holder::Id(c.id), "(x)", NOW).is_ok());
+}
+
+#[test]
+fn local_roots_need_no_record_and_policy_can_require_them() {
+    // The root itself publishes; given as local, its grant needs no record.
+    let a = Ident::publishing(1, HOUR);
+    let b = Ident::new(2);
+    let g = a.say(grant(Subject::Id(b.id), "(x)", false), 10, None);
+    let w = World::new(&a, [st(g)].into_iter().chain(b.items()));
+    let bob = Holder::Id(b.id);
+    assert!(w.check(bob.clone(), "(x)", NOW).is_err());
+    let local = [a.id];
+    let v = Verifier::new(&w.roots, &w.material, &w.policy).with_local(&local);
+    assert!(v.check(&bob, &tag("(x)"), NOW).is_ok());
+    // require_records refuses issuers that don't publish, except local ones.
+    let c = Ident::new(3);
+    let d = Ident::new(4);
+    let g = c.say(grant(Subject::Id(d.id), "(x)", false), 10, None);
+    let mut w = World::new(&c, [st(g.clone())].into_iter().chain(d.items()));
+    w.policy.require_records = true;
+    let denial = w.check(Holder::Id(d.id), "(x)", NOW).unwrap_err();
+    assert_eq!(
+        rejected_for(&denial, g.body.hash()),
+        Some(Reason::NoRecords)
+    );
+    let local = [c.id];
+    let v = Verifier::new(&w.roots, &w.material, &w.policy).with_local(&local);
+    assert!(v.check(&Holder::Id(d.id), &tag("(x)"), NOW).is_ok());
+}
+
+#[test]
+fn revocation_statements_need_no_record() {
+    // A revocation removes; it never needs freshness to count.
+    let (a, b, c, _) = chain_through_publisher();
+    let short = b.say(
+        grant(Subject::Id(c.id), "(x)", false),
+        NOW - 10,
+        Some(NOW + 100),
+    );
+    let r = b.say(
+        Claim::Revoke {
+            target: short.body.hash(),
+        },
+        NOW - 5,
+        None,
+    );
+    let w = world_with(&a, &b, &c, vec![st(short), st(r)]);
+    assert!(w.check(Holder::Id(c.id), "(x)", NOW).is_err());
+}
+
+#[test]
+fn records_and_publish_encode_canonically() {
+    let b = Ident::publishing(2, HOUR);
+    let item = Item::Event(b.events[0].clone());
+    assert_eq!(Item::decode(&item.encode()).as_ref(), Ok(&item));
+    let rec = Item::Record(b.record(vec![Hash([2; 32]), Hash([1; 32])], 5));
+    assert_eq!(Item::decode(&rec.encode()).as_ref(), Ok(&rec));
+    let Item::Record(r) = &rec else { panic!() };
+    assert_eq!(r.body.revoked, vec![Hash([1; 32]), Hash([2; 32])]);
+    assert!(Publish::new(HOUR - 1, vec![]).is_none());
+    assert!(Publish::new(HOUR, vec!["a b".into()]).is_none());
+    assert!(Publish::new(HOUR, vec![String::new()]).is_none());
+    assert!(Publish::new(HOUR, vec!["u".into(); 5]).is_none());
+    assert!(Publish::new(HOUR, vec!["https://x".into(); 4]).is_some());
+}
+
+#[test]
+fn data_signatures_by_a_publisher_need_a_fresh_record() {
+    let a = Ident::new(1);
+    let b = Ident::publishing(2, HOUR);
+    let data = Hash::of_data(b"release");
+    let ab = a.say(grant(Subject::Id(b.id), "(release)", false), 10, None);
+    let sig = sign_data(
+        data,
+        b"app/v1",
+        20,
+        &b.log(),
+        &[&b.keys[0]],
+        &mut TestRng::new(0),
+    )
+    .unwrap();
+    let base: Vec<Item> = [st(ab)].into_iter().chain(b.items()).collect();
+    let w = World::new(&a, base.clone());
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    assert_eq!(
+        v.verify(&sig, &data, b"app/v1", &tag("(release)"), NOW),
+        Err(Denial::Signature(Reason::NoFreshRecord { max_age: HOUR }))
+    );
+    let rec = b.record(vec![], NOW - 60);
+    let w = World::new(&a, base.into_iter().chain([Item::Record(rec.clone())]));
+    let v = Verifier::new(&w.roots, &w.material, &w.policy);
+    let proof = v
+        .verify(&sig, &data, b"app/v1", &tag("(release)"), NOW)
+        .unwrap();
+    assert!(proof.records.contains(&rec.body.hash()));
 }

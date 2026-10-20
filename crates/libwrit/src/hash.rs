@@ -18,6 +18,8 @@ pub mod label {
     pub const STATEMENT: &str = "writ/v1/stmt";
     /// Data signatures: the signed body, hashed for `keep` and `revoke`.
     pub const SIGNATURE: &str = "writ/v1/sig";
+    /// Revocation records (DESIGN.md §18.4): hash and signed message.
+    pub const RECORD: &str = "writ/v1/record";
     /// Hash of signed data (SHAKE256, so it can be computed incrementally).
     pub const DATA: &str = "writ/v1/data";
     /// Leaf key ids: how leaf-issued items name their issuer.

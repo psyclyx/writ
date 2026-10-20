@@ -1074,7 +1074,9 @@ writ-tool   grant with several TAGs; init/rotate --publish --max-age;
 
 1. Multi-tag grants: format, SPEC, vectors, `writ grant` with several TAGs.
 2. Records and `publish`: format, the freshness rule, SPEC, vectors (fresh,
-   stale, exempt, local root, three-issuer chains).
+   stale, exempt, local root, three-issuer chains). Built 2026-10-19 in
+   libwrit (`Publish`, `Record`, `sign_record`, `Verifier::with_local`,
+   `Policy::require_records`); proofs carry the records they relied on.
 3. The CLI: `--publish`/`--max-age`, `export --record`, `--fetch` (libcurl),
    `--state`, warnings.
 4. Channel binding.

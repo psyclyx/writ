@@ -27,13 +27,14 @@ lines are comments. Hex is lower case.
   MUST reject (SPEC §3, §5); the first case is the valid original.
 - `chains/world.writ` — a bundle exercising every rule: names, delegation,
   narrowing, expiry, revocation, future issue, leaf keys, an opaque key, a
-  rotation with `keep`, an equivocating identity, and grants with several
-  tags (DESIGN §18.2).
+  rotation with `keep`, an equivocating identity, grants with several tags
+  (DESIGN §18.2), and an identity that publishes records, with one record
+  (DESIGN §18.4).
 - `chains/items.txt` — each item in `world.writ`: kind, hash (and id for
   inceptions), encoded length, and the label the cases use.
 - `chains/cases.txt` — queries against `world.writ` from the root `me`, with
   the expected answer: for allowed, the chain (statement labels in order),
-  effective tag and expiry; for denied, the reason and each rejected
+  effective tag, expiry, and the records it relied on; for denied, the reason and each rejected
   candidate with its reason kind.
 - `chains/signature.writ`, `chains/signature.txt` — a leaf-signed data
   signature and its expected verification results.
@@ -42,4 +43,6 @@ Reason kinds: `malformed`, `log`, `unknown-event`, `not-kept`,
 `unknown-leaf` (the leaf key is not in the material), `bad-signature`, `suite`, `revoked`, `not-yet-valid`, `expired`,
 `max-validity`, `leaf-ceiling`, `covers` (reaches the subject with too narrow
 a tag), `outside-issuer` (grants outside what its issuer holds), `limit` (not
-decided within the query's resource limits; SPEC §11).
+decided within the query's resource limits; SPEC §11), `no-fresh-record` (its
+issuer publishes records and none is recent enough; SPEC §7), `no-records` (its
+issuer publishes none and the policy requires them).

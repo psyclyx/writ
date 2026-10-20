@@ -2,6 +2,11 @@
 # inceptions), and the canonical encoding's length. SPEC.md §6.
 
 kind = inception
+hash = e0ca1c45925a3441162cd6911b029dafc80e9de9ea98cc36c22b381e6b1c972d
+id = writ12awk4f6n3qynqz20xr6nxv9g6g7qhwhk98heyde7ky9kl9eenx2qzhkmxh
+encoded-length = 8076
+
+kind = inception
 hash = 657ee9cc86ef93348526f642956997a4866760b8c15a8fa3723bb3c51f036e3b
 id = writ1vgnuqqchjwxkacx72fcpgdjqa3dx2ravcctcvj57ve6vawz83rtq4qek2d
 encoded-length = 8012
@@ -150,3 +155,28 @@ kind = grant
 hash = 22efad3cd05f19061c9a8fbd55782a37f438a78f095d50ad8d5b311e18b19ff2
 label = bob-grants-app-team-b
 encoded-length = 8056
+
+kind = grant
+hash = 5431d332b2d95474d18c28239c22a87a7f65d6d1b78e015a262cc7217c486c6d
+label = me-grants-pat
+encoded-length = 8027
+
+kind = grant
+hash = 78088cc702e39294b19c73c2d2b41d97ae59ce7d5816c0548159fb5efb87df97
+label = pat-grants-bob-long
+encoded-length = 8021
+
+kind = grant
+hash = caac6553671a2675ca2303d59122b304fe7ea1f1279a3c97621d1aa5689c744a
+label = pat-grants-bob-short
+encoded-length = 8046
+
+kind = grant
+hash = d8ae9293acf43ba08208cb7c4a11126fd60d8a2858bcb2f3a6e0e310f50856a5
+label = pat-grants-bob-revoked
+encoded-length = 8024
+
+kind = record
+hash = 847218460d0d41e140c4aa418cc0cb3c388ac6d44478e3541a2d8717146386d5
+label = pat-record
+encoded-length = 8052

@@ -72,6 +72,7 @@ fn main() {
             Authority::single(k.root_key()),
             &Authority::single(next.root_key()),
             None,
+            None,
             &[k],
             &mut rng,
         )

@@ -31,14 +31,14 @@ mod testing;
 pub use hash::{DataHasher, Hash, ID_HRP, Id, LeafId, label, labelled_message};
 pub use issue::{
     IssueError, RotationPlan, incept, issue, issue_leaf, rotate, sign_data, sign_data_leaf,
-    sign_with_authority,
+    sign_record, sign_with_authority,
 };
 pub use keys::{LeafKey, PublicKey, Rng, RootKey, Seed, Signer, Suite};
 pub use log::{Evidence, Log, LogError, equivocation};
 pub use material::{Material, Principal};
 pub use model::{
     Authority, Body, Claim, DataSig, DecodeError, Event, Inception, Issuer, Item, NamePath,
-    OpaqueKey, Rotation, Sig, Signed, Statement, Subject,
+    OpaqueKey, Publish, Record, Rotation, Sig, Signed, Statement, Subject,
 };
 pub use tag::{MAX_GRANT_TAGS, Tag, Tags, TagsError};
 pub use time::{Floor, Time};

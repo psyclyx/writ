@@ -4,7 +4,9 @@
 use crate::hash::{Hash, Id, LeafId};
 use crate::keys::{LeafKey, PublicKey};
 use crate::log::{Evidence, Log, LogError};
-use crate::model::{Body, Claim, DataSig, Event, Issuer, Item, Sig, Signed, Statement, Subject};
+use crate::model::{
+    Body, Claim, DataSig, Event, Issuer, Item, Record, Sig, Signed, Statement, Subject,
+};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -25,6 +27,8 @@ pub struct Material {
     rotations: BTreeMap<(Id, u64), Vec<Signed<Event>>>,
     statements: BTreeMap<Hash, Signed<Statement>>,
     signatures: BTreeMap<Hash, Signed<DataSig>>,
+    records: BTreeMap<Hash, Signed<Record>>,
+    records_by: BTreeMap<Id, Vec<Hash>>,
     names: BTreeMap<(Id, Vec<u8>), Vec<Hash>>,
     grants: BTreeMap<Principal, Vec<Hash>>,
     revocations: BTreeMap<(Id, Hash), Vec<Hash>>,
@@ -140,6 +144,20 @@ impl Material {
                     }
                 }
             }
+            Item::Record(r) => {
+                let h = r.body.hash();
+                match self.records.get_mut(&h) {
+                    Some(existing) => {
+                        if merge_sigs(&mut self.merged, h, &mut existing.sigs, r.sigs) {
+                            self.sig_cache.get_mut().retain(|(b, _, _), _| *b != h);
+                        }
+                    }
+                    None => {
+                        self.records_by.entry(r.body.id).or_default().push(h);
+                        self.records.insert(h, r);
+                    }
+                }
+            }
             Item::PublicKey(PublicKey::Leaf(k)) => {
                 self.leaf_keys.entry(k.id()).or_insert(k);
             }
@@ -232,6 +250,19 @@ impl Material {
     pub fn revocations(&self, issuer: &Id, target: &Hash) -> &[Hash] {
         self.revocations
             .get(&(*issuer, *target))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// A revocation record by hash.
+    pub fn record(&self, hash: &Hash) -> Option<&Signed<Record>> {
+        self.records.get(hash)
+    }
+
+    /// Hashes of the revocation records made by `id`.
+    pub fn records_by(&self, id: &Id) -> &[Hash] {
+        self.records_by
+            .get(id)
             .map(Vec::as_slice)
             .unwrap_or_default()
     }

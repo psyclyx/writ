@@ -36,6 +36,7 @@ fn identity_leaf_and_rotation() {
         Authority::single(warm.root_key()),
         &Authority::single(cold.root_key()),
         None,
+        None,
         &[&warm],
         &mut rng,
     )
@@ -123,6 +124,7 @@ fn identity_leaf_and_rotation() {
         authority: Authority::single(warm2.root_key()),
         next: Authority::single(cold2.root_key()),
         max_validity: None,
+        publish: None,
         keep: vec![],
     };
     let rotation = rotate(&log, plan(&cold), &[&cold], &mut rng).unwrap();
@@ -151,6 +153,7 @@ fn two_of_two_inception() {
         authority.clone(),
         &Authority::single(next.root_key()),
         Some(3600),
+        None,
         &[&a, &b],
         &mut rng,
     )

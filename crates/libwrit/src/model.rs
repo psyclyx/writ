@@ -385,6 +385,69 @@ pub struct Inception {
     pub next: Hash,
     /// Longest permitted statement lifetime, if any (DESIGN.md §4.5).
     pub max_validity: Option<u64>,
+    /// Where the identity publishes revocation records, if it does
+    /// (DESIGN.md §18.5).
+    pub publish: Option<Publish>,
+}
+
+/// Shortest `max-age` an identity may publish with.
+pub const MIN_MAX_AGE: u64 = 3600;
+/// Most URLs in a `publish` field.
+pub const MAX_PUBLISH_URLS: usize = 4;
+
+/// An identity's promise to sign a revocation record at least every
+/// `max_age` seconds, and where to find it (DESIGN.md §18.5). Verifiers
+/// then need a record no older than `max_age` before they accept a
+/// long-lived statement by the identity (§18.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Publish {
+    max_age: u64,
+    urls: Vec<String>,
+}
+
+impl Publish {
+    /// `None` if `max_age` is below [`MIN_MAX_AGE`], there are more than
+    /// [`MAX_PUBLISH_URLS`] URLs, or a URL is empty, over 255 bytes, or not
+    /// printable ASCII without spaces.
+    pub fn new(max_age: u64, urls: Vec<String>) -> Option<Publish> {
+        let ok = max_age >= MIN_MAX_AGE
+            && urls.len() <= MAX_PUBLISH_URLS
+            && urls.iter().all(|u| valid_url(u.as_bytes()));
+        ok.then_some(Publish { max_age, urls })
+    }
+
+    /// D: verifiers refuse a record older than this many seconds.
+    pub fn max_age(&self) -> u64 {
+        self.max_age
+    }
+
+    /// Where the records are published.
+    pub fn urls(&self) -> &[String] {
+        &self.urls
+    }
+
+    fn to_sexp(&self) -> Sexp {
+        tagged(
+            "publish",
+            core::iter::once(tagged("max-age", [num(self.max_age)]))
+                .chain(self.urls.iter().map(Sexp::atom)),
+        )
+    }
+
+    fn from_fields(mut f: Fields<'_>) -> Result<Publish> {
+        let max_age = decimal(f.single("max-age", "max-age")?, "max-age")?;
+        let mut urls = Vec::new();
+        while !f.is_empty() {
+            let u = f.atom("publish url")?;
+            urls.push(String::from_utf8(u.to_vec()).map_err(|_| DecodeError::Malformed("url"))?);
+        }
+        Publish::new(max_age, urls).ok_or(DecodeError::Malformed("publish"))
+    }
+}
+
+/// 1–255 bytes of printable ASCII, no spaces.
+fn valid_url(u: &[u8]) -> bool {
+    !u.is_empty() && u.len() <= MAX_ATOM && u.iter().all(|b| (0x21..=0x7e).contains(b))
 }
 
 /// A later event (DESIGN.md §4.3).
@@ -405,6 +468,8 @@ pub struct Rotation {
     pub next: Hash,
     /// Statement lifetime limit from now on.
     pub max_validity: Option<u64>,
+    /// Where the identity publishes revocation records from now on.
+    pub publish: Option<Publish>,
     /// Hashes of earlier statements and signatures that stay valid. Sorted, distinct.
     pub keep: Vec<Hash>,
 }
@@ -460,6 +525,14 @@ impl Event {
         }
     }
 
+    /// Where the identity publishes revocation records under this event.
+    pub fn publish(&self) -> Option<&Publish> {
+        match self {
+            Event::Inception(i) => i.publish.as_ref(),
+            Event::Rotation(r) => r.publish.as_ref(),
+        }
+    }
+
     /// The identity this event belongs to.
     pub fn id(&self) -> Id {
         match self {
@@ -480,11 +553,13 @@ impl Event {
         authority: &Authority,
         next: &Hash,
         max_validity: Option<u64>,
+        publish: Option<&Publish>,
     ) -> impl Iterator<Item = Sexp> {
         [
             Some(authority.to_sexp()),
             Some(tagged("next", [Sexp::atom(next.0)])),
             max_validity.map(|mv| tagged("max-validity", [num(mv)])),
+            publish.map(Publish::to_sexp),
         ]
         .into_iter()
         .flatten()
@@ -523,7 +598,7 @@ impl Body for Event {
         match self {
             Event::Inception(i) => tagged(
                 "inception",
-                Event::fields_tail(&i.authority, &i.next, i.max_validity),
+                Event::fields_tail(&i.authority, &i.next, i.max_validity, i.publish.as_ref()),
             ),
             Event::Rotation(r) => tagged(
                 "rotation",
@@ -534,14 +609,20 @@ impl Body for Event {
                     tagged("revealed", [r.revealed.to_sexp()]),
                 ]
                 .into_iter()
-                .chain(Event::fields_tail(&r.authority, &r.next, r.max_validity))
+                .chain(Event::fields_tail(
+                    &r.authority,
+                    &r.next,
+                    r.max_validity,
+                    r.publish.as_ref(),
+                ))
                 .chain([tagged("keep", r.keep.iter().map(|h| Sexp::atom(h.0)))]),
             ),
         }
     }
 
     fn from_sexp(s: &Sexp) -> Result<Event> {
-        fn tail(f: &mut Fields<'_>) -> Result<(Authority, Hash, Option<u64>)> {
+        type Tail = (Authority, Hash, Option<u64>, Option<Publish>);
+        fn tail(f: &mut Fields<'_>) -> Result<Tail> {
             let authority = Authority::from_sexp(f.next("authority")?)?;
             let next = Hash(atom32(f.single("next", "next")?, "next")?);
             let mv = f
@@ -551,15 +632,20 @@ impl Body for Event {
             if mv == Some(0) {
                 return bad("max-validity must be positive");
             }
-            Ok((authority, next, mv))
+            let publish = f
+                .optional("publish", "publish")?
+                .map(Publish::from_fields)
+                .transpose()?;
+            Ok((authority, next, mv, publish))
         }
         if let Ok(mut f) = Fields::of(s, "inception", "event") {
-            let (authority, next, max_validity) = tail(&mut f)?;
+            let (authority, next, max_validity, publish) = tail(&mut f)?;
             f.end("inception")?;
             return Ok(Event::Inception(Inception {
                 authority,
                 next,
                 max_validity,
+                publish,
             }));
         }
         let mut f = Fields::of(s, "rotation", "event")?;
@@ -572,7 +658,7 @@ impl Body for Event {
         let mut rf = f.field("revealed", "revealed")?;
         let revealed = Authority::from_sexp(rf.next("revealed authority")?)?;
         rf.end("revealed")?;
-        let (authority, next, max_validity) = tail(&mut f)?;
+        let (authority, next, max_validity, publish) = tail(&mut f)?;
         let mut kf = f.field("keep", "keep")?;
         let mut keep = Vec::new();
         while !kf.is_empty() {
@@ -590,6 +676,7 @@ impl Body for Event {
             authority,
             next,
             max_validity,
+            publish,
             keep,
         }))
     }
@@ -1003,6 +1090,79 @@ impl Body for DataSig {
 }
 
 // ---------------------------------------------------------------------------
+// Records
+
+/// A revocation record (DESIGN.md §18.4): "as of `issued`, my log's head is
+/// `head`, and these are all the statements and data signatures I have
+/// revoked." Signed by the current authority of event `event`, which must
+/// be the head.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Record {
+    /// The identity.
+    pub id: Id,
+    /// The event the record is made under: the log's head.
+    pub event: u64,
+    /// When it was signed.
+    pub issued: Time,
+    /// Hash of the head event.
+    pub head: Hash,
+    /// Every statement and data signature revoked, sorted and distinct.
+    pub revoked: Vec<Hash>,
+}
+
+impl Record {
+    /// Whether `hash` is in the revoked list.
+    pub fn revokes(&self, hash: &Hash) -> bool {
+        self.revoked.binary_search(hash).is_ok()
+    }
+}
+
+impl Body for Record {
+    const LABEL: &'static str = label::RECORD;
+
+    fn to_sexp(&self) -> Sexp {
+        tagged(
+            "record",
+            [
+                Issuer::Identity {
+                    id: self.id,
+                    event: self.event,
+                }
+                .to_sexp(),
+                tagged("issued", [num(self.issued)]),
+                tagged("head", [Sexp::atom(self.head.0)]),
+                tagged("revoked", self.revoked.iter().map(|h| Sexp::atom(h.0))),
+            ],
+        )
+    }
+
+    fn from_sexp(s: &Sexp) -> Result<Record> {
+        let mut f = Fields::of(s, "record", "record")?;
+        let Issuer::Identity { id, event } = Issuer::from_sexp(f.next("issuer")?)? else {
+            return bad("records are made by identities");
+        };
+        let issued = decimal(f.single("issued", "issued")?, "issued")?;
+        let head = Hash(atom32(f.single("head", "head")?, "head hash")?);
+        let mut rf = f.field("revoked", "revoked")?;
+        let mut revoked = Vec::new();
+        while !rf.is_empty() {
+            revoked.push(Hash(atom32(rf.atom("revoked")?, "revoked hash")?));
+        }
+        f.end("record")?;
+        if !revoked.windows(2).all(|w| w.first() < w.get(1)) {
+            return Err(DecodeError::NonCanonical);
+        }
+        Ok(Record {
+            id,
+            event,
+            issued,
+            head,
+            revoked,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Signed items
 
 /// One signature attached to a body: `index` is the signing key's position
@@ -1102,6 +1262,8 @@ pub enum Item {
     Statement(Signed<Statement>),
     /// A data signature.
     Signature(Signed<DataSig>),
+    /// A revocation record (DESIGN.md §18.4).
+    Record(Signed<Record>),
     /// A bare public key (for naming leaf or root keys in files).
     PublicKey(PublicKey),
     /// A bare authority (an identity's pending next authority).
@@ -1124,6 +1286,7 @@ impl Item {
             Item::Event(s) => signed(s),
             Item::Statement(s) => signed(s),
             Item::Signature(s) => signed(s),
+            Item::Record(s) => signed(s),
             Item::PublicKey(k) => vec![k.to_sexp()],
             Item::Authority(a) => vec![a.to_sexp()],
         };
@@ -1259,6 +1422,11 @@ impl Item {
                 leaf_index_zero(&body.signer, &sigs)?;
                 Item::Signature(Signed { body, sigs })
             }
+            b"record" => {
+                let body = Record::from_sexp(body)?;
+                let sigs = sigs(&mut f, Some(ROOT_SIGNATURE_SIZE))?;
+                Item::Record(Signed { body, sigs })
+            }
             b"authority" => {
                 let a = Authority::from_sexp(body)?;
                 f.end("authority item")?;
@@ -1283,6 +1451,7 @@ impl Item {
             },
             Item::Statement(s) => s.body.kind(),
             Item::Signature(_) => "signature",
+            Item::Record(_) => "record",
             Item::PublicKey(_) => "key",
             Item::Authority(_) => "authority",
         }

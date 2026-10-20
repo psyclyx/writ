@@ -88,12 +88,28 @@ struct Who {
 
 impl Who {
     fn new(n: u8, max_validity: Option<u64>, rng: &mut VectorRng, m: &mut Material) -> Who {
+        Who::make(n, max_validity, None, rng, m)
+    }
+
+    /// An identity that publishes records (DESIGN.md §18.5).
+    fn publishing(n: u8, publish: Publish, rng: &mut VectorRng, m: &mut Material) -> Who {
+        Who::make(n, None, Some(publish), rng, m)
+    }
+
+    fn make(
+        n: u8,
+        max_validity: Option<u64>,
+        publish: Option<Publish>,
+        rng: &mut VectorRng,
+        m: &mut Material,
+    ) -> Who {
         let k0 = seed(n * 10).root();
         let k1 = seed(n * 10 + 1).root();
         let (id, ev) = incept(
             Authority::single(k0.root_key()),
             &Authority::single(k1.root_key()),
             max_validity,
+            publish,
             &[&k0],
             rng,
         )
@@ -109,6 +125,12 @@ impl Who {
 
     fn id(&self) -> Id {
         self.log.id()
+    }
+
+    /// A record under the head (DESIGN.md §18.4).
+    fn record(&self, revoked: Vec<Hash>, issued: Time, rng: &mut VectorRng) -> Signed<Record> {
+        let n = self.log.head_n() as usize;
+        sign_record(&self.log, revoked, issued, &[&self.keys[n]], rng).unwrap()
     }
 
     fn say(
@@ -322,6 +344,7 @@ fn world() -> World {
             authority: Authority::single(alice_current.root_key()),
             next: Authority::single(seed(22).root().root_key()),
             max_validity: None,
+            publish: None,
             keep: vec![kept.body.hash()],
         },
         &[&alice.next],
@@ -371,6 +394,7 @@ fn world() -> World {
                 authority: Authority::single(seed(43).root().root_key()),
                 next: Authority::single(seed(42).root().root_key()),
                 max_validity: None,
+                publish: None,
                 keep,
             },
             &[&quinn.next],
@@ -499,6 +523,57 @@ fn world() -> World {
         &mut m,
     );
 
+    // pat publishes records with max-age one hour (DESIGN.md §18.4–§18.6):
+    // a long-lived grant needs a fresh record, a short one does not, and a
+    // record can revoke.
+    let pat = Who::publishing(
+        7,
+        Publish::new(3600, vec!["https://example.org/writ/pat.writ".into()]).unwrap(),
+        &mut rng,
+        &mut m,
+    );
+    add(
+        "me-grants-pat",
+        me.say(
+            grant(Subject::Id(pat.id()), "(pat)", true),
+            T0,
+            None,
+            &mut rng,
+        ),
+        &mut m,
+    );
+    add(
+        "pat-grants-bob-long",
+        pat.say(
+            grant(Subject::Id(bob.id()), "(pat long)", false),
+            T0,
+            None,
+            &mut rng,
+        ),
+        &mut m,
+    );
+    add(
+        "pat-grants-bob-short",
+        pat.say(
+            grant(Subject::Id(bob.id()), "(pat short)", false),
+            T0,
+            Some(T0 + 3600),
+            &mut rng,
+        ),
+        &mut m,
+    );
+    let revoked = pat.say(
+        grant(Subject::Id(bob.id()), "(pat revoked)", false),
+        T0,
+        None,
+        &mut rng,
+    );
+    add("pat-grants-bob-revoked", revoked.clone(), &mut m);
+    let record = pat.record(vec![revoked.body.hash()], T0 + 50, &mut rng);
+    labels.insert(record.body.hash(), "pat-record");
+    m.add(Item::Record(record.clone()));
+    items.push(Item::Record(record));
+
     let mut all: Vec<Item> = Vec::new();
     for id in m.ids().copied().collect::<Vec<_>>() {
         match &*m.log(&id) {
@@ -513,6 +588,7 @@ fn world() -> World {
         ("alice", Holder::Id(alice.id())),
         ("bob", Holder::Id(bob.id())),
         ("quinn", Holder::Id(quinn.id())),
+        ("pat", Holder::Id(pat.id())),
         ("leaf", Holder::Leaf(leaf.leaf_key().clone())),
         ("app", Holder::Opaque(app)),
     ]);
@@ -543,6 +619,8 @@ fn reason_kind(r: &Reason) -> &'static str {
         Reason::Covers(_) => "covers",
         Reason::OutsideIssuer { .. } => "outside-issuer",
         Reason::Limit => "limit",
+        Reason::NoFreshRecord { .. } => "no-fresh-record",
+        Reason::NoRecords => "no-records",
     }
 }
 
@@ -563,6 +641,13 @@ fn items_and_chains(files: &mut Files) {
                 format!(
                     "label = {}\n",
                     w.labels.get(&s.body.hash()).copied().unwrap_or("-")
+                ),
+            ),
+            Item::Record(r) => (
+                r.body.hash(),
+                format!(
+                    "label = {}\n",
+                    w.labels.get(&r.body.hash()).copied().unwrap_or("-")
                 ),
             ),
             other => panic!("{}", other.kind()),
@@ -636,6 +721,25 @@ fn items_and_chains(files: &mut Files) {
             "(team a)",
             T0 + 100,
         ),
+        ("publisher: fresh record", "bob", "(pat long)", T0 + 100),
+        (
+            "publisher: record too old",
+            "bob",
+            "(pat long)",
+            T0 + 50 + 3601,
+        ),
+        (
+            "publisher: short-lived, no record needed",
+            "bob",
+            "(pat short)",
+            T0 + 100,
+        ),
+        (
+            "publisher: revoked by its record",
+            "bob",
+            "(pat revoked)",
+            T0 + 100,
+        ),
     ];
     let roots = [w.root];
     let policy = Policy::default();
@@ -677,6 +781,10 @@ fn items_and_chains(files: &mut Files) {
                     p.tag,
                     p.expires.map_or("never".into(), |e| e.to_string())
                 );
+                if !p.records.is_empty() {
+                    let r: Vec<&str> = p.records.iter().map(label).collect();
+                    let _ = writeln!(out, "records = {}", r.join(" "));
+                }
             }
             Err(Denial::NotFound { rejected }) => {
                 let _ = writeln!(out, "result = denied\nreason = not-found");
@@ -871,13 +979,90 @@ fn rejections(files: &mut Files) {
             v
         }),
     ];
+    // Records and the publish field (DESIGN.md §18.4–§18.5), each mutated
+    // from its own valid item.
+    let publisher = Who::publishing(
+        8,
+        Publish::new(3600, vec!["https://example.org/r".into()]).unwrap(),
+        &mut rng,
+        &mut m,
+    );
+    let inception = publisher.log.items().next().unwrap().to_sexp();
+    let record =
+        Item::Record(publisher.record(vec![Hash([1; 32]), Hash([2; 32])], T0, &mut rng)).to_sexp();
+    let mutate = |item: &Sexp, f: &dyn Fn(&mut Vec<Sexp>)| {
+        let Sexp::List(top) = item else { panic!() };
+        let Sexp::List(body) = &top[1] else { panic!() };
+        let mut b = body.clone();
+        f(&mut b);
+        let mut t = top.clone();
+        t[1] = Sexp::List(b);
+        Sexp::List(t).encode()
+    };
+    let publish = |items: Vec<Sexp>| {
+        let mut v = vec![Sexp::atom("publish")];
+        v.extend(items);
+        Sexp::List(v)
+    };
+    let max_age = |s: &str| Sexp::list(vec![Sexp::atom("max-age"), Sexp::atom(s)]);
+    let url = || Sexp::atom("https://example.org/r");
+    let cases: Vec<(&str, Vec<u8>)> = cases
+        .into_iter()
+        .chain([
+            (
+                "valid inception with publish (for reference)",
+                inception.encode(),
+            ),
+            (
+                "publish max-age under an hour",
+                mutate(&inception, &|b| {
+                    b[3] = publish(vec![max_age("3599"), url()])
+                }),
+            ),
+            (
+                "publish with five URLs",
+                mutate(&inception, &|b| {
+                    b[3] = publish(
+                        [max_age("3600")]
+                            .into_iter()
+                            .chain((0..5).map(|_| url()))
+                            .collect(),
+                    )
+                }),
+            ),
+            (
+                "publish URL with a space",
+                mutate(&inception, &|b| {
+                    b[3] = publish(vec![max_age("3600"), Sexp::atom("https://a b")])
+                }),
+            ),
+            ("valid record (for reference)", record.encode()),
+            (
+                "record revocations out of order",
+                mutate(&record, &|b| {
+                    if let Some(Sexp::List(r)) = b.get_mut(4) {
+                        r.swap(1, 2);
+                    }
+                }),
+            ),
+            (
+                "record by a leaf key",
+                mutate(&record, &|b| {
+                    b[1] = Sexp::list(vec![
+                        Sexp::atom("issuer"),
+                        Sexp::list(vec![Sexp::atom("leaf"), Sexp::atom([3u8; 32])]),
+                    ])
+                }),
+            ),
+        ])
+        .collect();
     let mut out = String::from(
         "# Encodings that MUST be rejected (SPEC.md §5), each a mutation of the\n\
-         # first, valid item. hex = the canonical-csexp bytes offered as one item.\n",
+         # valid item before it. hex = the canonical-csexp bytes offered as one item.\n",
     );
     for (name, bytes) in &cases {
         let accepted = Item::decode(bytes).is_ok();
-        assert_eq!(accepted, *name == "valid (for reference)", "{name}");
+        assert_eq!(accepted, name.starts_with("valid"), "{name}");
         let _ = write!(
             out,
             "\ncase = {name}\nresult = {}\nhex = {}\n",
